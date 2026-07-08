@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "appName":           { "value": "buffolympics" },
+    "fabricSqlServer":   { "value": "<your-workspace-guid>.database.fabric.microsoft.com" },
+    "fabricSqlDatabase": { "value": "buffolympics" },
+    "aadTenantId":       { "value": "765713ef-2ac8-4410-98f0-08ea9552c506" },
+    "aadClientId":       { "value": "<service-principal-app-id>" },
+    "aadClientSecret":   { "value": "<service-principal-secret-VALUE>" },
+    "sessionSecret":     { "value": "<generate: openssl rand -hex 48>" },
+    "adminEmails":       { "value": "cory.zilisch@buffaloconstruction.com" }
+  }
+}

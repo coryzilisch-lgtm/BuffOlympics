@@ -1,0 +1,4 @@
+.DS_Store
+api/node_modules/
+infra/main.parameters.json
+node_modules/
