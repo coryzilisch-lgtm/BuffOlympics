@@ -1,0 +1,2568 @@
+/* Buff Olympics — SPA (vanilla JS, no build step).
+   Talks to the SWA managed-Functions API in /api per docs/API.md.
+   Design ported from the Claude Design mockup — inline styles are intentional. */
+(() => {
+'use strict';
+
+/* ════════════════════ state ════════════════════ */
+const S = {
+  token: localStorage.getItem('bo_token') || null,
+  boot: null,            // GET /api/bootstrap payload
+  overview: null,        // GET /api/admin/overview payload
+  route: 'home', routeArg: null,
+  loading: false, bootError: null,
+  isDesk: window.innerWidth >= 940,
+  // auth UI
+  authView: 'signin',    // 'signin' | 'signup' | 'ref'
+  refMode: 'login',      // 'login' | 'create'
+  inErr: false, pwErr: false, rcErr: false, authMsg: null,
+  signupTeam: null,      // tribe picked on the sign-up form
+  forceTeamGate: false,
+  f: { npShirt: 'M', npYears: '1st' },   // form field store (survives re-renders)
+  // games UI
+  cat: 'all', gameSearch: '',
+  tribeTab: 'buffalo',
+  videoOpen: null,       // url string
+  // ref board UI
+  refOpen: null, entryB: 0, entryR: 0, soloScores: {},
+  walkSearch: '', walkPick: null, walkScore: 0, walkLog: [],
+  // admin UI
+  adminSection: 'people', schedView: 'list',
+  adminPeek: null, adminConfirmReveal: false,
+  editingId: null, editVal: '',
+  historyOpenId: null,
+  busy: false,
+};
+
+/* ════════════════════ utils ════════════════════ */
+function esc(v) {
+  return String(v == null ? '' : v)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function initials(name) {
+  const p = String(name || '').replace(/[^A-Za-z. ]/g, '').split(' ');
+  return (((p[0] || '')[0] || '') + ((p[1] || '')[0] || '')).toUpperCase();
+}
+function timeAgo(iso) {
+  if (!iso) return '';
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (!isFinite(s)) return '';
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + ' min ago';
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + 'h ago';
+  return Math.floor(h / 24) + 'd ago';
+}
+function fmtClock(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  let h = d.getHours(); const m = d.getMinutes();
+  const ap = h >= 12 ? 'PM' : 'AM'; h = h % 12 || 12;
+  return h + ':' + String(m).padStart(2, '0') + ' ' + ap;
+}
+function slotStartLabel(slotLabel) {
+  // '1:30 – 2:00 PM' -> '1:30 PM'; 'Walk up anytime' -> 'Anytime'
+  const s = String(slotLabel || '');
+  if (!/\d/.test(s)) return 'Anytime';
+  const start = s.split('–')[0].trim();
+  const ap = (s.match(/AM|PM/) || [''])[0];
+  return start + (ap ? ' ' + ap : '');
+}
+function ytParse(url) {
+  const m = String(url || '').match(/(?:v=|youtu\.be\/|embed\/|shorts\/)([\w-]{11})/);
+  return m ? m[1] : null;
+}
+let toastTimer = null;
+function toast(msg) {
+  let host = document.getElementById('bo-toast-host');
+  if (!host) { host = document.createElement('div'); host.id = 'bo-toast-host'; document.body.appendChild(host); }
+  host.innerHTML = '<div class="bo-toast">' + esc(msg) + '</div>';
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { host.innerHTML = ''; }, 3500);
+}
+const chevR = (c, w, hh, sw) => '<svg width="' + (w || 9) + '" height="' + (hh || 15) + '" viewBox="0 0 9 15"><path d="M1.5 1.5L7 7.5l-5.5 6" stroke="' + c + '" stroke-width="' + (sw || 2.2) + '" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const chevL = (c) => '<svg width="9" height="15" viewBox="0 0 9 15"><path d="M7.5 1.5L2 7.5l5.5 6" stroke="' + c + '" stroke-width="2.2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const lockSvg = (c, sz) => '<svg width="' + (sz || 22) + '" height="' + (sz || 22) + '" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><rect x="4" y="10" width="16" height="10" rx="2" stroke="' + c + '" stroke-width="2"/><path d="M7.5 10V7a4.5 4.5 0 019 0v3" stroke="' + c + '" stroke-width="2"/></svg>';
+const shieldSvg = (c, sz) => '<svg width="' + (sz || 18) + '" height="' + (sz || 18) + '" viewBox="0 0 24 24" fill="none"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z" stroke="' + c + '" stroke-width="2" stroke-linejoin="round"/></svg>';
+const checkSvg = (c, sz, sw) => '<svg width="' + (sz || 14) + '" height="' + (sz || 14) + '" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5 9-11" stroke="' + c + '" stroke-width="' + (sw || 2.5) + '" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const dipSvg = (c, sz) => '<svg width="' + (sz || 24) + '" height="' + (sz || 24) + '" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><path d="M4 11h16M5 11a7 7 0 0014 0M12 3v2M8 20h8" stroke="' + c + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const relaySvg = (c, sz) => '<svg width="' + (sz || 26) + '" height="' + (sz || 26) + '" viewBox="0 0 24 24" fill="none"><path d="M6 8l4 2-2 4 5 1 1 4M14 5a1.6 1.6 0 100-.01M4 20l4-4M13 12l6-2" stroke="' + c + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const clipSvg = (c, sz) => '<svg width="' + (sz || 24) + '" height="' + (sz || 24) + '" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><rect x="5" y="4" width="14" height="17" rx="2" stroke="' + c + '" stroke-width="2"/><path d="M9 4h6v3H9z" stroke="' + c + '" stroke-width="2" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="' + c + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const searchSvg = (c) => '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><circle cx="11" cy="11" r="7" stroke="' + c + '" stroke-width="2"/><path d="M20 20l-3.5-3.5" stroke="' + c + '" stroke-width="2" stroke-linecap="round"/></svg>';
+
+/* ════════════════════ api ════════════════════ */
+function setToken(t) {
+  S.token = t;
+  if (t) localStorage.setItem('bo_token', t);
+  else localStorage.removeItem('bo_token');
+}
+async function api(path, opts) {
+  opts = opts || {};
+  const headers = { 'Content-Type': 'application/json' };
+  if (S.token) headers['X-Auth-Token'] = S.token;
+  let res;
+  try {
+    res = await fetch('/api' + path, {
+      method: opts.method || 'GET',
+      headers,
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch (e) {
+    throw Object.assign(new Error('Network error — check your connection.'), { status: 0 });
+  }
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* non-JSON */ }
+  if (res.status === 401 && S.token) {
+    setToken(null); S.boot = null; S.overview = null;
+    render();
+    throw Object.assign(new Error('Session expired — sign in again.'), { status: 401, code: 'expired' });
+  }
+  if (!res.ok) {
+    const msg = (data && data.error) || ('Request failed (' + res.status + ')');
+    throw Object.assign(new Error(msg), { status: res.status, code: data && data.error });
+  }
+  return data;
+}
+// mutations return { bootstrap } — swap it in and re-render
+function applyBoot(res) {
+  const b = (res && res.bootstrap) || (res && res.user ? res : null);
+  if (b) { S.boot = b; S.bootError = null; }
+  render();
+}
+async function loadBoot(silent) {
+  if (!S.token) return;
+  if (!silent) { S.loading = true; S.bootError = null; render(); }
+  try {
+    const b = await api('/bootstrap');
+    S.boot = b; S.bootError = null;
+  } catch (e) {
+    if (e.status === 401) return;      // handled in api()
+    if (!silent) S.bootError = e.message;
+  }
+  S.loading = false;
+  render();
+}
+async function loadOverview(silent) {
+  if (!S.token) return;
+  try {
+    S.overview = await api('/admin/overview');
+  } catch (e) {
+    if (!silent) toast(e.message);
+  }
+  render();
+}
+
+/* ════════════════════ theme ════════════════════ */
+const TH_BUF = {
+  surface: '#01182B', bar: '#011220', hero: '#00141F', panel: '#0C2D49',
+  panelBorder: 'rgba(255,255,255,0.10)', line: 'rgba(255,255,255,0.09)',
+  accent: '#FF5F00', accent2: '#FF7F2E', onAccent: '#011220',
+  text: '#F3F7F5', sub: '#8AA7B9', tabIdle: '#5C7B91',
+  dim: 'rgba(255,95,0,0.16)', glow: 'rgba(255,95,0,0.22)',
+};
+const TH_ROAD = {
+  surface: '#161310', bar: '#0B0908', hero: '#181310', panel: '#241C14',
+  panelBorder: 'rgba(245,197,24,0.22)', line: 'rgba(245,197,24,0.14)',
+  accent: '#E0322E', accent2: '#F5C518', onAccent: '#FFFFFF',
+  text: '#F7EFE1', sub: '#C7B393', tabIdle: '#8C7A5E',
+  dim: 'rgba(224,50,46,0.20)', glow: 'rgba(224,50,46,0.34)',
+};
+function theme() {
+  const team = S.boot && S.boot.user ? S.boot.user.team : null;
+  const tIsBuf = team !== 'roadhouse';
+  const th = tIsBuf ? TH_BUF : TH_ROAD;
+  return {
+    th, tIsBuf, team,
+    A: th.accent, A2: th.accent2, on: th.onAccent, dim: th.dim, glow: th.glow,
+    isBuf: team === 'buffalo', isRoad: team === 'roadhouse',
+    myTeamName: team === 'roadhouse' ? 'Texas Roadhouse' : 'Buffalo',
+    myTeamWord: team === 'roadhouse' ? 'Roadie' : 'Teammate',
+    deskAccent: tIsBuf ? '#FF5F00' : '#E0322E',
+    deskAccentOn: tIsBuf ? '#011220' : '#FFFFFF',
+    deskAccentDim: tIsBuf ? '#FFF4EC' : '#FCECEC',
+    deskChipBg: tIsBuf ? '#00253D' : '#241C14',
+    deskChipFg: tIsBuf ? '#FF7F2E' : '#F5C518',
+  };
+}
+function isRefUser() {
+  const u = S.boot && S.boot.user;
+  return !!(u && (u.isRef || u.isAdmin));
+}
+
+/* ════════════════════ game sign-up state ════════════════════ */
+function blockOf(g) {
+  return (S.boot.blocks || []).find(b => b.id === g.block) || null;
+}
+function blockLabelOf(g) {
+  const b = blockOf(g);
+  return b ? b.label : '';
+}
+function mySignupSlots() {
+  // [{gameId, game, slot}] for each of my signups (slot may be null)
+  return (S.boot.mySignups || []).map(x => {
+    const g = (S.boot.games || []).find(gg => gg.id === x.gameId);
+    const b = g ? blockOf(g) : null;
+    return { gameId: x.gameId, game: x.game, slot: b ? b.slot : null };
+  });
+}
+function gameState(g) {
+  const mode = S.boot.settings.eventMode;
+  const myCount = (S.boot.mySignups || []).length;
+  const myTeam = S.boot.user.team || 'buffalo';
+  const bl = blockOf(g);
+  const slot = bl ? bl.slot : null;
+  const myTribeRoster = (g.roster && g.roster[myTeam]) || [];
+  const tribeFull = !g.openPlay && g.cap > 0 && myTribeRoster.length >= g.cap && !g.mine;
+  let conflict = null;
+  if (!g.mine && myCount < 2 && slot) {
+    conflict = mySignupSlots().find(x => x.slot && x.slot[0] < slot[1] && slot[0] < x.slot[1]) || null;
+  }
+  let st = 'open';
+  if (g.openPlay) st = 'openplay';
+  else if (g.mine) st = 'signed';
+  else if (myCount >= 2) st = 'full';
+  else if (tribeFull) st = 'tribefull';
+  else if (conflict) st = 'conflict';
+  if (!g.openPlay && mode === 'gameday') st = g.mine ? 'signed' : 'locked';
+  const allRoster = [].concat((g.roster && g.roster.buffalo) || [], (g.roster && g.roster.roadhouse) || []);
+  return {
+    st,
+    conflictWith: conflict ? conflict.game : '',
+    slotLabel: bl ? bl.time : 'Walk up anytime',
+    allRoster,
+    myTribeRoster,
+    showCancel: st === 'signed' && mode !== 'gameday',
+  };
+}
+
+/* ════════════════════ auth screens ════════════════════ */
+function inputStyle(pad) {
+  return 'width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.14);border-radius:8px;padding:' + (pad || '13px 14px') + ';color:#F3F7F5;font-size:14.5px;font-family:\'Montserrat\';outline:none;';
+}
+function fieldLabel(text, color) {
+  return `<label style="display:block;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${color || '#FF7F2E'};margin-bottom:6px;">${text}</label>`;
+}
+function errLine(text) {
+  return `<div style="font-size:12px;color:#FF7F2E;font-weight:600;">${esc(text)}</div>`;
+}
+function errLineIcon(text) {
+  return `<div style="display:flex;align-items:center;gap:7px;font-size:12px;color:#FF7F2E;font-weight:600;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="#FF7F2E" stroke-width="2"/><path d="M12 7v6M12 16.5v.5" stroke="#FF7F2E" stroke-width="2" stroke-linecap="round"/></svg>${esc(text)}</div>`;
+}
+
+function authScreen() {
+  const f = S.f;
+  const su = S.signupTeam;                          // tribe picked on sign-up
+  const suIsBuf = (su || 'buffalo') === 'buffalo';
+  const suIsRoad = su === 'roadhouse';
+  const suAccent = suIsRoad ? '#E0322E' : '#FF5F00';
+  const suAccentOn = suIsRoad ? '#fff' : '#011220';
+  const suGlow = suIsRoad ? 'rgba(224,50,46,0.30)' : 'rgba(255,95,0,0.28)';
+  const shirtOptions = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL'];
+  const yearOptions = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th or more'];
+
+  let inner = '';
+  if (S.authView === 'signin') {
+    inner = `
+      <div>
+        <h2 style="font-family:'BN Kragen';font-size:40px;line-height:0.9;color:#F3F7F5;margin:6px 0 0;text-transform:uppercase;">Welcome<br/>back.</h2>
+        <p style="font-size:13.5px;line-height:1.5;color:#C7D3DB;margin:12px 0 22px;max-width:290px;">Sign in to pick your events, check the day's run of play, and follow the score.</p>
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <div>${fieldLabel('Email')}
+            <input id="in-email" data-field="inEmail" value="${esc(f.inEmail || '')}" placeholder="you@company.com" type="email" autocomplete="email" style="${inputStyle()}"/></div>
+          <div>${fieldLabel('Password')}
+            <input id="in-pass" data-field="inPass" value="${esc(f.inPass || '')}" placeholder="••••••••" type="password" autocomplete="current-password" style="${inputStyle()}"/></div>
+          ${S.inErr ? errLine('Enter your email and password to continue.') : ''}
+          ${S.authMsg ? errLine(S.authMsg) : ''}
+          <button data-act="doSignIn" style="width:100%;background:#FF5F00;color:#011220;font-weight:800;font-size:15px;text-align:center;padding:15px;border-radius:9px;box-shadow:0 8px 22px rgba(255,95,0,0.28);margin-top:2px;">Sign in</button>
+        </div>
+        <button data-act="authView" data-view="signup" style="display:block;width:100%;text-align:center;margin-top:16px;font-size:13px;color:#C7D3DB;">New to Buff Olympics? <span style="color:#FF7F2E;font-weight:700;">Create an account</span></button>
+        <div style="display:flex;align-items:center;gap:12px;margin:24px 0 16px;">
+          <span style="flex:1;height:1px;background:rgba(255,255,255,0.12);"></span>
+          <span style="font-size:10.5px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#5C7B91;">Working the games?</span>
+          <span style="flex:1;height:1px;background:rgba(255,255,255,0.12);"></span>
+        </div>
+        <button data-act="authView" data-view="ref" style="width:100%;display:flex;align-items:center;gap:12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.16);border-radius:9px;padding:14px 15px;text-align:left;">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z" stroke="#FF7F2E" stroke-width="2" stroke-linejoin="round"/><path d="M9 12l2 2 4-4" stroke="#FF7F2E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div style="flex:1;">
+            <div style="font-size:14px;font-weight:800;color:#F3F7F5;">Referees</div>
+            <div style="font-size:11.5px;color:#8AA7B9;">Sign in or create a ref account</div>
+          </div>
+          ${chevR('#8AA7B9')}
+        </button>
+      </div>`;
+  } else if (S.authView === 'signup') {
+    const suBufBg = suIsBuf ? '#FF5F00' : 'rgba(255,255,255,0.05)';
+    const suBufFg = suIsBuf ? '#011220' : '#C7D3DB';
+    const suBufBorder = suIsBuf ? '#FF5F00' : 'rgba(255,255,255,0.14)';
+    const suRoadBg = suIsRoad ? '#E0322E' : 'rgba(255,255,255,0.05)';
+    const suRoadFg = suIsRoad ? '#fff' : '#C7D3DB';
+    const suRoadBorder = suIsRoad ? '#E0322E' : 'rgba(255,255,255,0.14)';
+    inner = `
+      <div>
+        <h2 style="font-family:'BN Kragen';font-size:38px;line-height:0.9;color:#F3F7F5;margin:6px 0 0;text-transform:uppercase;">Join the<br/>Herd.</h2>
+        <p style="font-size:13px;line-height:1.5;color:#C7D3DB;margin:11px 0 20px;max-width:290px;">Pick your tribe, then tell us who you are.</p>
+        <div style="display:flex;flex-direction:column;gap:13px;">
+          <div>${fieldLabel('Your tribe', suAccent)}
+            <div style="display:flex;gap:10px;">
+              <button data-act="pickSignupTeam" data-team="buffalo" style="flex:1;display:flex;align-items:center;justify-content:center;gap:8px;background:${suBufBg};border:1.5px solid ${suBufBorder};color:${suBufFg};border-radius:9px;padding:13px;font-size:13.5px;font-weight:800;transition:all .15s;">
+                <img src="/assets/logos/buffalo-orange.png" alt="" style="height:18px;width:auto;"/>Buffalo
+              </button>
+              <button data-act="pickSignupTeam" data-team="roadhouse" style="flex:1;display:flex;align-items:center;justify-content:center;gap:8px;background:${suRoadBg};border:1.5px solid ${suRoadBorder};color:${suRoadFg};border-radius:9px;padding:13px;font-size:13.5px;font-weight:800;transition:all .15s;">Texas Roadhouse</button>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <div style="flex:1;">${fieldLabel('First name')}
+              <input id="np-first" data-field="npFirst" value="${esc(f.npFirst || '')}" placeholder="Jordan" autocomplete="given-name" style="${inputStyle('12px 13px')}"/></div>
+            <div style="flex:1;">${fieldLabel('Last name')}
+              <input id="np-last" data-field="npLast" value="${esc(f.npLast || '')}" placeholder="Lee" autocomplete="family-name" style="${inputStyle('12px 13px')}"/></div>
+          </div>
+          <div>${fieldLabel('Email')}
+            <input id="np-email" data-field="npEmail" value="${esc(f.npEmail || '')}" placeholder="you@company.com" type="email" autocomplete="email" style="${inputStyle('12px 13px')}"/></div>
+          <div style="display:flex;gap:10px;">
+            <div style="flex:1;">${fieldLabel('Password', suAccent)}
+              <input id="np-pass" data-field="npPass" value="${esc(f.npPass || '')}" placeholder="Create a password" type="password" autocomplete="new-password" style="${inputStyle('12px 13px')}"/></div>
+            <div style="flex:1;">${fieldLabel('Confirm password', suAccent)}
+              <input id="np-pass2" data-field="npPass2" value="${esc(f.npPass2 || '')}" placeholder="Re-enter password" type="password" autocomplete="new-password" style="${inputStyle('12px 13px')}"/></div>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <div style="flex:1;">${fieldLabel('Shirt size', suAccent)}
+              <select data-field="npShirt" style="width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.14);border-radius:8px;padding:12px 11px;color:#F3F7F5;font-size:14px;font-family:'Montserrat';outline:none;">
+                ${shirtOptions.map(o => `<option value="${o}" style="color:#00253D;" ${o === (f.npShirt || 'M') ? 'selected' : ''}>${o}</option>`).join('')}
+              </select></div>
+            <div style="flex:1;">${fieldLabel('Which Buff Olympics is this for you?', suAccent)}
+              <select data-field="npYears" style="width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.14);border-radius:8px;padding:12px 11px;color:#F3F7F5;font-size:14px;font-family:'Montserrat';outline:none;">
+                ${yearOptions.map(o => `<option value="${o}" style="color:#00253D;" ${o === (f.npYears || '1st') ? 'selected' : ''}>${o}</option>`).join('')}
+              </select></div>
+          </div>
+          <div>${fieldLabel('Song request for the DJ', suAccent)}
+            <input id="np-song" data-field="npSong" value="${esc(f.npSong || '')}" placeholder="Artist — Song title" style="${inputStyle('12px 13px')}"/></div>
+          ${S.inErr ? errLine('Please fill in your name, email and password.') : ''}
+          ${S.pwErr ? errLineIcon("Passwords don't match — try again.") : ''}
+          ${S.authMsg ? errLine(S.authMsg) : ''}
+          <button data-act="doSignUp" style="width:100%;background:${suAccent};color:${suAccentOn};font-weight:800;font-size:15px;text-align:center;padding:15px;border-radius:9px;box-shadow:0 8px 22px ${suGlow};margin-top:2px;">Create my account</button>
+        </div>
+        <button data-act="authView" data-view="signin" style="display:block;width:100%;text-align:center;margin-top:15px;font-size:13px;color:#C7D3DB;">Already registered? <span style="color:#FF7F2E;font-weight:700;">Sign in</span></button>
+      </div>`;
+  } else {
+    // referee auth
+    const login = S.refMode === 'login';
+    inner = `
+      <div>
+        <div style="display:inline-flex;align-items:center;gap:8px;background:rgba(255,95,0,0.14);border:1px solid rgba(255,127,46,0.4);border-radius:20px;padding:6px 12px;margin-bottom:14px;">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z" stroke="#FF7F2E" stroke-width="2" stroke-linejoin="round"/></svg>
+          <span style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#FF7F2E;">Referee access</span>
+        </div>
+        <h2 style="font-family:'BN Kragen';font-size:34px;line-height:0.9;color:#F3F7F5;margin:0;text-transform:uppercase;">SUP Refs.</h2>
+        <p style="font-size:13px;line-height:1.5;color:#C7D3DB;margin:11px 0 18px;max-width:290px;">Log in, or create a ref account with the join code your event admin gave you.</p>
+        <div style="display:flex;background:rgba(0,0,0,0.30);border:1px solid rgba(255,255,255,0.12);border-radius:9px;padding:3px;gap:3px;margin-bottom:16px;">
+          <button data-act="refMode" data-mode="login" style="flex:1;padding:9px;border-radius:6px;font-size:13px;font-weight:700;text-align:center;background:${login ? '#FF5F00' : 'transparent'};color:${login ? '#011220' : '#C7D3DB'};transition:all .15s;">Log in</button>
+          <button data-act="refMode" data-mode="create" style="flex:1;padding:9px;border-radius:6px;font-size:13px;font-weight:700;text-align:center;background:${!login ? '#FF5F00' : 'transparent'};color:${!login ? '#011220' : '#C7D3DB'};transition:all .15s;">Create account</button>
+        </div>
+        ${login ? `
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <input id="rl-user" data-field="rlUser" value="${esc(f.rlUser || '')}" placeholder="Username" autocomplete="username" style="${inputStyle()}"/>
+          <input id="rl-pass" data-field="rlPass" value="${esc(f.rlPass || '')}" type="password" placeholder="Password" autocomplete="current-password" style="${inputStyle()}"/>
+          ${S.inErr ? errLine('Enter your username and password.') : ''}
+          ${S.authMsg ? errLine(S.authMsg) : ''}
+          <button data-act="refLogin" style="width:100%;background:#FF5F00;color:#011220;font-weight:800;font-size:15px;text-align:center;padding:15px;border-radius:9px;box-shadow:0 8px 22px rgba(255,95,0,0.28);">Sign in as referee</button>
+        </div>` : `
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <input id="rc-user" data-field="rcUser" value="${esc(f.rcUser || '')}" placeholder="Choose a username" autocomplete="username" style="${inputStyle()}"/>
+          <input id="rc-pass" data-field="rcPass" value="${esc(f.rcPass || '')}" type="password" placeholder="Create a password" autocomplete="new-password" style="${inputStyle()}"/>
+          <div>${fieldLabel('Referee join code')}
+            <input id="rc-code" data-field="rcCode" value="${esc(f.rcCode || '')}" placeholder="Enter the code from your admin" style="${inputStyle()}letter-spacing:0.04em;"/></div>
+          ${S.rcErr ? errLineIcon("That join code isn't right. Check with your admin.") : ''}
+          ${S.inErr ? errLine('Pick a username and password first.') : ''}
+          ${S.authMsg ? errLine(S.authMsg) : ''}
+          <button data-act="refCreate" style="width:100%;background:#FF5F00;color:#011220;font-weight:800;font-size:15px;text-align:center;padding:15px;border-radius:9px;box-shadow:0 8px 22px rgba(255,95,0,0.28);">Create referee account</button>
+        </div>`}
+        <button data-act="authView" data-view="signin" style="display:flex;align-items:center;gap:6px;margin-top:18px;font-size:13px;color:#8AA7B9;font-weight:600;">
+          ${chevL('#8AA7B9')}
+          Back to player sign-in
+        </button>
+      </div>`;
+  }
+
+  return `
+  <div class="scrl" style="min-height:100vh;min-height:100dvh;background:#00141F;overflow-y:auto;overflow-x:hidden;position:relative;">
+    <img src="/assets/logos/buffalo-white.png" alt="" style="position:absolute;right:-70px;top:30px;width:300px;opacity:0.05;pointer-events:none;"/>
+    <div style="position:absolute;inset:0;background:radial-gradient(420px 300px at 50% 6%, rgba(255,95,0,0.16), transparent 70%);pointer-events:none;"></div>
+    <div style="position:relative;min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;padding:58px 24px 32px;max-width:440px;margin:0 auto;">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:22px;">
+        <img src="/assets/logos/buffalo-orange.png" alt="" style="height:24px;width:auto;"/>
+        <div style="line-height:1;">
+          <div style="font-family:'BN Kragen';font-size:21px;color:#F3F7F5;letter-spacing:0.01em;">BUFF OLYMPICS</div>
+          <div style="font-size:10px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#FF7F2E;margin-top:4px;">August 14 · The Herd Games</div>
+        </div>
+      </div>
+      ${inner}
+    </div>
+  </div>`;
+}
+
+/* ════════════════════ team gate ════════════════════ */
+function teamGateScreen() {
+  return `
+  <div style="min-height:100vh;min-height:100dvh;background:#00141F;display:flex;flex-direction:column;padding:64px 24px 30px;overflow:hidden;position:relative;">
+    <img src="/assets/logos/buffalo-white.png" alt="" style="position:absolute;right:-60px;top:40px;width:300px;opacity:0.05;"/>
+    <div style="position:absolute;inset:0;background:radial-gradient(420px 300px at 50% 8%, rgba(255,95,0,0.18), transparent 70%);"></div>
+    <div style="position:relative;max-width:440px;margin:0 auto;width:100%;display:flex;flex-direction:column;flex:1;">
+      <div style="position:relative;">
+        <span style="font-size:11px;font-weight:600;color:#FF7F2E;letter-spacing:0.04em;">Buff Olympics · August 14</span>
+        <h2 style="font-family:'BN Kragen';font-size:38px;line-height:0.9;color:#F3F7F5;margin:10px 0 0;text-transform:uppercase;">Pick your<br/>tribe.</h2>
+        <p style="font-size:13.5px;line-height:1.5;color:#C7D3DB;margin:12px 0 0;max-width:300px;">Choose who you're riding with today. Your tribe themes the app and puts your roster front and center.</p>
+      </div>
+      <div style="position:relative;margin-top:auto;display:flex;flex-direction:column;gap:12px;padding-top:40px;">
+        <button data-act="gateTeam" data-team="buffalo" style="width:100%;background:#FF5F00;border-radius:12px;padding:18px;display:flex;align-items:center;gap:15px;box-shadow:4px 4px 0 rgba(0,0,0,0.35);">
+          <span style="width:50px;height:50px;border-radius:50%;border:2px solid #011220;display:flex;align-items:center;justify-content:center;font-family:'BN Kragen';font-size:20px;color:#011220;flex-shrink:0;">B</span>
+          <div style="text-align:left;">
+            <div style="font-family:'BN Kragen';font-size:24px;color:#011220;text-transform:uppercase;line-height:1;">Buffalo</div>
+            <div style="font-size:12px;color:#3a1f0a;font-weight:600;margin-top:3px;">Herd strong · I'm a Teammate</div>
+          </div>
+        </button>
+        <button data-act="gateTeam" data-team="roadhouse" style="width:100%;background:#F3F7F5;border-radius:12px;padding:18px;display:flex;align-items:center;gap:15px;box-shadow:4px 4px 0 rgba(0,0,0,0.35);">
+          <span style="width:50px;height:50px;border-radius:50%;border:2px solid #00253D;display:flex;align-items:center;justify-content:center;font-family:'BN Kragen';font-size:18px;color:#00253D;flex-shrink:0;">TR</span>
+          <div style="text-align:left;">
+            <div style="font-family:'BN Kragen';font-size:24px;color:#00253D;text-transform:uppercase;line-height:1;">Texas Roadhouse</div>
+            <div style="font-size:12px;color:#5C7B91;font-weight:600;margin-top:3px;">Ride or die · I'm a Roadie</div>
+          </div>
+        </button>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ════════════════════ home (Tribal Council) ════════════════════ */
+function homeAgenda(T) {
+  const sched = S.boot.schedule || [];
+  const items = [];
+  const live = sched.find(e => e.kind === 'live');
+  if (live) items.push({ time: live.timeLabel + ' ' + live.ampm, name: live.title, state: 'now' });
+  const mine = mySignupSlots()
+    .slice()
+    .sort((a, b) => ((a.slot ? a.slot[0] : 9999) - (b.slot ? b.slot[0] : 9999)));
+  for (const m of mine) {
+    const su = (S.boot.mySignups || []).find(x => x.gameId === m.gameId);
+    items.push({ time: slotStartLabel(su ? su.slotLabel : ''), name: m.game, state: 'up' });
+  }
+  const next = sched.find(e => e.kind === 'up');
+  if (next) items.push({ time: next.timeLabel + ' ' + next.ampm, name: next.title, state: 'up' });
+  return items.slice(0, 5).map(e => ({
+    ...e,
+    now: e.state === 'now',
+    dot: e.state === 'now' ? T.A : (e.state === 'done' ? '#5C7B91' : 'transparent'),
+    dotBorder: e.state === 'now' ? T.A : '#5C7B91',
+    nameColor: e.state === 'done' ? '#8AA7B9' : T.th.text,
+  }));
+}
+function aroundCamp(T) {
+  const anns = S.boot.announcements || [];
+  if (anns.length) {
+    return anns.slice(0, 6).map((a, i) => ({
+      text: a.title,
+      meta: (a.body ? String(a.body).slice(0, 90) + (String(a.body).length > 90 ? '…' : '') + ' · ' : '') + timeAgo(a.createdAt),
+      color: i % 2 === 0 ? T.A : T.th.text,
+    }));
+  }
+  const sched = S.boot.schedule || [];
+  const out = [];
+  const live = sched.find(e => e.kind === 'live');
+  if (live) out.push({ text: live.title + ' is underway', meta: live.place + ' · now', color: T.A });
+  sched.filter(e => e.kind === 'up').slice(0, 2).forEach(e =>
+    out.push({ text: e.title, meta: e.place + ' · ' + e.timeLabel + ' ' + e.ampm, color: T.th.text }));
+  sched.filter(e => e.kind === 'done').slice(-1).forEach(e =>
+    out.push({ text: e.title + ' wrapped', meta: e.place, color: T.th.text }));
+  return out;
+}
+function homeScreen() {
+  const T = theme();
+  const th = T.th;
+  const boot = S.boot;
+  const isGameDay = boot.settings.eventMode === 'gameday';
+  const signupCount = (boot.mySignups || []).length;
+  const myTeam = boot.user.team || 'buffalo';
+  const myDipCount = (boot.dip && boot.dip.counts && boot.dip.counts[myTeam]) || 0;
+  const dipCount = (boot.dip && boot.dip.entries || []).length;
+  const scores = boot.scores || { revealed: false };
+  const agenda = homeAgenda(T);
+  const feed = aroundCamp(T);
+
+  const scoresCard = scores.revealed ? `
+      <button data-act="go" data-to="score" style="width:100%;background:${th.panel};border:1px solid ${T.A};border-radius:10px;padding:15px;display:flex;align-items:center;gap:13px;">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><path d="M7 4h10v3a5 5 0 01-10 0V4z" stroke="${T.A}" stroke-width="2" stroke-linejoin="round"/><path d="M5 5H3v2a3 3 0 003 3M19 5h2v2a3 3 0 01-3 3M9 20h6M12 13v7" stroke="${T.A}" stroke-width="2" stroke-linecap="round"/></svg>
+        <div style="flex:1;text-align:left;">
+          <div style="font-size:13.5px;font-weight:700;color:${th.text};">Buffalo ${scores.buffalo} · ${scores.roadhouse} Texas Roadhouse</div>
+          <div style="font-size:11.5px;color:${th.sub};margin-top:2px;">Final standings are live — tap for the Score Room</div>
+        </div>
+        ${chevR(T.A)}
+      </button>` : `
+      <button data-act="go" data-to="score" style="width:100%;background:${th.panel};border:1px solid ${th.panelBorder};border-radius:10px;padding:15px;display:flex;align-items:center;gap:13px;">
+        ${lockSvg(T.A)}
+        <div style="flex:1;text-align:left;">
+          <div style="font-size:13.5px;font-weight:700;color:${th.text};">Team scores are sealed</div>
+          <div style="font-size:11.5px;color:${th.sub};margin-top:2px;">See your own results · full board at the 4:00 PM reveal</div>
+        </div>
+        ${chevR(T.A)}
+      </button>`;
+
+  return `
+  <div>
+    <div style="display:flex;align-items:center;gap:10px;padding:11px 18px;background:${T.dim};border-bottom:1px solid rgba(255,255,255,0.07);">
+      ${T.isRoad
+        ? '<img src="/assets/logos/texas-roadhouse.png" alt="" style="height:26px;width:auto;"/>'
+        : '<img src="/assets/logos/buffalo-orange.png" alt="" style="height:18px;width:auto;"/>'}
+      <span style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};">${T.myTeamWord}</span>
+    </div>
+    <div style="position:relative;padding:26px 20px 26px;background:${th.hero};overflow:hidden;min-height:330px;">
+      ${T.isRoad
+        ? '<img src="/assets/logos/texas-roadhouse.png" alt="" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:380px;opacity:0.08;"/>'
+        : '<img src="/assets/logos/buffalo-white.png" alt="" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:380px;opacity:0.06;"/>'}
+      <div style="position:absolute;inset:0;background:radial-gradient(420px 280px at 50% 12%, ${T.glow}, transparent 70%);"></div>
+      <div style="position:relative;">
+        <span style="font-size:11px;font-weight:600;color:${T.A};letter-spacing:0.04em;">Welcome back, ${T.myTeamWord} · August 14</span>
+        <h2 style="font-family:'BN Kragen';font-size:52px;line-height:0.86;color:${th.text};margin:14px 0 0;text-transform:uppercase;">The<br/>Herd<br/>Games.</h2>
+        <p style="font-size:14px;line-height:1.5;color:#C7D3DB;max-width:280px;margin:16px 0 22px;">One day. Two tribes. A field full of games. The fire's lit — let's find out who walks through the storm.</p>
+        <button data-act="go" data-to="immunity" style="display:inline-flex;align-items:center;gap:10px;background:${T.A};color:${T.on};font-weight:700;font-size:14px;padding:13px 20px;border-radius:8px;box-shadow:0 0 28px ${T.glow};">
+          Hunt the hidden idols
+          ${chevR(T.on, 9, 15, 2.4)}
+        </button>
+        <div style="margin-top:16px;">
+          <button data-act="changeTribe" style="font-size:11.5px;font-weight:700;color:${th.sub};">Your tribe: <span style="color:${T.A};">${T.myTeamName}</span> · change</button>
+        </div>
+      </div>
+    </div>
+
+    ${isGameDay ? `
+    <div style="padding:16px 18px 0;">
+      <div style="display:flex;align-items:center;gap:9px;background:${T.dim};border:1px solid ${T.A};border-radius:10px;padding:11px 14px;">
+        <span style="width:8px;height:8px;border-radius:50%;background:${T.A};box-shadow:0 0 8px ${T.A};flex-shrink:0;"></span>
+        <span style="font-size:12px;font-weight:700;color:${th.text};">Game Day is live — sign-ups are locked. Time to compete &amp; vote.</span>
+      </div>
+    </div>
+    <div style="padding:18px 18px 0;">
+      <button data-act="go" data-to="dip-vote" style="width:100%;background:${T.A};color:${T.on};border-radius:11px;padding:16px;display:flex;align-items:center;gap:13px;box-shadow:0 8px 22px ${T.glow};">
+        ${dipSvg(T.on)}
+        <div style="flex:1;text-align:left;">
+          <div style="font-size:15px;font-weight:800;">Vote for your favorite dip</div>
+          <div style="font-size:11.5px;opacity:0.82;">${dipCount} dips in the running · one vote each</div>
+        </div>
+        ${chevR(T.on, 9, 15, 2.4)}
+      </button>
+    </div>` : `
+    <div style="padding:18px 18px 0;">
+      <button data-act="go" data-to="games" style="width:100%;background:${T.A};color:${T.on};border-radius:11px;padding:16px;display:flex;align-items:center;gap:13px;box-shadow:0 8px 22px ${T.glow};">
+        ${clipSvg(T.on)}
+        <div style="flex:1;text-align:left;">
+          <div style="font-size:15px;font-weight:800;">Sign up for games</div>
+          <div style="font-size:11.5px;opacity:0.82;">${signupCount} of 2 picked · pick your events</div>
+        </div>
+        ${chevR(T.on, 9, 15, 2.4)}
+      </button>
+      <div style="display:flex;gap:11px;margin-top:11px;">
+        <button data-act="go" data-to="dip" style="flex:1;background:${th.panel};border:1px solid ${th.panelBorder};border-radius:11px;padding:15px 13px;text-align:left;">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><path d="M4 11h16M5 11a7 7 0 0014 0M12 3v2M9 5.5C9 6 9.5 6.5 9.5 7M15 5.5C15 6 14.5 6.5 14.5 7M8 20h8" stroke="${T.A}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div style="font-size:13.5px;font-weight:800;color:${th.text};margin-top:9px;">Dip Off</div>
+          <div style="font-size:11px;color:${th.sub};margin-top:2px;">${myDipCount} of 5 cooks · sign up</div>
+        </button>
+        <button data-act="go" data-to="relay" style="flex:1;background:${th.panel};border:1px solid ${th.panelBorder};border-radius:11px;padding:15px 13px;text-align:left;">
+          ${relaySvg(T.A)}
+          <div style="font-size:13.5px;font-weight:800;color:${th.text};margin-top:9px;">Relay Race</div>
+          <div style="font-size:11px;color:${th.sub};margin-top:2px;">Pick one leg only</div>
+        </button>
+      </div>
+    </div>`}
+
+    <div style="padding:20px 18px 0;">${scoresCard}</div>
+
+    <div style="padding:14px 18px 0;">
+      <div style="background:${th.panel};border:1px solid ${th.panelBorder};border-radius:10px;overflow:hidden;">
+        <button data-act="go" data-to="schedule" style="width:100%;text-align:left;display:flex;align-items:center;justify-content:space-between;padding:14px 16px 11px;">
+          <span style="display:flex;align-items:center;gap:7px;font-size:10.5px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A};">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><rect x="4" y="5" width="16" height="16" rx="2" stroke="${T.A}" stroke-width="2"/><path d="M4 9h16M8 3v4M16 3v4" stroke="${T.A}" stroke-width="2" stroke-linecap="round"/></svg>
+            My Schedule
+          </span>
+          <span style="font-size:11.5px;font-weight:700;color:${th.sub};">Full day →</span>
+        </button>
+        <div style="padding:0 16px 6px;">
+          ${agenda.length ? agenda.map(e => `
+          <div style="display:flex;align-items:center;gap:13px;padding:10px 0;border-top:1px solid rgba(255,255,255,0.07);">
+            <span style="width:11px;height:11px;border-radius:50%;background:${e.dot};border:2px solid ${e.dotBorder};flex-shrink:0;"></span>
+            <span style="width:64px;flex-shrink:0;font-size:11.5px;font-weight:700;color:${th.sub};">${esc(e.time)}</span>
+            <span style="flex:1;font-size:13.5px;font-weight:600;color:${e.nameColor};">${esc(e.name)}</span>
+            ${e.now ? `<span style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:${T.on};background:${T.A};border-radius:4px;padding:2px 6px;flex-shrink:0;">NOW</span>` : ''}
+          </div>`).join('') : `
+          <div style="padding:12px 0 14px;border-top:1px solid rgba(255,255,255,0.07);font-size:12.5px;color:${th.sub};">Nothing on your slate yet — sign up for a game to build your day.</div>`}
+        </div>
+      </div>
+    </div>
+
+    <div style="padding:22px 18px 10px;">
+      <span style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${th.sub};">Around camp</span>
+      <div style="margin-top:13px;display:flex;flex-direction:column;">
+        ${feed.map(fd => `
+        <div style="display:flex;gap:13px;padding-bottom:16px;position:relative;">
+          <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;">
+            <span style="width:11px;height:11px;border-radius:50%;background:${fd.color};margin-top:3px;"></span>
+            <span style="flex:1;width:2px;background:rgba(255,255,255,0.10);margin-top:3px;"></span>
+          </div>
+          <div style="flex:1;">
+            <div style="font-size:13.5px;color:${th.text};line-height:1.4;">${esc(fd.text)}</div>
+            <div style="font-size:11px;color:${th.sub};margin-top:2px;">${esc(fd.meta)}</div>
+          </div>
+        </div>`).join('')}
+      </div>
+    </div>
+
+    ${S.isDesk ? '' : `
+    <div style="padding:0 18px 26px;">
+      <button data-act="signOut" style="font-size:12px;font-weight:700;color:${th.sub};text-decoration:underline;">Sign out</button>
+    </div>`}
+  </div>`;
+}
+
+/* ════════════════════ ref board (home + score for refs) ════════════════════ */
+function refBoardScreen() {
+  const T = theme();
+  const th = T.th;
+  const stations = S.boot.refStations || [];
+  const q2 = (S.walkSearch || '').trim().toLowerCase();
+  const allPlayers = S.boot.allPlayers || [];
+
+  const stationHtml = stations.map(st => {
+    const open = S.refOpen === st.gameId;
+    const isVs = st.type === 'vs', isSolo = st.type === 'solo', isWalk = st.type === 'walk';
+    const typeLabel = isVs ? 'Head-to-head' : (isSolo ? 'Solo · sign-up list' : 'Walk-up · scored on arrival');
+    const statusLabel = isWalk ? 'Open all day' : 'On station now';
+    const statusColor = isWalk ? '#3FBF87' : T.A;
+    const rowBg = open ? th.panel : (isWalk ? 'rgba(255,255,255,0.04)' : T.dim);
+    const rowBorder = (open || !isWalk) ? T.A : th.line;
+    const bufNames = (st.signups || []).filter(p => p.team === 'buffalo').map(p => p.name);
+    const roadNames = (st.signups || []).filter(p => p.team === 'roadhouse').map(p => p.name);
+
+    let body = '';
+    if (open && isVs) {
+      body = `
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">${esc(st.timeLabel || 'Head-to-head')} · ${esc(st.venue || '')}</div>
+        <div style="display:flex;align-items:stretch;gap:9px;margin-bottom:13px;">
+          <div style="flex:1;background:rgba(255,95,0,0.10);border:1px solid rgba(255,95,0,0.4);border-radius:9px;padding:11px;">
+            <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#FF7F2E;">Buffalo</div>
+            <div style="font-size:13px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.25;">${esc(bufNames.join(' & ') || '—')}</div>
+          </div>
+          <div style="display:flex;align-items:center;font-family:'BN Kragen';font-size:14px;color:${th.sub};">VS</div>
+          <div style="flex:1;background:rgba(224,50,46,0.12);border:1px solid rgba(224,50,46,0.4);border-radius:9px;padding:11px;text-align:right;">
+            <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#E0322E;">Texas Roadhouse</div>
+            <div style="font-size:13px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.25;">${esc(roadNames.join(' & ') || '—')}</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:11px;">
+          <div style="flex:1;background:rgba(255,95,0,0.12);border:1px solid rgba(255,95,0,0.5);border-radius:9px;padding:12px;text-align:center;">
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#FF7F2E;margin-bottom:9px;">Buffalo</div>
+            <div style="display:flex;align-items:center;justify-content:center;gap:12px;">
+              <button data-act="entryB" data-d="-1" style="width:34px;height:34px;border-radius:8px;background:rgba(255,255,255,0.08);color:${th.text};font-size:22px;display:flex;align-items:center;justify-content:center;">−</button>
+              <span style="font-family:'BN Kragen';font-size:30px;color:#FF5F00;min-width:30px;text-align:center;">${S.entryB}</span>
+              <button data-act="entryB" data-d="1" style="width:34px;height:34px;border-radius:8px;background:#FF5F00;color:#011220;font-size:22px;display:flex;align-items:center;justify-content:center;">+</button>
+            </div>
+          </div>
+          <div style="flex:1;background:rgba(224,50,46,0.12);border:1px solid rgba(224,50,46,0.5);border-radius:9px;padding:12px;text-align:center;">
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#E0322E;margin-bottom:9px;">Texas Roadhouse</div>
+            <div style="display:flex;align-items:center;justify-content:center;gap:12px;">
+              <button data-act="entryR" data-d="-1" style="width:34px;height:34px;border-radius:8px;background:rgba(255,255,255,0.08);color:${th.text};font-size:22px;display:flex;align-items:center;justify-content:center;">−</button>
+              <span style="font-family:'BN Kragen';font-size:30px;color:${th.text};min-width:30px;text-align:center;">${S.entryR}</span>
+              <button data-act="entryR" data-d="1" style="width:34px;height:34px;border-radius:8px;background:#E0322E;color:#fff;font-size:22px;display:flex;align-items:center;justify-content:center;">+</button>
+            </div>
+          </div>
+        </div>
+        <button data-act="vsSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:13px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Log result &amp; load next match</button>`;
+    } else if (open && isSolo) {
+      body = `
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:10px;">Sign-up list · score each player</div>
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          ${(st.signups || []).length ? (st.signups || []).map((p, i) => `
+          <div style="display:flex;align-items:center;gap:11px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:9px;padding:9px 12px;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}</div>
+              <div style="font-size:10.5px;font-weight:700;text-transform:uppercase;color:${p.team === 'buffalo' ? '#FF7F2E' : '#E0322E'};">${p.team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:9px;flex-shrink:0;">
+              <button data-act="soloDelta" data-i="${i}" data-d="-1" style="width:30px;height:30px;border-radius:7px;background:rgba(255,255,255,0.08);color:${th.text};font-size:19px;display:flex;align-items:center;justify-content:center;">−</button>
+              <span style="font-family:'BN Kragen';font-size:20px;color:${T.A};min-width:26px;text-align:center;">${S.soloScores[p.name] || 0}</span>
+              <button data-act="soloDelta" data-i="${i}" data-d="1" style="width:30px;height:30px;border-radius:7px;background:${T.A};color:${T.on};font-size:19px;display:flex;align-items:center;justify-content:center;">+</button>
+            </div>
+          </div>`).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No sign-ups for this station yet.</div>`}
+        </div>
+        <button data-act="soloSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:13px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Save range scores</button>`;
+    } else if (open && isWalk) {
+      const matches = q2 ? allPlayers.filter(p => p.name.toLowerCase().includes(q2)).slice(0, 4) : [];
+      body = `
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:10px;">Walk-up · find a player to score</div>
+        <div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.05);border:1px solid ${th.line};border-radius:9px;padding:11px 13px;">
+          ${searchSvg(th.sub)}
+          <input id="walk-input" data-live="walkSearch" value="${esc(S.walkSearch)}" placeholder="Search player name…" style="flex:1;min-width:0;background:transparent;border:none;outline:none;color:${th.text};font-size:14px;font-family:'Montserrat';"/>
+        </div>
+        ${matches.length ? `
+        <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
+          ${matches.map((m, i) => `
+          <button data-act="walkPick" data-i="${i}" data-name="${esc(m.name)}" data-team="${esc(m.team)}" style="display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:8px;padding:10px 12px;">
+            <span style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(m.name)}</span>
+            <span style="font-size:10.5px;font-weight:700;text-transform:uppercase;color:${th.sub};">${m.team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'}</span>
+          </button>`).join('')}
+        </div>` : ''}
+        ${S.walkPick ? `
+        <div style="margin-top:11px;display:flex;align-items:center;gap:12px;background:${th.dim};border:1px solid ${th.line};border-radius:9px;padding:12px 13px;">
+          <span style="flex:1;font-size:13.5px;font-weight:700;color:${th.text};">${esc(S.walkPick.name)}</span>
+          <div style="display:flex;align-items:center;gap:9px;flex-shrink:0;">
+            <button data-act="walkDelta" data-d="-1" style="width:30px;height:30px;border-radius:7px;background:rgba(255,255,255,0.08);color:${th.text};font-size:19px;display:flex;align-items:center;justify-content:center;">−</button>
+            <span style="font-family:'BN Kragen';font-size:20px;color:${T.A};min-width:26px;text-align:center;">${S.walkScore}</span>
+            <button data-act="walkDelta" data-d="1" style="width:30px;height:30px;border-radius:7px;background:${T.A};color:${T.on};font-size:19px;display:flex;align-items:center;justify-content:center;">+</button>
+          </div>
+        </div>
+        <button data-act="walkSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:11px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Add ${esc(S.walkPick.name)}'s score</button>` : ''}
+        <div style="margin-top:14px;font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${th.sub};margin-bottom:8px;">Scored so far</div>
+        <div style="display:flex;flex-direction:column;gap:7px;">
+          ${S.walkLog.length ? S.walkLog.map(w => `
+          <div style="display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:8px;padding:9px 12px;">
+            <span style="font-size:13px;font-weight:600;color:${th.text};">${esc(w.name)}</span>
+            <span style="font-family:'BN Kragen';font-size:16px;color:${T.A};">${w.score}</span>
+          </div>`).join('') : `<div style="font-size:12px;color:${th.sub};font-style:italic;">Nothing logged this session yet.</div>`}
+        </div>`;
+    }
+
+    return `
+    <div style="background:${rowBg};border:1px solid ${rowBorder};border-radius:12px;overflow:hidden;transition:all .15s;">
+      <button data-act="refToggle" data-id="${esc(st.gameId)}" style="width:100%;display:flex;align-items:center;gap:13px;padding:14px 15px;">
+        <div style="flex:1;min-width:0;text-align:left;">
+          <div style="font-size:16px;font-weight:800;color:${th.text};line-height:1.05;">${esc(st.name)}</div>
+          <div style="font-size:11.5px;color:${th.sub};margin-top:4px;">${esc(st.timeLabel || '')} · ${esc(st.venue || '')}</div>
+          <div style="display:inline-flex;align-items:center;gap:6px;margin-top:7px;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${statusColor};"><span style="width:6px;height:6px;border-radius:50%;background:${statusColor};"></span>${statusLabel} · ${typeLabel}</div>
+        </div>
+        <svg width="9" height="14" viewBox="0 0 8 14" style="flex-shrink:0;transform:${open ? 'rotate(90deg)' : 'rotate(0deg)'};transition:transform .18s;"><path d="M1 1l6 6-6 6" stroke="${th.sub}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      ${open ? `<div style="padding:0 15px 16px;"><div style="height:1px;background:${th.line};margin-bottom:14px;"></div>${body}</div>` : ''}
+    </div>`;
+  }).join('');
+
+  return `
+  <div style="padding:20px 0 24px;">
+    <div style="padding:0 18px;">
+      <div style="display:flex;align-items:center;gap:9px;">
+        ${shieldSvg(T.A)}
+        <span style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A};">Ref HQ · your stations</span>
+      </div>
+      <h2 style="font-family:'BN Kragen';font-size:32px;color:${T.th.text};text-transform:uppercase;margin:8px 0 0;line-height:0.92;">Run the game.</h2>
+      <p style="font-size:13px;color:${T.th.sub};margin:7px 0 0;">You're posted on a station for a stretch. Tap it to score the current matchup or log players.</p>
+    </div>
+    <div style="padding:16px 18px 0;display:flex;flex-direction:column;gap:11px;">
+      ${stations.length ? stationHtml : `<div style="background:rgba(255,255,255,0.04);border:1px solid ${T.th.line};border-radius:11px;padding:16px;font-size:13px;color:${T.th.sub};">No stations assigned to you yet — an admin assigns refs to games in the Admin Center.</div>`}
+    </div>
+    ${S.isDesk ? '' : `<div style="padding:24px 18px 0;"><button data-act="signOut" style="font-size:12px;font-weight:700;color:${T.th.sub};text-decoration:underline;">Sign out</button></div>`}
+  </div>`;
+}
+
+/* ════════════════════ games browser (mobile) ════════════════════ */
+function gamesScreen() {
+  const T = theme();
+  const th = T.th;
+  const boot = S.boot;
+  const q = (S.gameSearch || '').trim().toLowerCase();
+  const signupCount = (boot.mySignups || []).length;
+  const cats = [{ id: 'all', label: 'All Games' }]
+    .concat((boot.blocks || []).map(b => ({ id: b.id, label: b.id === 'open' ? 'Open Play' : b.label.replace(' Rotation', '') })));
+  const base = q ? (boot.games || []) : (boot.games || []).filter(g => S.cat === 'all' || g.block === S.cat);
+  const visible = base.filter(g => !q || (g.name + ' ' + blockLabelOf(g) + ' ' + (g.venue || '')).toLowerCase().includes(q));
+  const gamesTagline = (boot.games || []).length + ' games · ' + Math.max(0, (boot.blocks || []).length - 1) + ' rotations + open play';
+
+  const cards = visible.map(g => {
+    const gs = gameState(g);
+    let action = '';
+    if (gs.st === 'open') action = `<button data-act="signup" data-id="${esc(g.id)}" style="background:${T.A};color:${T.on};font-weight:800;font-size:12.5px;padding:9px 14px;border-radius:8px;">Sign up</button>`;
+    else if (gs.st === 'signed') action = `
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
+        <span style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:800;color:#3FBF87;">${checkSvg('#3FBF87', 13)}You're in</span>
+        ${gs.showCancel ? `<button data-act="cancelSignup" data-id="${esc(g.id)}" style="font-size:10.5px;color:${th.sub};text-decoration:underline;">Cancel</button>` : ''}
+      </div>`;
+    else if (gs.st === 'full') action = `<span style="font-size:11px;font-weight:700;color:${th.sub};text-align:right;display:block;max-width:78px;">Limit reached (2/2)</span>`;
+    else if (gs.st === 'tribefull') action = `<span style="font-size:11px;font-weight:700;color:${th.sub};text-align:right;display:block;max-width:82px;">Tribe spots full</span>`;
+    else if (gs.st === 'openplay') action = `<span style="font-size:10.5px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:${T.A};border:1px solid ${T.A};border-radius:6px;padding:6px 10px;text-align:center;display:block;">Walk up<br/>anytime</span>`;
+    else if (gs.st === 'conflict') action = `<span style="font-size:11px;font-weight:700;color:${th.sub};text-align:right;display:block;max-width:90px;">Overlaps ${esc(gs.conflictWith)}</span>`;
+    else if (gs.st === 'locked') action = `<span style="font-size:11px;font-weight:700;color:${th.sub};text-align:right;display:block;max-width:82px;">Sign-ups locked</span>`;
+    return `
+    <div style="width:100%;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-left:3px solid ${T.A};border-radius:9px;padding:14px 15px;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <button data-act="openGame" data-id="${esc(g.id)}" style="flex:1;min-width:0;text-align:left;background:none;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
+            <span style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};">${esc(blockLabelOf(g))}</span>
+            ${g.needsRef ? '<span style="font-size:10px;font-weight:700;color:#FF7F2E;">· Ref needed</span>' : ''}
+          </div>
+          <div style="font-family:'BN Kragen';font-size:19px;color:${th.text};text-transform:uppercase;line-height:1;">${esc(g.name)}</div>
+          <div style="display:flex;gap:12px;margin-top:8px;flex-wrap:wrap;">
+            <span style="font-size:11.5px;color:${T.A};font-weight:700;">${esc(gs.slotLabel)}</span>
+            <span style="font-size:11.5px;color:${th.sub};">${esc(g.players)}</span>
+            <span style="font-size:11.5px;color:${th.text};font-weight:700;">${esc(g.pointsLabel || '')}</span>
+          </div>
+        </button>
+        <div style="flex-shrink:0;">${action}</div>
+      </div>
+      ${gs.allRoster.length ? `
+      <div style="margin-top:10px;padding-top:9px;border-top:1px solid ${th.line};display:flex;align-items:center;gap:7px;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><circle cx="9" cy="8" r="3" stroke="${th.sub}" stroke-width="2"/><path d="M3 19c0-3 2.7-5 6-5s6 2 6 5" stroke="${th.sub}" stroke-width="2" stroke-linecap="round"/></svg>
+        <span style="font-size:11.5px;color:${th.sub};min-width:0;">${gs.allRoster.length} signed up · ${esc(gs.allRoster.join(' · '))}</span>
+      </div>` : ''}
+    </div>`;
+  }).join('');
+
+  return `
+  <div style="padding:18px 0 24px;">
+    <div style="padding:0 18px;">
+      <span style="font-size:11px;font-weight:600;color:${T.A2};letter-spacing:0.04em;">${esc(gamesTagline)}</span>
+      <h2 style="font-family:'BN Kragen';font-size:36px;color:${th.text};text-transform:uppercase;margin:6px 0 0;line-height:0.92;">The Games</h2>
+    </div>
+    <div style="padding:15px 18px 0;">
+      <div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.12);border-radius:9px;padding:11px 13px;">
+        ${searchSvg('#8AA7B9')}
+        <input id="gs-input" data-live="gameSearch" value="${esc(S.gameSearch)}" placeholder="Search games, venues…" style="flex:1;min-width:0;background:transparent;border:none;outline:none;color:${th.text};font-size:14px;font-family:'Montserrat';"/>
+        ${S.gameSearch ? `<button data-act="clearSearch" style="flex-shrink:0;width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.12);color:#C7D3DB;font-size:13px;display:flex;align-items:center;justify-content:center;">×</button>` : ''}
+      </div>
+    </div>
+    <div style="padding:14px 18px 0;">
+      <div style="display:flex;align-items:center;gap:11px;background:${th.panel};border:1px solid ${th.panelBorder};border-radius:10px;padding:12px 14px;">
+        ${clipSvg(T.A, 20)}
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:12.5px;font-weight:700;color:${th.text};">You're signed up for ${signupCount} of 2 games</div>
+          <div style="font-size:11px;color:${th.sub};">Max two events, and none at overlapping times.</div>
+        </div>
+      </div>
+    </div>
+    <div class="scrl" style="display:flex;gap:8px;overflow-x:auto;padding:16px 18px;">
+      ${cats.map(c => `<button data-act="setCat" data-cat="${esc(c.id)}" style="flex-shrink:0;padding:8px 14px;border-radius:7px;font-size:12.5px;font-weight:700;white-space:nowrap;background:${c.id === S.cat ? T.A : 'rgba(255,255,255,0.06)'};color:${c.id === S.cat ? T.on : '#C7D3DB'};border:1px solid rgba(255,255,255,0.10);transition:all .15s;">${esc(c.label)}</button>`).join('')}
+    </div>
+    <div style="padding:0 18px;display:flex;flex-direction:column;gap:11px;">
+      ${cards}
+      ${visible.length === 0 ? `
+      <div style="text-align:center;padding:34px 18px;">
+        <div style="font-family:'BN Kragen';font-size:20px;color:#5C7B91;text-transform:uppercase;">No games found</div>
+        <div style="font-size:12.5px;color:#8AA7B9;margin-top:6px;">Try a different word or clear the search.</div>
+      </div>` : ''}
+    </div>
+  </div>`;
+}
+
+/* ════════════════════ game detail ════════════════════ */
+function gameDetailScreen() {
+  const T = theme();
+  const th = T.th;
+  const g = (S.boot.games || []).find(x => x.id === S.routeArg);
+  if (!g) return `<div style="padding:40px 18px;text-align:center;color:${th.sub};font-size:13px;">Game not found. <button data-act="go" data-to="games" style="color:${T.A};font-weight:700;text-decoration:underline;">Back to the games</button></div>`;
+  const gs = gameState(g);
+  const invList = g.inventory ? String(g.inventory).split(', ') : [];
+  const refText = g.needsRef ? 'SUP ref required at this station' : 'No ref needed — self-run';
+  const refBg = g.needsRef ? th.dim : 'rgba(255,255,255,0.04)';
+  const refBorder = g.needsRef ? T.A : 'rgba(255,255,255,0.10)';
+  const refIcon = g.needsRef ? T.A : '#8AA7B9';
+
+  let action = '';
+  if (gs.st === 'open') action = `<button data-act="signup" data-id="${esc(g.id)}" style="width:100%;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:14px;border-radius:9px;box-shadow:0 8px 22px ${T.glow};">Sign up for ${esc(g.name)}</button>`;
+  else if (gs.st === 'signed') action = `
+    <div style="display:flex;align-items:center;gap:10px;background:${T.dim};border:1px solid ${T.A};border-radius:10px;padding:13px 15px;">
+      ${checkSvg(T.A, 18)}
+      <span style="flex:1;font-size:13.5px;font-weight:800;color:${th.text};">You're in — see you at ${esc(g.venue || 'the station')}.</span>
+      ${gs.showCancel ? `<button data-act="cancelSignup" data-id="${esc(g.id)}" style="font-size:11.5px;color:${th.sub};text-decoration:underline;flex-shrink:0;">Cancel</button>` : ''}
+    </div>`;
+  else if (gs.st === 'openplay') action = `<div style="width:100%;text-align:center;background:${T.dim};border:1px dashed ${T.A};color:${T.A};font-weight:800;font-size:12.5px;padding:12px;border-radius:9px;">Open play · walk up anytime — no sign-up needed</div>`;
+  else if (gs.st === 'conflict') action = `<div style="width:100%;text-align:center;background:rgba(255,255,255,0.04);border:1px solid ${th.line};color:${th.sub};font-weight:700;font-size:12.5px;padding:12px;border-radius:9px;">Overlaps ${esc(gs.conflictWith)} — cancel that one first</div>`;
+  else if (gs.st === 'full') action = `<div style="width:100%;text-align:center;background:rgba(255,255,255,0.04);border:1px solid ${th.line};color:${th.sub};font-weight:700;font-size:12.5px;padding:12px;border-radius:9px;">You've filled both of your game spots</div>`;
+  else if (gs.st === 'tribefull') action = `<div style="width:100%;text-align:center;background:rgba(255,255,255,0.04);border:1px solid ${th.line};color:${th.sub};font-weight:700;font-size:12.5px;padding:12px;border-radius:9px;">${esc(T.myTeamName)} spots are full for this game</div>`;
+  else if (gs.st === 'locked') action = `<div style="width:100%;text-align:center;background:rgba(255,255,255,0.04);border:1px solid ${th.line};color:${th.sub};font-weight:700;font-size:12.5px;padding:12px;border-radius:9px;">Game Day — sign-ups are locked</div>`;
+
+  return `
+  <div style="padding:0 0 28px;">
+    <div style="padding:20px 18px 20px;background:linear-gradient(180deg, ${th.hero}, ${th.surface});position:relative;overflow:hidden;">
+      <img src="/assets/logos/buffalo-white.png" alt="" style="position:absolute;right:-50px;top:-20px;width:200px;opacity:0.06;"/>
+      <span style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A2};">${esc(blockLabelOf(g))}</span>
+      <h2 style="font-family:'BN Kragen';font-size:34px;color:${th.text};text-transform:uppercase;margin:8px 0 0;line-height:0.92;">${esc(g.name)}</h2>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:12px;">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M12 2C8 2 5 5 5 9c0 5 7 13 7 13s7-8 7-13c0-4-3-7-7-7z" stroke="${T.A}" stroke-width="2"/><circle cx="12" cy="9" r="2.4" fill="${T.A}"/></svg>
+        <span style="font-size:13px;color:#C7D3DB;font-weight:600;">${esc(g.venue || '')}</span>
+      </div>
+    </div>
+    <div style="padding:18px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px;">
+      <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:9px;padding:13px 11px;">
+        <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${th.sub};">Players</div>
+        <div style="font-size:14px;font-weight:700;color:${th.text};margin-top:5px;line-height:1.2;">${esc(g.players)}</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:9px;padding:13px 11px;">
+        <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${th.sub};">Time</div>
+        <div style="font-size:14px;font-weight:700;color:${th.text};margin-top:5px;line-height:1.2;">${esc(g.timeLabel || gs.slotLabel)}</div>
+      </div>
+      <div style="background:${T.A};border-radius:9px;padding:13px 11px;">
+        <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.on};">Points</div>
+        <div style="font-size:14px;font-weight:800;color:${T.on};margin-top:5px;line-height:1.2;">${esc(g.pointsLabel || 'TBD')}</div>
+      </div>
+    </div>
+    <div style="padding:0 18px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:8px;">How to play</div>
+      <p style="font-size:14.5px;line-height:1.6;color:#DCE5EB;margin:0;">${esc(g.desc || '')}</p>
+    </div>
+    <div style="padding:16px 18px 0;">
+      <button data-act="openVideo" data-id="${esc(g.id)}" style="width:100%;position:relative;height:170px;border-radius:12px;overflow:hidden;border:1px solid ${th.line};background:radial-gradient(140px 100px at 50% 42%, ${T.dim}, transparent 72%), linear-gradient(160deg,#001b2e,#00101b);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;">
+        <span style="width:58px;height:58px;border-radius:50%;background:${T.A};display:flex;align-items:center;justify-content:center;box-shadow:0 0 28px ${T.glow};"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="${T.on}"/></svg></span>
+        <span style="font-size:14.5px;font-weight:800;color:#F3F7F5;">See how it's played</span>
+        <span style="position:absolute;bottom:11px;left:13px;display:flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;letter-spacing:0.03em;color:#8AA7B9;"><svg width="16" height="12" viewBox="0 0 24 17"><rect x="1" y="1" width="22" height="15" rx="4" fill="#E0322E"/><path d="M10 5.5v6l5-3z" fill="#fff"/></svg>YouTube demo</span>
+      </button>
+    </div>
+    <div style="padding:16px 18px 0;">${action}</div>
+    <div style="padding:18px;">
+      <div style="display:flex;align-items:center;gap:10px;background:${refBg};border:1px solid ${refBorder};border-radius:9px;padding:13px 15px;margin-bottom:14px;">
+        ${shieldSvg(refIcon)}
+        <span style="font-size:13.5px;font-weight:700;color:${th.text};">${refText}</span>
+      </div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${th.sub};margin-bottom:9px;">Inventory</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;">
+        ${invList.map(it => `<span style="font-size:12.5px;font-weight:600;color:#DCE5EB;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.10);border-radius:7px;padding:7px 12px;">${esc(it)}</span>`).join('')}
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ════════════════════ video modal ════════════════════ */
+function videoModalHtml() {
+  if (!S.videoOpen) return '';
+  const vid = ytParse(S.videoOpen);
+  const inner = vid
+    ? `<iframe src="https://www.youtube-nocookie.com/embed/${vid}?autoplay=1" style="width:100%;height:215px;border:0;display:block;" allow="autoplay; encrypted-media; fullscreen" allowfullscreen></iframe>`
+    : `<div style="height:215px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:15px;background:radial-gradient(140px 100px at 50% 40%, rgba(255,95,0,0.18), transparent 72%), linear-gradient(160deg,#001b2e,#00101b);">
+        <span style="width:56px;height:56px;border-radius:50%;background:#FF5F00;display:flex;align-items:center;justify-content:center;box-shadow:0 0 26px rgba(255,95,0,0.4);"><svg width="21" height="21" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="#011220"/></svg></span>
+        <a href="${esc(S.videoOpen)}" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:8px;background:#E0322E;color:#fff;font-weight:800;font-size:13.5px;padding:11px 18px;border-radius:9px;text-decoration:none;"><svg width="18" height="13" viewBox="0 0 24 17"><rect x="1" y="1" width="22" height="15" rx="4" fill="#fff"/><path d="M10 5.5v6l5-3z" fill="#E0322E"/></svg>Open the demo on YouTube</a>
+      </div>`;
+  return `
+  <div style="position:fixed;inset:0;z-index:2000;background:rgba(0,4,8,0.88);display:flex;flex-direction:column;justify-content:center;padding:20px;">
+    <div style="width:100%;max-width:520px;margin:0 auto;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <span style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#FF7F2E;">See how it's played</span>
+        <button data-act="closeVideo" style="width:38px;height:38px;border-radius:50%;background:rgba(255,255,255,0.12);color:#fff;display:flex;align-items:center;justify-content:center;font-size:22px;line-height:1;">×</button>
+      </div>
+      <div style="background:#000;border-radius:12px;overflow:hidden;border:1px solid rgba(255,255,255,0.14);">${inner}</div>
+      <p style="font-size:11px;color:#8AA7B9;line-height:1.5;text-align:center;margin:13px 6px 0;">Organizers can paste a specific YouTube link for each game in the Admin Center → Games.</p>
+    </div>
+  </div>`;
+}
+
+/* ════════════════════ schedule ════════════════════ */
+function scheduleScreen() {
+  const T = theme();
+  const th = T.th;
+  const steel = '#8AA7B9';
+  const rows = (S.boot.schedule || []).map(e => {
+    const live = e.kind === 'live';
+    const done = e.kind === 'done';
+    return `
+    <div style="display:flex;gap:14px;">
+      <div style="width:62px;flex-shrink:0;text-align:right;padding-top:14px;">
+        <div style="font-family:'BN Kragen';font-size:15px;color:${live ? T.A : (done ? steel : th.text)};line-height:1;">${esc(e.timeLabel)}</div>
+        <div style="font-size:10px;color:${steel};">${esc(e.ampm)}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;">
+        <span style="width:13px;height:13px;border-radius:50%;background:${live ? T.A : (done ? steel : '#011220')};border:2px solid ${live ? T.A : steel};margin-top:15px;"></span>
+        <span style="flex:1;width:2px;background:rgba(255,255,255,0.10);"></span>
+      </div>
+      <div style="flex:1;padding:10px 0 18px;">
+        <div style="background:${live ? th.panel : 'rgba(255,255,255,0.04)'};border:1px solid ${live ? T.A : 'rgba(255,255,255,0.08)'};border-radius:9px;padding:13px 14px;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-family:'BN Kragen';font-size:17px;color:${th.text};text-transform:uppercase;line-height:1;">${esc(e.title)}</span>
+            ${live ? `<span style="font-size:9px;font-weight:800;letter-spacing:0.08em;color:${T.on};background:${T.A};border-radius:4px;padding:2px 6px;">LIVE</span>` : ''}
+          </div>
+          <div style="font-size:12px;color:${steel};margin-top:5px;">${esc(e.place)}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+  <div style="padding:18px 0 24px;">
+    <div style="padding:0 18px 8px;">
+      <span style="font-size:11px;font-weight:600;color:${T.A2};letter-spacing:0.04em;">Thursday · August 14 · Support Center</span>
+      <h2 style="font-family:'BN Kragen';font-size:36px;color:${th.text};text-transform:uppercase;margin:6px 0 0;line-height:0.92;">The Day</h2>
+    </div>
+    <div style="padding:18px;">${rows}</div>
+  </div>`;
+}
+
+/* ════════════════════ tribes ════════════════════ */
+function tribesScreen() {
+  const T = theme();
+  const th = T.th;
+  const orange = '#FF5F00', bone = '#F3F7F5', navy = '#00253D';
+  const isBuf = S.tribeTab === 'buffalo';
+  const roster = ((S.boot.tribes || {})[S.tribeTab] || []).map(m => ({ ...m, initials: initials(m.name) }));
+  const capt = roster.find(m => m.role === 'Captain');
+  const tribe = {
+    name: isBuf ? 'Buffalo' : 'Texas Roadhouse',
+    captain: capt ? capt.name : '—',
+    count: roster.length,
+    mono: isBuf ? 'B' : 'TR',
+    crestBg: isBuf ? orange : bone,
+    crestFg: isBuf ? '#011220' : navy,
+    crestSub: isBuf ? '#00253D' : '#5C7B91',
+    chipBg: isBuf ? '#011220' : navy,
+    chipFg: isBuf ? orange : bone,
+    bBg: isBuf ? orange : 'transparent', bFg: isBuf ? navy : '#C7D3DB', bBorder: isBuf ? orange : 'rgba(255,255,255,0.14)',
+    rBg: !isBuf ? bone : 'transparent', rFg: !isBuf ? navy : '#C7D3DB', rBorder: !isBuf ? bone : 'rgba(255,255,255,0.14)',
+  };
+  return `
+  <div style="padding:18px 0 24px;">
+    <div style="padding:0 18px;">
+      <span style="font-size:11px;font-weight:600;color:${T.A2};letter-spacing:0.04em;">Two tribes · one champion</span>
+      <h2 style="font-family:'BN Kragen';font-size:36px;color:${th.text};text-transform:uppercase;margin:6px 0 0;line-height:0.92;">The Tribes</h2>
+    </div>
+    <div style="padding:16px 18px;display:flex;gap:8px;">
+      <button data-act="tribeTab" data-tab="buffalo" style="flex:1;padding:10px;border-radius:8px;font-weight:700;font-size:13px;background:${tribe.bBg};color:${tribe.bFg};border:1px solid ${tribe.bBorder};transition:all .15s;">Buffalo</button>
+      <button data-act="tribeTab" data-tab="roadhouse" style="flex:1;padding:10px;border-radius:8px;font-weight:700;font-size:13px;background:${tribe.rBg};color:${tribe.rFg};border:1px solid ${tribe.rBorder};transition:all .15s;">Texas Roadhouse</button>
+    </div>
+    <div style="padding:0 18px;">
+      <div style="background:${tribe.crestBg};border-radius:12px;padding:20px;display:flex;align-items:center;justify-content:space-between;overflow:hidden;position:relative;">
+        <div>
+          <div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${tribe.crestSub};">${tribe.count} teammates</div>
+          <div style="font-family:'BN Kragen';font-size:32px;color:${tribe.crestFg};text-transform:uppercase;line-height:0.95;margin-top:4px;">${tribe.name}</div>
+          <div style="font-size:12.5px;color:${tribe.crestSub};margin-top:6px;">Captain · ${esc(tribe.captain)}</div>
+        </div>
+        <div style="width:58px;height:58px;border-radius:50%;border:2px solid ${tribe.crestFg};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+          <span style="font-family:'BN Kragen';font-size:21px;color:${tribe.crestFg};">${tribe.mono}</span>
+        </div>
+      </div>
+    </div>
+    <div style="padding:18px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#8AA7B9;margin-bottom:10px;">Roster · ${tribe.count} strong</div>
+      <div style="display:flex;flex-direction:column;gap:9px;">
+        ${roster.length ? roster.map(m => `
+        <div style="display:flex;align-items:center;gap:12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:9px;padding:10px 13px;">
+          <span style="width:36px;height:36px;border-radius:8px;background:${tribe.chipBg};color:${tribe.chipFg};display:flex;align-items:center;justify-content:center;font-family:'BN Kragen';font-size:14px;flex-shrink:0;">${esc(m.initials)}</span>
+          <span style="flex:1;font-size:14px;font-weight:600;color:${th.text};">${esc(m.name)}</span>
+          ${m.role ? `<span style="font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#FF7F2E;border:1px solid rgba(255,95,0,0.4);border-radius:5px;padding:3px 7px;">${esc(m.role)}</span>` : ''}
+        </div>`).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No one on this roster yet.</div>`}
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ════════════════════ score room (player) ════════════════════ */
+function scoreScreen() {
+  const T = theme();
+  const th = T.th;
+  const scores = S.boot.scores || { revealed: false };
+  const myResults = (S.boot.myResults || []).map(r => ({ ...r, ptsLabel: r.pts > 0 ? ('+' + r.pts) : '—' }));
+  const myPoints = myResults.reduce((a, r) => a + (r.pts || 0), 0);
+
+  const banner = scores.revealed ? `
+    <div style="margin:16px 18px 0;">
+      <div style="background:${th.hero};border:1px solid ${T.A};border-radius:11px;padding:16px;position:relative;overflow:hidden;">
+        <div style="position:absolute;inset:0;background:radial-gradient(220px 120px at 50% 0%, ${T.glow}, transparent 70%);"></div>
+        <div style="position:relative;font-family:'BN Kragen';font-size:18px;color:${th.text};text-transform:uppercase;line-height:1;margin-bottom:12px;">Final standings</div>
+        <div style="position:relative;display:flex;gap:11px;">
+          <div style="flex:1;background:#FF5F00;border-radius:10px;padding:14px;">
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#00253D;">Buffalo</div>
+            <div style="font-family:'BN Kragen';font-size:38px;color:#011220;line-height:0.9;margin-top:4px;">${scores.buffalo}</div>
+          </div>
+          <div style="flex:1;background:#141210;border-radius:10px;padding:14px;">
+            <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#F5C518;">Texas Roadhouse</div>
+            <div style="font-family:'BN Kragen';font-size:38px;color:#E0322E;line-height:0.9;margin-top:4px;">${scores.roadhouse}</div>
+          </div>
+        </div>
+        <div style="position:relative;font-size:11.5px;color:${th.sub};margin-top:10px;">${scores.buffalo === scores.roadhouse ? "Dead even — anyone's game" : (scores.buffalo > scores.roadhouse ? 'Buffalo leads by ' + (scores.buffalo - scores.roadhouse) : 'Texas Roadhouse leads by ' + (scores.roadhouse - scores.buffalo))}</div>
+      </div>
+    </div>` : `
+    <div style="margin:16px 18px 0;background:${th.hero};border:1px solid ${T.A};border-radius:11px;padding:16px;display:flex;align-items:center;gap:13px;position:relative;overflow:hidden;">
+      <div style="position:absolute;inset:0;background:radial-gradient(220px 120px at 50% 0%, ${T.glow}, transparent 70%);"></div>
+      ${lockSvg(T.A, 26).replace('style="flex-shrink:0;"', 'style="position:relative;flex-shrink:0;"')}
+      <div style="position:relative;">
+        <div style="font-family:'BN Kragen';font-size:18px;color:${th.text};text-transform:uppercase;line-height:1;">Scores are sealed</div>
+        <div style="font-size:11.5px;color:${th.sub};margin-top:4px;">Standings stay locked until the Closing Ceremony · 4:00 PM</div>
+      </div>
+    </div>`;
+
+  return `
+  <div style="padding:18px 0 24px;">
+    <div style="padding:0 18px;">
+      <span style="font-size:11px;font-weight:600;color:${T.A2};letter-spacing:0.04em;">${scores.revealed ? 'The board is live' : 'Sealed until the 4:00 PM reveal'}</span>
+      <h2 style="font-family:'BN Kragen';font-size:36px;color:${th.text};text-transform:uppercase;margin:6px 0 0;line-height:0.92;">Score Room</h2>
+    </div>
+    ${banner}
+    <div style="padding:20px 18px 0;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:11px;">
+        <span style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${th.sub};">Your results</span>
+        <div style="display:flex;align-items:baseline;gap:6px;">
+          <span style="font-family:'BN Kragen';font-size:22px;color:${T.A};line-height:1;">${myPoints}</span>
+          <span style="font-size:11px;color:${th.sub};">your pts</span>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:9px;">
+        ${myResults.length ? myResults.map(r => `
+        <div style="display:flex;align-items:center;gap:12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:9px;padding:11px 13px;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(r.game)}</div>
+            <div style="font-size:11px;color:${th.sub};">${esc(r.detail || '')}</div>
+          </div>
+          <span style="font-family:'BN Kragen';font-size:17px;color:${T.A};">${esc(r.ptsLabel)}</span>
+        </div>`).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No personal results logged yet — go play something.</div>`}
+      </div>
+      <div style="margin-top:14px;background:rgba(255,255,255,0.04);border:1px dashed rgba(255,255,255,0.18);border-radius:10px;padding:13px 15px;display:flex;align-items:center;gap:11px;">
+        ${lockSvg('#8AA7B9', 18)}
+        <span style="font-size:12.5px;color:${th.sub};line-height:1.4;">These are your personal scores. The full team standings ${scores.revealed ? 'are live above.' : 'stay locked until an admin releases them at the Closing Ceremony.'}</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ════════════════════ immunity (static clues) ════════════════════ */
+const CLUES = [
+  { n: '1', title: 'Where the herd refuels', hint: 'Claimed — idol secured', status: 'found' },
+  { n: '2', title: 'Beneath the bleachers', hint: 'Claimed — idol secured', status: 'found' },
+  { n: '3', title: 'Where deliveries arrive', hint: 'Claimed — idol secured', status: 'found' },
+  { n: '4', title: 'The quietest corner of the Cafe', hint: 'Active — solve to claim', status: 'open' },
+  { n: '5', title: 'Higher than everyone looks', hint: 'Active — solve to claim', status: 'open' },
+  { n: '6', title: 'Clue unlocks at noon', hint: 'Locked until 12:00 PM', status: 'locked' },
+  { n: '7', title: 'Clue unlocks at 1:30', hint: 'Locked until 1:30 PM', status: 'locked' },
+];
+function immunityScreen() {
+  const T = theme();
+  const th = T.th;
+  const steel = '#8AA7B9', muted = '#5C7B91', bone = th.text;
+  const clues = CLUES.map(c => {
+    const found = c.status === 'found', open = c.status === 'open';
+    return {
+      ...c,
+      bg: open ? th.dim : 'rgba(255,255,255,0.04)',
+      border: open ? T.A : 'rgba(255,255,255,0.08)',
+      iconBg: found ? T.A : (open ? th.dim : 'rgba(255,255,255,0.08)'),
+      numColor: found ? T.on : (open ? T.A : steel),
+      titleColor: c.status === 'locked' ? steel : bone,
+      tag: found ? 'Found' : (open ? 'Open' : 'Locked'),
+      tagColor: found ? T.A2 : (open ? T.A : muted),
+    };
+  });
+  return `
+  <div style="padding:0 0 28px;">
+    <div style="position:relative;padding:26px 18px 24px;background:${th.hero};overflow:hidden;">
+      <div style="position:absolute;inset:0;background:radial-gradient(360px 240px at 50% 0%, ${T.glow}, transparent 70%);"></div>
+      <div style="position:relative;text-align:center;">
+        <svg width="40" height="44" viewBox="0 0 24 24" fill="none" style="margin-bottom:8px;"><path d="M12 2l8 3.5v6C20 17 16.5 21 12 22.5 7.5 21 4 17 4 11.5v-6L12 2z" stroke="${T.A}" stroke-width="1.8" stroke-linejoin="round"/><path d="M9.2 11.8l2 2 3.6-4" stroke="${T.A}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span style="display:block;font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};">Hidden immunity</span>
+        <h2 style="font-family:'BN Kragen';font-size:34px;color:${th.text};text-transform:uppercase;margin:7px 0 0;line-height:0.92;">Find the Idols</h2>
+        <p style="font-size:13.5px;line-height:1.55;color:#C7D3DB;max-width:290px;margin:12px auto 0;">Ten clues are hidden across the Support Center. Crack them to claim an idol — each one is worth immunity and bonus points for your tribe.</p>
+      </div>
+    </div>
+    <div style="padding:18px;">
+      <div style="background:rgba(255,95,0,0.10);border:1px solid rgba(255,95,0,0.4);border-radius:10px;padding:15px;display:flex;align-items:center;gap:14px;">
+        <div style="font-family:'BN Kragen';font-size:38px;color:#FF5F00;line-height:0.9;">3<span style="font-size:19px;color:#8AA7B9;">/10</span></div>
+        <div>
+          <div style="font-size:13px;font-weight:700;color:${th.text};">Idols claimed so far</div>
+          <div style="font-size:11.5px;color:#8AA7B9;margin-top:2px;">Who's holding them stays secret until Tribal Council</div>
+        </div>
+      </div>
+    </div>
+    <div style="padding:0 18px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#8AA7B9;margin-bottom:11px;">The clues</div>
+      <div style="display:flex;flex-direction:column;gap:9px;">
+        ${clues.map(cl => `
+        <div style="display:flex;align-items:center;gap:13px;background:${cl.bg};border:1px solid ${cl.border};border-radius:9px;padding:13px;">
+          <span style="width:30px;height:30px;border-radius:50%;background:${cl.iconBg};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'BN Kragen';font-size:13px;color:${cl.numColor};">${cl.n}</span>
+          <div style="flex:1;">
+            <div style="font-size:13.5px;font-weight:700;color:${cl.titleColor};">${esc(cl.title)}</div>
+            <div style="font-size:11.5px;color:#8AA7B9;margin-top:2px;">${esc(cl.hint)}</div>
+          </div>
+          <span style="font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${cl.tagColor};">${cl.tag}</span>
+        </div>`).join('')}
+      </div>
+    </div>
+    <div style="margin:20px 18px 0;background:${T.A};border-radius:10px;padding:15px;text-align:center;box-shadow:0 0 28px ${T.glow};">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:${T.on};">Final reveal</div>
+      <div style="font-family:'BN Kragen';font-size:20px;color:${T.on};margin-top:3px;text-transform:uppercase;">Tribal Council · 3:30 PM</div>
+    </div>
+  </div>`;
+}
+
+/* ════════════════════ dip off — sign up ════════════════════ */
+function dipSignupScreen() {
+  const T = theme();
+  const th = T.th;
+  const dip = S.boot.dip || { counts: { buffalo: 0, roadhouse: 0 }, entries: [], myEntry: false };
+  const myTeam = S.boot.user.team || 'buffalo';
+  const myDipCount = dip.counts[myTeam] || 0;
+  const iSigned = !!dip.myEntry;
+  const teamFull = myDipCount >= 5 && !iSigned;
+  const canSign = !iSigned && !teamFull && S.boot.settings.eventMode !== 'gameday';
+  const myList = (dip.entries || []).filter(d => d.team === myTeam);
+
+  let action = '';
+  if (iSigned) action = `
+    <div style="background:${T.dim};border:1px solid ${T.A};border-radius:11px;padding:16px;">
+      <div style="display:flex;align-items:center;gap:10px;">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="${T.A}" stroke-width="2"/><path d="M8 12l3 3 5-6" stroke="${T.A}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <div style="flex:1;"><div style="font-size:14.5px;font-weight:800;color:${th.text};">You're on the cook list</div><div style="font-size:11.5px;color:${th.sub};">Bring your dip to the Cafe before 11:30.</div></div>
+      </div>
+      ${S.boot.settings.eventMode !== 'gameday' ? `<button data-act="dipLeave" style="width:100%;margin-top:13px;background:transparent;border:1px solid ${th.line};color:${th.sub};font-weight:700;font-size:13px;text-align:center;padding:11px;border-radius:8px;">Drop out of the Dip Off</button>` : ''}
+    </div>`;
+  else if (canSign) action = `
+    <button data-act="dipEnter" style="width:100%;background:${T.A};color:${T.on};border-radius:11px;padding:16px;display:flex;align-items:center;gap:13px;box-shadow:0 8px 22px ${T.glow};">
+      ${dipSvg(T.on)}
+      <div style="flex:1;text-align:left;"><div style="font-size:15px;font-weight:800;">Sign up to make a dip</div><div style="font-size:11.5px;opacity:0.82;">${5 - myDipCount} of 5 spots left for your tribe</div></div>
+    </button>`;
+  else if (teamFull) action = `
+    <div style="background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:11px;padding:16px;text-align:center;">
+      <div style="font-size:13.5px;font-weight:700;color:${th.text};">Your tribe's 5 cook spots are full</div>
+      <div style="font-size:11.5px;color:${th.sub};margin-top:3px;">Come hungry — you can still vote on judging day.</div>
+    </div>`;
+  else action = `
+    <div style="background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:11px;padding:16px;text-align:center;">
+      <div style="font-size:13.5px;font-weight:700;color:${th.text};">Game Day — the cook list is locked</div>
+      <div style="font-size:11.5px;color:${th.sub};margin-top:3px;">Head to the Cafe at 11:30 and vote for your favorite.</div>
+    </div>`;
+
+  return `
+  <div style="padding:0 0 28px;">
+    <div style="padding:20px 18px 20px;background:linear-gradient(180deg, ${th.hero}, ${th.surface});position:relative;overflow:hidden;">
+      <span style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A2};">Wild Card · The Cafe</span>
+      <h2 style="font-family:'BN Kragen';font-size:34px;color:${th.text};text-transform:uppercase;margin:8px 0 0;line-height:0.92;">The Dip Off</h2>
+      <p style="font-size:13.5px;line-height:1.55;color:#C7D3DB;max-width:300px;margin:11px 0 0;">Five cooks per tribe bring their best dip. Judging is at 11:30 — then the whole camp votes for a favorite.</p>
+    </div>
+    <div style="padding:18px;display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+      <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-radius:10px;padding:14px;">
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#FF7F2E;">Buffalo</div>
+        <div style="font-family:'BN Kragen';font-size:30px;color:${th.text};line-height:1;margin-top:6px;">${dip.counts.buffalo || 0}<span style="font-size:16px;color:#8AA7B9;"> / 5</span></div>
+        <div style="font-size:11px;color:#8AA7B9;margin-top:3px;">cooks signed up</div>
+      </div>
+      <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-radius:10px;padding:14px;">
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#E0322E;">Texas Roadhouse</div>
+        <div style="font-family:'BN Kragen';font-size:30px;color:${th.text};line-height:1;margin-top:6px;">${dip.counts.roadhouse || 0}<span style="font-size:16px;color:#8AA7B9;"> / 5</span></div>
+        <div style="font-size:11px;color:#8AA7B9;margin-top:3px;">cooks signed up</div>
+      </div>
+    </div>
+    <div style="padding:0 18px;">${action}</div>
+    <div style="padding:18px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:#8AA7B9;margin-bottom:10px;">Your tribe's cooks</div>
+      ${myList.length ? `
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        ${myList.map(c => `
+        <div style="display:flex;align-items:center;gap:11px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:9px;padding:11px 13px;">
+          <span style="width:30px;height:30px;border-radius:50%;background:${T.dim};display:flex;align-items:center;justify-content:center;flex-shrink:0;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M4 11h16M5 11a7 7 0 0014 0M8 20h8" stroke="${T.A}" stroke-width="2" stroke-linecap="round"/></svg></span>
+          <span style="flex:1;font-size:13.5px;font-weight:700;color:${th.text};">${esc(c.name || ('Dip No. ' + c.no))}</span>
+          ${c.isMine ? `<span style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:${T.on};background:${T.A};border-radius:4px;padding:3px 7px;">YOU</span>` : ''}
+        </div>`).join('')}
+      </div>` : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No cooks yet — be the first to sign up.</div>`}
+      <div style="display:flex;align-items:center;gap:8px;margin-top:14px;padding:11px 13px;background:rgba(255,255,255,0.03);border:1px dashed ${th.line};border-radius:9px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z" stroke="${th.sub}" stroke-width="1.8"/></svg>
+        <span style="font-size:11.5px;color:${th.sub};line-height:1.4;">Cooks stay anonymous to voters — dips are numbered until the results are read.</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ════════════════════ dip off — vote ════════════════════ */
+function dipVoteScreen() {
+  const T = theme();
+  const th = T.th;
+  const dip = S.boot.dip || { entries: [], myVote: null };
+  const entries = dip.entries || [];
+  const myVote = dip.myVote;
+  const isGameDay = S.boot.settings.eventMode === 'gameday';
+  const myIdx = entries.findIndex(d => d.id === myVote);
+  const myDipVoteNo = myIdx >= 0 ? myIdx + 1 : 0;
+
+  return `
+  <div style="padding:0 0 28px;">
+    <div style="padding:20px 18px 20px;background:linear-gradient(180deg, ${th.hero}, ${th.surface});position:relative;overflow:hidden;">
+      <span style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A2};">Game Day · The Cafe</span>
+      <h2 style="font-family:'BN Kragen';font-size:34px;color:${th.text};text-transform:uppercase;margin:8px 0 0;line-height:0.92;">Vote a Dip</h2>
+      <p style="font-size:13.5px;line-height:1.55;color:#C7D3DB;max-width:300px;margin:11px 0 0;">Taste the whole spread, then cast your one vote. Dips are numbered and anonymous until the reveal.</p>
+    </div>
+    ${!isGameDay ? `
+    <div style="margin:16px 18px 0;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:10px;padding:13px 15px;font-size:12.5px;color:${th.sub};">Voting opens on Game Day — for now, check out the cook list on the Dip Off page.</div>` : ''}
+    ${myVote ? `
+    <div style="margin:16px 18px 0;background:${T.dim};border:1px solid ${T.A};border-radius:10px;padding:13px 15px;display:flex;align-items:center;gap:10px;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="9" stroke="${T.A}" stroke-width="2"/><path d="M8 12l3 3 5-6" stroke="${T.A}" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span style="font-size:12.5px;font-weight:700;color:${th.text};">Your vote's in for Dip No. ${myDipVoteNo}. Tap another to change it.</span>
+    </div>` : ''}
+    <div style="padding:16px 18px 0;display:grid;grid-template-columns:1fr 1fr;gap:11px;">
+      ${entries.map((d, i) => {
+        const mine = d.id === myVote;
+        return `
+        <button data-act="dipVote" data-id="${d.id}" style="background:${mine ? T.dim : 'rgba(255,255,255,0.04)'};border:1.5px solid ${mine ? T.A : 'rgba(255,255,255,0.10)'};border-radius:12px;padding:16px 13px;text-align:center;transition:all .15s;">
+          <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${mine ? T.A2 : th.sub};">Dip</div>
+          <div style="font-family:'BN Kragen';font-size:40px;line-height:0.9;color:${mine ? T.A : th.text};margin-top:3px;">${i + 1}</div>
+          <div style="margin-top:11px;font-size:12px;font-weight:800;color:${mine ? T.A : th.sub};display:flex;align-items:center;justify-content:center;gap:6px;">
+            ${mine ? checkSvg(T.A, 14, 2.6) + 'Your vote' : 'Tap to vote'}
+          </div>
+        </button>`;
+      }).join('')}
+      ${entries.length === 0 ? `<div style="grid-column:1/-1;font-size:12.5px;color:${th.sub};font-style:italic;">No dips entered — the ballot builds from the sign-up list.</div>` : ''}
+    </div>
+    <div style="padding:16px 18px 0;">
+      <div style="display:flex;align-items:center;gap:8px;padding:11px 13px;background:rgba(255,255,255,0.03);border:1px dashed ${th.line};border-radius:9px;">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><circle cx="12" cy="12" r="9" stroke="${th.sub}" stroke-width="1.8"/><path d="M12 8v5" stroke="${th.sub}" stroke-width="1.8" stroke-linecap="round"/><circle cx="12" cy="16" r="1" fill="${th.sub}"/></svg>
+        <span style="font-size:11.5px;color:${th.sub};line-height:1.4;">One vote per person. The winning dip is revealed at the 4:00 closing ceremony.</span>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ════════════════════ relay race ════════════════════ */
+function relayScreen() {
+  const T = theme();
+  const th = T.th;
+  const relay = S.boot.relay || { legs: [], roster: {}, myLeg: null };
+  const myTeam = S.boot.user.team || 'buffalo';
+  const isGameDay = S.boot.settings.eventMode === 'gameday';
+  const hasPick = !!relay.myLeg;
+  const myLegObj = (relay.legs || []).find(l => l.id === relay.myLeg);
+
+  const legs = (relay.legs || []).map(l => {
+    const r = (relay.roster || {})[l.id] || { buffalo: [], roadhouse: [] };
+    const mineList = r[myTeam] || [];
+    const iAmHere = relay.myLeg === l.id;
+    const full = mineList.length >= l.cap;
+    const rosterNames = mineList.length ? mineList.join(' · ') : 'No one yet — be first';
+    let btn = '';
+    if (iAmHere) btn = `<button data-act="relayLeave" style="flex-shrink:0;background:${T.A};color:${T.on};font-weight:800;font-size:12px;padding:8px 14px;border-radius:8px;display:flex;align-items:center;gap:5px;">${checkSvg(T.on, 13, 2.6)}You're in</button>`;
+    else if (full) btn = `<span style="flex-shrink:0;font-size:11.5px;font-weight:700;color:${th.sub};">Leg full</span>`;
+    else if (isGameDay) btn = `<span style="flex-shrink:0;font-size:11.5px;font-weight:700;color:${th.sub};">Locked</span>`;
+    else btn = `<button data-act="relayJoin" data-id="${esc(l.id)}" style="flex-shrink:0;background:rgba(255,255,255,0.06);border:1px solid ${T.A};color:${T.A};font-weight:800;font-size:12px;padding:8px 14px;border-radius:8px;">${hasPick ? 'Switch here' : 'Sign up'}</button>`;
+    return `
+    <div style="background:${th.panel};border:1px solid ${iAmHere ? T.A : th.panelBorder};border-radius:11px;padding:15px 16px;">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+        <div style="min-width:0;flex:1;">
+          <div style="font-size:15px;font-weight:800;color:${th.text};">${esc(l.name)}</div>
+          <div style="font-size:12px;color:${th.sub};line-height:1.45;margin-top:4px;">${esc(l.desc || '')}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;">
+          <div style="font-family:'BN Kragen';font-size:20px;color:${T.A};line-height:1;">${mineList.length} / ${l.cap}</div>
+          <div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;color:${th.sub};margin-top:3px;">${full ? 'Full' : (l.cap - mineList.length) + ' left'}</div>
+        </div>
+      </div>
+      <div style="margin-top:11px;padding-top:10px;border-top:1px solid ${th.line};display:flex;align-items:center;gap:10px;">
+        <span style="flex:1;font-size:11.5px;color:${th.sub};min-width:0;">${esc(rosterNames)}</span>
+        ${btn}
+      </div>
+    </div>`;
+  }).join('');
+
+  return `
+  <div style="padding:0 0 28px;">
+    <div style="padding:20px 18px 20px;background:linear-gradient(180deg, ${th.hero}, ${th.surface});position:relative;overflow:hidden;">
+      <span style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A2};">Field Finale · Before Closing</span>
+      <h2 style="font-family:'BN Kragen';font-size:34px;color:${th.text};text-transform:uppercase;margin:8px 0 0;line-height:0.92;">The Relay</h2>
+      <p style="font-size:13.5px;line-height:1.55;color:#C7D3DB;max-width:300px;margin:11px 0 0;">One big race, several legs. Sign up for <strong style="color:${th.text};">one leg only</strong> — even if you're already in other games.</p>
+    </div>
+    <div style="padding:16px 18px 0;">
+      ${hasPick ? `
+      <div style="background:${T.dim};border:1px solid ${T.A};border-radius:10px;padding:13px 15px;display:flex;align-items:center;gap:10px;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M6 8l4 2-2 4 5 1 1 4M14 5a1.5 1.5 0 100-.01" stroke="${T.A}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span style="font-size:12.5px;font-weight:700;color:${th.text};">You're running: ${esc(myLegObj ? myLegObj.name : '')}</span>
+      </div>` : `
+      <div style="background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:10px;padding:13px 15px;font-size:12.5px;color:${th.sub};">Pick the one leg you'll run for your tribe.</div>`}
+    </div>
+    <div style="padding:14px 18px 0;display:flex;flex-direction:column;gap:11px;">${legs}</div>
+  </div>`;
+}
+
+/* ════════════════════ desktop games board (≥940px) ════════════════════ */
+function deskGamesScreen() {
+  const T = theme();
+  const boot = S.boot;
+  const user = boot.user;
+  const isGameDay = boot.settings.eventMode === 'gameday';
+  const dA = T.deskAccent, dOn = T.deskAccentOn, dDim = T.deskAccentDim;
+  const myName = user.name || '';
+
+  const mkCard = (g) => {
+    const gs = gameState(g);
+    const chips = gs.allRoster.slice(0, 7);
+    const more = Math.max(0, gs.allRoster.length - 7);
+    const rowBg = gs.st === 'signed' ? dDim : '#fff';
+    const rowBorder = gs.st === 'signed' ? dA : '#E4EAE8';
+    let action = '';
+    if (gs.st === 'open') action = `<button data-act="signup" data-id="${esc(g.id)}" style="width:100%;background:${dA};color:${dOn};font-weight:800;font-size:13px;padding:10px;border-radius:8px;">Sign up</button>`;
+    else if (gs.st === 'signed' && gs.showCancel) action = `<button data-act="cancelSignup" data-id="${esc(g.id)}" style="width:100%;background:${dDim};border:1px solid ${dA};color:${dA};font-weight:800;font-size:13px;padding:10px;border-radius:8px;display:flex;align-items:center;justify-content:center;gap:6px;">${checkSvg(dA, 14, 2.6)}You're in · cancel</button>`;
+    else if (gs.st === 'signed') action = `<div style="width:100%;text-align:center;background:${dDim};border:1px solid ${dA};color:${dA};font-weight:800;font-size:11.5px;padding:9px;border-radius:8px;">You're in</div>`;
+    else if (gs.st === 'conflict') action = `<div style="width:100%;text-align:center;background:#FBF1E6;border:1px solid #EBCBA0;color:#B0741C;font-weight:700;font-size:11.5px;padding:9px;border-radius:8px;">Overlaps ${esc(gs.conflictWith)}</div>`;
+    else if (gs.st === 'full') action = `<div style="width:100%;text-align:center;background:#EEF2F1;color:#6D7C83;font-weight:700;font-size:11.5px;padding:9px;border-radius:8px;">You've filled both spots</div>`;
+    else if (gs.st === 'locked') action = `<div style="width:100%;text-align:center;background:#EEF2F1;color:#9AA7A5;font-weight:700;font-size:11.5px;padding:9px;border-radius:8px;">Sign-ups locked</div>`;
+    else if (gs.st === 'tribefull') action = `<div style="width:100%;text-align:center;background:#EEF2F1;color:#6D7C83;font-weight:700;font-size:11.5px;padding:9px;border-radius:8px;">${esc(T.myTeamName)} spots are full</div>`;
+    else if (gs.st === 'openplay') action = `<div style="width:100%;text-align:center;background:${dDim};border:1px dashed ${dA};color:${dA};font-weight:800;font-size:11.5px;padding:9px;border-radius:8px;">Open play · no sign-up needed</div>`;
+    const capLabel = g.openPlay ? 'Open play' : (gs.myTribeRoster.length + ' / ' + g.cap + ' ' + T.myTeamName);
+    return `
+    <div style="background:${rowBg};border:1px solid ${rowBorder};border-radius:10px;padding:15px 16px;display:flex;flex-direction:column;">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
+        <button data-act="openGame" data-id="${esc(g.id)}" style="min-width:0;text-align:left;">
+          <div style="font-size:15.5px;font-weight:800;color:#00253D;line-height:1.2;">${esc(g.name)}</div>
+          <div style="font-size:12px;color:#6D7C83;margin-top:3px;">${esc(g.venue || '')} · ${esc(g.players)} · ${esc(g.pointsLabel || '')}</div>
+        </button>
+        ${g.needsRef ? `<span style="flex-shrink:0;font-size:9.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:${dA};border:1px solid ${dA};border-radius:5px;padding:2px 7px;">Ref</span>` : ''}
+      </div>
+      ${!g.openPlay ? `<div style="margin-top:9px;font-size:11px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${dA};">${esc(capLabel)}</div>` : ''}
+      <div style="margin-top:12px;display:flex;align-items:center;gap:8px;min-height:30px;">
+        ${gs.allRoster.length ? `
+        <div style="display:flex;">
+          ${chips.map(n => `<span title="${esc(n)}" style="width:28px;height:28px;border-radius:50%;margin-left:-6px;border:2px solid ${rowBg};background:${T.deskChipBg};color:${T.deskChipFg};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;">${esc(initials(n))}</span>`).join('')}
+        </div>
+        <span style="font-size:11.5px;color:#6D7C83;">${gs.allRoster.length} signed up${more ? ' · +' + more + ' more' : ''}</span>`
+        : (!g.openPlay ? '<span style="font-size:11.5px;color:#9AA7A5;font-style:italic;">No one signed up yet</span>' : '')}
+      </div>
+      <div style="margin-top:13px;">${action}</div>
+    </div>`;
+  };
+
+  const blocksHtml = (boot.blocks || []).map(b => {
+    const games = (boot.games || []).filter(g => g.block === b.id);
+    if (!games.length) return '';
+    return `
+    <div>
+      <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:13px;padding-bottom:11px;border-bottom:2px solid #00253D;">
+        <span style="font-family:'BN Kragen';font-size:22px;color:#00253D;text-transform:uppercase;">${esc(b.label)}</span>
+        <span style="font-size:12.5px;font-weight:700;color:${dA};letter-spacing:0.02em;">${esc(b.time)}</span>
+        <span style="font-size:12px;color:#6D7C83;">· ${esc(b.place)}</span>
+        <span style="margin-left:auto;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#9AA7A5;">${games.length} games</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${games.map(mkCard).join('')}</div>
+    </div>`;
+  }).join('');
+
+  const mySignups = (boot.mySignups || []).map(x => {
+    const g = (boot.games || []).find(gg => gg.id === x.gameId);
+    return { ...x, where: g ? g.venue : '' };
+  });
+
+  return `
+  <div style="flex:1;display:flex;min-height:0;background:#F3F7F5;">
+    <div class="scrl" style="flex:1;min-width:0;overflow-y:auto;background:#F3F7F5;">
+      <div style="padding:30px 36px 22px;background:#00253D;position:relative;overflow:hidden;">
+        <img src="/assets/logos/buffalo-white.png" alt="" style="position:absolute;right:-40px;top:-30px;width:260px;opacity:0.06;"/>
+        <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${dA};">Sign up for games · August 14</div>
+        <h1 style="font-family:'BN Kragen';font-size:40px;color:#F3F7F5;text-transform:uppercase;line-height:0.92;margin:9px 0 0;">The day's run of play</h1>
+        <p style="font-size:14px;color:#C7D3DB;max-width:620px;line-height:1.55;margin:11px 0 0;">Browse every game by time block, see who's already in, and claim your spots. You can sign up for up to <strong style="color:#fff;">two games</strong> — as long as they don't overlap.</p>
+        ${isGameDay ? `
+        <div style="display:inline-flex;align-items:center;gap:8px;margin-top:15px;background:rgba(255,95,0,0.16);border:1px solid ${dA};border-radius:8px;padding:9px 14px;">
+          <span style="width:8px;height:8px;border-radius:50%;background:${dA};"></span>
+          <span style="font-size:12.5px;font-weight:700;color:#F3F7F5;">Game Day is live — sign-ups are locked.</span>
+        </div>` : ''}
+      </div>
+      <div style="padding:26px 36px 40px;display:flex;flex-direction:column;gap:26px;">${blocksHtml}</div>
+    </div>
+    <div style="width:320px;flex-shrink:0;background:#fff;border-left:1px solid #E4EAE8;display:flex;flex-direction:column;">
+      <div style="padding:24px 22px 18px;border-bottom:1px solid #EEF2F1;">
+        <div style="font-family:'BN Kragen';font-size:20px;color:#00253D;text-transform:uppercase;">My games</div>
+        <div style="font-size:12.5px;color:#6D7C83;margin-top:4px;">${mySignups.length} of 2 spots claimed · ${2 - mySignups.length} left</div>
+      </div>
+      <div class="scrl" style="flex:1;overflow-y:auto;padding:18px 22px;">
+        ${mySignups.length ? `
+        <div style="display:flex;flex-direction:column;gap:11px;">
+          ${mySignups.map(m => `
+          <div style="border:1px solid ${dA};background:${dDim};border-radius:10px;padding:14px;">
+            <div style="font-size:14.5px;font-weight:800;color:#00253D;">${esc(m.game)}</div>
+            <div style="font-size:12px;color:#6D7C83;margin-top:4px;">${esc(m.slotLabel)} · ${esc(m.where || '')}</div>
+            ${!isGameDay ? `<button data-act="cancelSignup" data-id="${esc(m.gameId)}" style="margin-top:11px;font-size:11.5px;font-weight:700;color:${dA};display:flex;align-items:center;gap:5px;">Cancel this spot</button>` : ''}
+          </div>`).join('')}
+        </div>` : `
+        <div style="text-align:center;padding:30px 10px;">
+          <svg width="42" height="42" viewBox="0 0 24 24" fill="none" style="margin:0 auto;"><rect x="4" y="5" width="16" height="16" rx="2" stroke="#C9D3D2" stroke-width="1.8"/><path d="M4 9h16M8 3v3M16 3v3M9 14l2 2 4-4" stroke="#C9D3D2" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <div style="font-size:13.5px;font-weight:700;color:#6D7C83;margin-top:12px;">No games claimed yet</div>
+          <div style="font-size:12px;color:#9AA7A5;margin-top:4px;line-height:1.5;">Pick up to two games from the board. We'll flag anything that overlaps.</div>
+        </div>`}
+      </div>
+      <div style="padding:16px 22px;border-top:1px solid #EEF2F1;background:#FAFCFB;">
+        <div style="display:flex;align-items:center;gap:9px;">
+          <span style="width:34px;height:34px;border-radius:8px;background:${T.deskChipBg};color:${T.deskChipFg};display:flex;align-items:center;justify-content:center;font-family:'BN Kragen';font-size:13px;">${esc(initials(myName))}</span>
+          <div style="min-width:0;">
+            <div style="font-size:13px;font-weight:800;color:#00253D;">${esc(myName)}</div>
+            <div style="font-size:11px;color:#6D7C83;">${esc(T.myTeamName)}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ════════════════════ admin center ════════════════════ */
+// Static venue timeline — ported verbatim from the mockup's timelineData().
+function timelineData() {
+  const T0 = 480, T1 = 990, span = T1 - T0;   // 8:00 AM → 4:30 PM
+  const fmt = (m) => { let h = Math.floor(m / 60), mm = m % 60; let hh = h % 12; if (hh === 0) hh = 12; return hh + ':' + (mm < 10 ? '0' + mm : mm); };
+  const cat = {
+    bracket: { c: '#FF5F00', t: 'rgba(255,95,0,0.14)' },
+    mtwi: { c: '#C2741C', t: 'rgba(194,116,28,0.13)' },
+    field: { c: '#3E6075', t: 'rgba(62,96,117,0.13)' },
+    relay: { c: '#1F8A7A', t: 'rgba(31,138,122,0.13)' },
+    inflate: { c: '#5A57B0', t: 'rgba(90,87,176,0.13)' },
+    wild: { c: '#B0892A', t: 'rgba(176,137,42,0.15)' },
+    struct: { c: '#6B7A82', t: 'rgba(107,122,130,0.10)' },
+  };
+  const raw = [
+    { venue: 'Main Lawn', items: [['Check-In & Paint', 480, 540, 'struct'], ['Opening Ceremony', 540, 570, 'struct'], ['Ring Around Teammate', 570, 615, 'mtwi'], ['Back to Back Stand', 615, 645, 'mtwi'], ['Lunch & Halftime', 720, 780, 'struct'], ['Beer Pong', 780, 825, 'field'], ['Immunity Reveal', 930, 960, 'wild'], ['Crown Champion', 960, 990, 'struct']] },
+    { venue: 'The Lawn', items: [['Cornhole', 630, 720, 'bracket'], ['Island Flip', 780, 810, 'field'], ['Charades', 810, 840, 'field'], ['HORSE BB', 840, 870, 'bracket']] },
+    { venue: 'The Courts', items: [['Pickleball', 630, 720, 'bracket']] },
+    { venue: 'The Cafe', items: [['Penny Stacking', 570, 600, 'mtwi'], ['Name That Song', 600, 630, 'mtwi'], ['Ping Pong', 630, 690, 'bracket'], ['Dip Off Judging', 690, 720, 'wild'], ['Tribal Memory', 780, 810, 'field'], ['State of Affairs', 810, 840, 'mtwi']] },
+    { venue: 'Trampolines', items: [['Human Frogger', 780, 810, 'relay'], ['Tic-Tac-Toe', 810, 840, 'relay'], ['Balance the Ball', 840, 870, 'relay'], ['Relay Finals', 870, 900, 'relay']] },
+    { venue: 'Lot & Inflatables', items: [['Nerf Range', 570, 630, 'field'], ['Wipeout', 780, 825, 'inflate'], ['Big Wheels', 825, 855, 'field'], ['Skee Ball', 855, 900, 'inflate']] },
+  ];
+  const lanes = raw.map(l => ({
+    venue: l.venue,
+    items: l.items.map(([name, a, b, k]) => ({
+      name, time: fmt(a) + '–' + fmt(b), left: ((a - T0) / span * 100) + '%', width: ((b - a) / span * 100) + '%',
+      color: cat[k].c, bg: cat[k].t,
+    })),
+  }));
+  const hours = [];
+  for (let m = 480; m <= 990; m += 60) { let h = Math.floor(m / 60), hh = h % 12; if (hh === 0) hh = 12; hours.push({ label: hh + (h < 12 ? ' AM' : ' PM'), left: ((m - T0) / span * 100) + '%' }); }
+  const nowLeft = ((660 - T0) / span * 100) + '%';
+  const legend = [{ label: 'Bracket', c: cat.bracket.c }, { label: 'Minute to Win It', c: cat.mtwi.c }, { label: 'Field & Yard', c: cat.field.c }, { label: 'Relay & Tramps', c: cat.relay.c }, { label: 'Inflatables', c: cat.inflate.c }, { label: 'Special', c: cat.wild.c }];
+  return { lanes, hours, nowLeft, legend };
+}
+
+function admTeamChip(team) {
+  if (team === 'buffalo') return '<span style="display:inline-block;margin-top:4px;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#011220;background:#FF5F00;border-radius:5px;padding:2px 7px;">Buffalo</span>';
+  if (team === 'roadhouse') return '<span style="display:inline-block;margin-top:4px;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#F3F7F5;background:#00253D;border-radius:5px;padding:2px 7px;">Texas Roadhouse</span>';
+  return '<span style="display:inline-block;margin-top:4px;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#6D7C83;background:#EEF2F1;border-radius:5px;padding:2px 7px;">No tribe</span>';
+}
+
+function admPeopleSection(ov) {
+  const rows = (ov.people || []).map(p => {
+    const options = (ov.gamesCatalog || []).filter(g => !(p.games || []).some(x => x.gameId === g.id));
+    return `
+    <div style="display:flex;align-items:center;gap:14px;padding:13px 18px;border-bottom:1px solid #EEF2F1;">
+      <div style="width:150px;flex-shrink:0;">
+        <div style="font-size:14px;font-weight:700;color:#00253D;">${esc(p.name)}</div>
+        ${admTeamChip(p.team)}
+      </div>
+      <div style="flex:1;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+        ${(p.games || []).map(gm => `<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#00253D;background:#EEF2F1;border:1px solid #DCE3E2;border-radius:6px;padding:5px 8px;">${esc(gm.name)}<button data-act="admRemoveGame" data-uid="${p.id}" data-gid="${esc(gm.gameId)}" style="color:#C77B23;font-weight:800;font-size:14px;line-height:1;">×</button></span>`).join('')}
+        ${(p.games || []).length === 0 ? '<span style="font-size:12px;color:#9AA7A5;font-style:italic;">No games yet</span>' : ''}
+        <select data-change="admAddGame" data-uid="${p.id}" style="font-size:12px;font-weight:700;color:#FF5F00;background:#fff;border:1px dashed #FF5F00;border-radius:6px;padding:5px 8px;cursor:pointer;">
+          <option value="">+ Add to game</option>
+          ${options.map(o => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('')}
+        </select>
+      </div>
+      <div style="width:230px;flex-shrink:0;display:flex;gap:7px;">
+        <button data-act="admToggle" data-uid="${p.id}" data-flag="toggleAdmin" style="font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:6px;background:${p.isAdmin ? '#00253D' : 'transparent'};color:${p.isAdmin ? '#F3F7F5' : '#6D7C83'};border:1px solid ${p.isAdmin ? '#00253D' : '#C9D3D2'};transition:all .15s;">${p.isAdmin ? 'Admin ✓' : 'Make admin'}</button>
+        <button data-act="admToggle" data-uid="${p.id}" data-flag="toggleRef" style="font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:6px;background:${p.isRef ? '#FF5F00' : 'transparent'};color:${p.isRef ? '#011220' : '#6D7C83'};border:1px solid ${p.isRef ? '#FF5F00' : '#C9D3D2'};transition:all .15s;">${p.isRef ? 'Referee ✓' : 'Make ref'}</button>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+    <div>
+      <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">People</h3>
+      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Assign anyone to any game, set referees, and grant admin access.</p>
+    </div>
+  </div>
+  <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
+    <div style="display:flex;align-items:center;gap:14px;padding:11px 18px;background:#EEF2F1;border-bottom:1px solid #E0E6E5;font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">
+      <span style="width:150px;flex-shrink:0;">Name</span>
+      <span style="flex:1;">Assigned games</span>
+      <span style="width:230px;flex-shrink:0;">Roles</span>
+    </div>
+    ${rows || '<div style="padding:20px;font-size:13px;color:#9AA7A5;font-style:italic;">No accounts yet.</div>'}
+  </div>`;
+}
+
+function admGamesSection(ov) {
+  const cards = (ov.gamesCatalog || []).map(g => `
+  <div style="background:#fff;border:1px solid #E0E6E5;border-left:3px solid #FF5F00;border-radius:10px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;">
+    <div style="min-width:0;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">${esc(g.blockLabel || '')}</span>
+      </div>
+      <div style="font-family:'BN Kragen';font-size:18px;color:#00253D;text-transform:uppercase;line-height:1;margin-top:5px;">${esc(g.name)}</div>
+      <div style="font-size:12px;color:#6D7C83;margin-top:6px;">${esc(g.players)} · <span style="color:${g.needsRef ? '#FF5F00' : '#9AA7A5'};font-weight:700;">${g.needsRef ? 'Ref needed' : 'No ref'}</span> · ${esc(g.venue || '')}</div>
+    </div>
+  </div>`).join('');
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+    <div>
+      <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Games</h3>
+      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">The full lineup — ${(ov.gamesCatalog || []).length} games seeded from the run of play.</p>
+    </div>
+  </div>
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${cards}</div>`;
+}
+
+function admScheduleSection(ov) {
+  const isList = S.schedView !== 'timeline';
+  let body = '';
+  if (isList) {
+    body = `
+    <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
+      ${(ov.schedule || []).map(e => `
+      <div style="display:flex;align-items:center;gap:16px;padding:13px 18px;border-bottom:1px solid #EEF2F1;">
+        <span style="width:78px;flex-shrink:0;font-family:'BN Kragen';font-size:15px;color:#FF5F00;">${esc(e.timeLabel)} ${esc(e.ampm)}</span>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:14px;font-weight:700;color:#00253D;">${esc(e.title)}</span>
+            ${e.kind === 'live' ? '<span style="font-size:9px;font-weight:800;color:#011220;background:#FF5F00;border-radius:4px;padding:2px 6px;">LIVE</span>' : ''}
+          </div>
+          <div style="font-size:12px;color:#6D7C83;margin-top:2px;">${esc(e.place)}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+          <button data-act="admSchedMove" data-id="${e.id}" data-dir="-1" style="width:30px;height:30px;border-radius:6px;border:1px solid #DCE3E2;color:#00253D;display:flex;align-items:center;justify-content:center;font-size:13px;">↑</button>
+          <button data-act="admSchedMove" data-id="${e.id}" data-dir="1" style="width:30px;height:30px;border-radius:6px;border:1px solid #DCE3E2;color:#00253D;display:flex;align-items:center;justify-content:center;font-size:13px;">↓</button>
+          <button data-act="admSchedRemove" data-id="${e.id}" style="width:30px;height:30px;border-radius:6px;border:1px solid #F0CDB3;color:#C77B23;display:flex;align-items:center;justify-content:center;font-size:16px;">×</button>
+        </div>
+      </div>`).join('')}
+    </div>`;
+  } else {
+    const tl = timelineData();
+    body = `
+    <div style="display:flex;flex-wrap:wrap;gap:13px 18px;margin-bottom:14px;">
+      ${tl.legend.map(lg => `<span style="display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;color:#46545B;"><span style="width:11px;height:11px;border-radius:3px;background:${lg.c};"></span>${lg.label}</span>`).join('')}
+    </div>
+    <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;display:flex;">
+      <div style="width:138px;flex-shrink:0;border-right:1px solid #E0E6E5;">
+        <div style="height:32px;border-bottom:1px solid #EEF2F1;"></div>
+        ${tl.lanes.map(ln => `<div style="height:60px;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid #EEF2F1;font-size:12.5px;font-weight:700;color:#00253D;line-height:1.1;">${ln.venue}</div>`).join('')}
+      </div>
+      <div class="scrl" style="flex:1;overflow-x:auto;">
+        <div style="position:relative;min-width:760px;">
+          <div style="position:relative;height:32px;border-bottom:1px solid #EEF2F1;">
+            ${tl.hours.map(hr => `<span style="position:absolute;left:${hr.left};top:9px;transform:translateX(-50%);font-size:10.5px;font-weight:700;color:#9AA7A5;white-space:nowrap;">${hr.label}</span>`).join('')}
+          </div>
+          <div style="position:absolute;top:32px;bottom:0;left:0;right:0;pointer-events:none;">
+            ${tl.hours.map(hr => `<span style="position:absolute;left:${hr.left};top:0;bottom:0;width:1px;background:#EEF2F1;"></span>`).join('')}
+            <span style="position:absolute;left:${tl.nowLeft};top:0;bottom:0;width:2px;background:#FF5F00;"></span>
+          </div>
+          ${tl.lanes.map(ln => `
+          <div style="position:relative;height:60px;border-bottom:1px solid #EEF2F1;">
+            ${ln.items.map(it => `
+            <div style="position:absolute;top:10px;height:40px;left:${it.left};width:${it.width};background:${it.bg};border:1px solid ${it.color};border-left:3px solid ${it.color};border-radius:6px;padding:5px 8px;overflow:hidden;">
+              <div style="font-size:11px;font-weight:700;color:#00253D;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;">${it.name}</div>
+              <div style="font-size:9px;color:#6D7C83;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${it.time}</div>
+            </div>`).join('')}
+          </div>`).join('')}
+          <div style="position:absolute;left:${tl.nowLeft};top:7px;transform:translateX(-50%);"><span style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:#fff;background:#FF5F00;border-radius:4px;padding:2px 5px;">NOW</span></div>
+        </div>
+      </div>
+    </div>`;
+  }
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+    <div>
+      <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Schedule</h3>
+      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">The full run of the day — list to edit, timeline to see every venue at once.</p>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <div style="display:flex;background:#EEF2F1;border:1px solid #E0E6E5;border-radius:8px;padding:3px;gap:3px;">
+        <button data-act="admSchedView" data-view="list" style="padding:7px 13px;border-radius:6px;font-size:12.5px;font-weight:700;background:${isList ? '#00253D' : '#fff'};color:${isList ? '#fff' : '#46545B'};transition:all .15s;">List</button>
+        <button data-act="admSchedView" data-view="timeline" style="padding:7px 13px;border-radius:6px;font-size:12.5px;font-weight:700;background:${!isList ? '#00253D' : '#fff'};color:${!isList ? '#fff' : '#46545B'};transition:all .15s;">Timeline</button>
+      </div>
+      ${isList ? '<button data-act="admSchedAdd" style="background:#FF5F00;color:#011220;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;">+ Add block</button>' : ''}
+    </div>
+  </div>
+  ${body}`;
+}
+
+function admDipSection(ov) {
+  const dip = ov.dip || { entries: [], counts: { buffalo: 0, roadhouse: 0 }, totalVotes: 0, revealed: false };
+  const maxVotes = dip.entries.length ? Math.max.apply(null, dip.entries.map(d => d.votes)) : 0;
+  const rows = dip.entries.map(d => {
+    const win = dip.revealed && maxVotes > 0 && d.votes === maxVotes;
+    return `
+    <div style="display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid #EEF2F1;background:${win ? '#FFF4EC' : '#fff'};">
+      <span style="width:54px;flex-shrink:0;font-family:'BN Kragen';font-size:18px;color:#00253D;">${d.no}</span>
+      <span style="flex:1;font-size:14px;font-weight:700;color:#00253D;display:flex;align-items:center;gap:8px;">${esc(d.name)}${win ? '<span style="font-size:9px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:#011220;background:#FF5F00;border-radius:4px;padding:2px 7px;">Winner</span>' : ''}</span>
+      <span style="width:150px;flex-shrink:0;"><span style="font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${d.team === 'buffalo' ? '#011220' : '#F5C518'};background:${d.team === 'buffalo' ? '#FF5F00' : '#141210'};border-radius:5px;padding:2px 8px;">${d.team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'}</span></span>
+      <span style="width:70px;flex-shrink:0;text-align:right;font-family:'BN Kragen';font-size:18px;color:#00253D;">${d.votes}</span>
+      <button data-act="admDipRemove" data-id="${d.id}" style="width:34px;flex-shrink:0;color:#C77B23;font-size:18px;text-align:center;">×</button>
+    </div>`;
+  }).join('');
+  const statCard = (val, sub, color) => `<div style="flex:1;min-width:120px;background:#fff;border:1px solid #E0E6E5;border-radius:10px;padding:13px 15px;"><div style="font-family:'BN Kragen';font-size:26px;color:${color};line-height:1;">${val}</div><div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;margin-top:5px;">${sub}</div></div>`;
+  return `
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px;">
+    <div>
+      <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Dip Off</h3>
+      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Five cooks per tribe. Everyone votes on judging day — one vote each, dips stay anonymous to voters.</p>
+    </div>
+    <button data-act="admDipReveal" style="flex-shrink:0;background:${dip.revealed ? '#FF5F00' : '#fff'};color:${dip.revealed ? '#011220' : '#FF5F00'};border:1px solid #FF5F00;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;">${dip.revealed ? 'Hide winner' : 'Reveal winner'}</button>
+  </div>
+  <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px;">
+    ${statCard((dip.counts.buffalo || 0) + '<span style="font-size:15px;color:#9AA7A5;"> / 5</span>', 'Buffalo cooks', '#FF5F00')}
+    ${statCard((dip.counts.roadhouse || 0) + '<span style="font-size:15px;color:#9AA7A5;"> / 5</span>', 'Roadhouse cooks', '#E0322E')}
+    ${statCard(dip.entries.length, 'Dips entered', '#00253D')}
+    ${statCard(dip.totalVotes || 0, 'Votes cast', '#00253D')}
+  </div>
+  <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
+    <div style="display:flex;align-items:center;gap:14px;padding:11px 18px;background:#EEF2F1;border-bottom:1px solid #E0E6E5;font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">
+      <span style="width:54px;flex-shrink:0;">Dip #</span><span style="flex:1;">Cook</span><span style="width:150px;flex-shrink:0;">Tribe</span><span style="width:70px;flex-shrink:0;text-align:right;">Votes</span><span style="width:34px;flex-shrink:0;"></span>
+    </div>
+    ${rows || '<div style="padding:20px;font-size:13px;color:#9AA7A5;font-style:italic;">No dip entries yet.</div>'}
+  </div>`;
+}
+
+function admRelaySection(ov) {
+  const relay = ov.relay || { legs: [], roster: {}, total: 0 };
+  const rows = (relay.legs || []).map(l => {
+    const r = (relay.roster || {})[l.id] || { buffalo: [], roadhouse: [] };
+    return `
+    <div style="background:#fff;border:1px solid #E0E6E5;border-left:3px solid #FF5F00;border-radius:10px;padding:15px 16px;">
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+        <input data-leg="${esc(l.id)}" data-debounce="legName" value="${esc(l.name)}" style="flex:1;min-width:180px;font-family:'Montserrat';font-size:15px;font-weight:700;color:#00253D;border:1px solid #DCE3E2;border-radius:7px;padding:9px 12px;outline:none;"/>
+        <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+          <span style="font-size:11px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#6D7C83;">Per team</span>
+          <button data-act="admLegCap" data-id="${esc(l.id)}" data-d="-1" style="width:30px;height:30px;border-radius:7px;border:1px solid #DCE3E2;color:#00253D;font-size:17px;display:flex;align-items:center;justify-content:center;">−</button>
+          <span style="width:26px;text-align:center;font-family:'BN Kragen';font-size:19px;color:#FF5F00;">${l.cap}</span>
+          <button data-act="admLegCap" data-id="${esc(l.id)}" data-d="1" style="width:30px;height:30px;border-radius:7px;border:1px solid #DCE3E2;color:#00253D;font-size:17px;display:flex;align-items:center;justify-content:center;">+</button>
+        </div>
+      </div>
+      <div style="display:flex;gap:12px;margin-top:12px;flex-wrap:wrap;">
+        <div style="flex:1;min-width:200px;background:#FBF4EE;border:1px solid #F3DFCC;border-radius:8px;padding:10px 12px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;"><span style="font-size:10.5px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#C2741C;">Buffalo</span><span style="font-size:11px;font-weight:700;color:${r.buffalo.length >= l.cap ? '#1F8A5B' : '#6D7C83'};">${r.buffalo.length} / ${l.cap}</span></div>
+          <div style="font-size:12.5px;color:#46545B;margin-top:4px;line-height:1.4;">${esc(r.buffalo.join(', ') || '—')}</div>
+        </div>
+        <div style="flex:1;min-width:200px;background:#F6F8F7;border:1px solid #E0E6E5;border-radius:8px;padding:10px 12px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;"><span style="font-size:10.5px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#B0353A;">Texas Roadhouse</span><span style="font-size:11px;font-weight:700;color:${r.roadhouse.length >= l.cap ? '#1F8A5B' : '#6D7C83'};">${r.roadhouse.length} / ${l.cap}</span></div>
+          <div style="font-size:12.5px;color:#46545B;margin-top:4px;line-height:1.4;">${esc(r.roadhouse.join(', ') || '—')}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+  <div style="margin-bottom:16px;">
+    <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Relay Race</h3>
+    <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Rename each leg and set its headcount. Anyone may sign up for one leg only — no matter how many other games they're in. <strong style="color:#46545B;">${relay.total || 0} teammates</strong> signed up so far.</p>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:12px;">${rows}</div>`;
+}
+
+function admScoresSection(ov) {
+  const revealed = !!(ov.settings && ov.settings.scoresRevealed);
+  const peek = S.adminPeek || (revealed ? ov.scores : null);
+  const showTotals = !!peek;
+  let totalPanel = '';
+  if (!showTotals) {
+    totalPanel = `
+    <div style="background:#fff;border:1px solid #E0E6E5;border-radius:12px;padding:26px;text-align:center;">
+      <svg width="34" height="34" viewBox="0 0 24 24" fill="none" style="margin-bottom:10px;"><rect x="4" y="10" width="16" height="10" rx="2" stroke="#9AA7A5" stroke-width="2"/><path d="M7.5 10V7a4.5 4.5 0 019 0v3" stroke="#9AA7A5" stroke-width="2"/></svg>
+      <div style="font-family:'BN Kragen';font-size:20px;color:#00253D;text-transform:uppercase;">Scores are hidden</div>
+      <p style="font-size:12.5px;color:#6D7C83;margin:7px 0 16px;">Keeping the running total out of sight keeps the day suspenseful.</p>
+      <button data-act="admPeek" style="background:#00253D;color:#fff;font-weight:700;font-size:13.5px;padding:11px 18px;border-radius:8px;">Peek at totals (admin only)</button>
+    </div>`;
+  } else {
+    totalPanel = `
+    <div style="background:#fff;border:1px solid #E0E6E5;border-radius:12px;padding:20px;">
+      <div style="display:flex;gap:14px;">
+        <div style="flex:1;background:#FF5F00;border-radius:10px;padding:16px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#00253D;">Buffalo</div>
+          <div style="font-family:'BN Kragen';font-size:44px;color:#011220;line-height:0.9;margin-top:4px;">${peek.buffalo}</div>
+        </div>
+        <div style="flex:1;background:#141210;border-radius:10px;padding:16px;">
+          <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#F5C518;">Texas Roadhouse</div>
+          <div style="font-family:'BN Kragen';font-size:44px;color:#E0322E;line-height:0.9;margin-top:4px;">${peek.roadhouse}</div>
+        </div>
+      </div>
+      ${!revealed ? `
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:14px;">
+        <span style="font-size:12px;color:#6D7C83;">Only you can see this. Players still see a sealed board.</span>
+        <button data-act="admHidePeek" style="font-size:12.5px;font-weight:700;color:#00253D;border:1px solid #DCE3E2;border-radius:7px;padding:8px 13px;flex-shrink:0;">Hide again</button>
+      </div>` : `
+      <div style="display:flex;align-items:center;gap:8px;margin-top:14px;color:#1F8A5B;">
+        ${checkSvg('#1F8A5B', 16)}
+        <span style="font-size:12.5px;font-weight:700;">Published — live on every phone.</span>
+      </div>`}
+    </div>`;
+  }
+  let revealCtl = '';
+  if (!revealed) {
+    revealCtl = S.adminConfirmReveal ? `
+    <div style="margin-top:16px;background:#FFF4EC;border:1px solid #FFD3B5;border-radius:12px;padding:20px;">
+      <div style="font-family:'BN Kragen';font-size:19px;color:#00253D;text-transform:uppercase;">Are you sure?</div>
+      <p style="font-size:13px;color:#6D7C83;margin:7px 0 16px;line-height:1.5;">This publishes the final standings to every phone in both tribes. You can't un-ring this bell — make sure the day is done.</p>
+      <div style="display:flex;gap:10px;">
+        <button data-act="admCancelReveal" style="flex:1;background:#fff;border:1px solid #DCE3E2;color:#00253D;font-weight:700;font-size:14px;padding:13px;border-radius:8px;">Cancel</button>
+        <button data-act="admConfirmReveal" style="flex:1;background:#FF5F00;color:#011220;font-weight:800;font-size:14px;padding:13px;border-radius:8px;">Yes, reveal scores</button>
+      </div>
+    </div>` : `
+    <div style="margin-top:16px;">
+      <button data-act="admAskReveal" style="width:100%;background:#FF5F00;color:#011220;font-weight:800;font-size:15px;padding:16px;border-radius:10px;display:flex;align-items:center;justify-content:center;gap:9px;box-shadow:0 6px 18px rgba(255,95,0,0.28);">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="#011220" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="#011220" stroke-width="2"/></svg>
+        Reveal scores to everyone
+      </button>
+    </div>`;
+  }
+  const log = (ov.results || []).map(r => {
+    const color = r.winner === 'buffalo' || r.winner === 'Buffalo' ? '#FF5F00' : (r.winner === 'roadhouse' || r.winner === 'Texas Roadhouse' ? '#E0322E' : '#6D7C83');
+    const editing = S.editingId === r.id;
+    const histOpen = S.historyOpenId === r.id;
+    return `
+    <div style="padding:13px 16px;border-bottom:1px solid #EEF2F1;">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <span style="width:9px;height:9px;border-radius:50%;background:${color};flex-shrink:0;"></span>
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:14px;font-weight:700;color:#00253D;">${esc(r.game)}</div>
+          <div style="font-size:12px;color:#6D7C83;margin-top:1px;">${esc(r.detail || '')}</div>
+        </div>
+        ${editing ? `
+        <div style="display:flex;align-items:center;gap:7px;flex-shrink:0;">
+          <input id="adm-edit-val" data-field="editVal" value="${esc(S.editVal)}" inputmode="numeric" style="width:58px;font-family:'Montserrat';font-size:15px;font-weight:700;color:#00253D;text-align:center;border:1px solid #FF5F00;border-radius:7px;padding:7px 6px;"/>
+          <button data-act="admEditSave" data-id="${r.id}" style="background:#FF5F00;color:#011220;font-weight:800;font-size:12px;padding:8px 11px;border-radius:7px;">Save</button>
+          <button data-act="admEditCancel" style="color:#6D7C83;font-weight:700;font-size:12px;padding:8px 9px;border-radius:7px;border:1px solid #DCE3E2;">Cancel</button>
+        </div>` : `
+        <div style="display:flex;align-items:center;gap:11px;flex-shrink:0;">
+          <span style="font-family:'BN Kragen';font-size:19px;color:${color};">+${r.pts}</span>
+          <button data-act="admEditStart" data-id="${r.id}" data-pts="${r.pts}" style="font-size:12px;font-weight:700;color:#FF5F00;border:1px solid #FFD3B5;border-radius:7px;padding:7px 11px;">Edit</button>
+        </div>`}
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin-top:8px;margin-left:21px;flex-wrap:wrap;">
+        <span style="font-size:11px;color:#9AA7A5;">Entered by <strong style="color:#46545B;">${esc(r.enteredBy || '—')}</strong> · ${timeAgo(r.createdAt)}</span>
+        ${r.editedBy ? `<span style="font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#C77B23;background:#FCEFE2;border-radius:5px;padding:2px 7px;">Edited by ${esc(r.editedBy)}</span>` : ''}
+        ${(r.history || []).length ? `<button data-act="admHistory" data-id="${r.id}" style="font-size:11px;font-weight:700;color:#00253D;text-decoration:underline;">View history</button>` : ''}
+      </div>
+      ${histOpen ? `
+      <div style="margin-top:10px;margin-left:21px;background:#F6F8F7;border:1px solid #E6ECEA;border-radius:8px;padding:11px 13px;">
+        <div style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#9AA7A5;margin-bottom:8px;">Previous values</div>
+        ${(r.history || []).map(hh => `
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:5px 0;">
+          <span style="font-size:12.5px;color:#46545B;">${timeAgo(hh.when)} · by ${esc(hh.by || '—')}</span>
+          <span style="font-family:'BN Kragen';font-size:15px;color:#6D7C83;">${hh.pts}</span>
+        </div>`).join('')}
+      </div>` : ''}
+    </div>`;
+  }).join('');
+  return `
+  <div style="margin-bottom:18px;">
+    <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Team Scores</h3>
+    <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Totals stay hidden by default — even from you — until you choose to look or publish.</p>
+  </div>
+  <div style="max-width:520px;">${totalPanel}${revealCtl}</div>
+  <div style="margin-top:24px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:11px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">Live entry log</div>
+      <div style="font-size:11px;color:#9AA7A5;">${(ov.results || []).length} entries · totals stay hidden above</div>
+    </div>
+    <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
+      ${log || '<div style="padding:20px;font-size:13px;color:#9AA7A5;font-style:italic;">No results logged yet.</div>'}
+    </div>
+  </div>`;
+}
+
+function admRefsSection(ov) {
+  const needsRef = (ov.gamesCatalog || []).filter(g => g.needsRef);
+  const rows = needsRef.map(g => {
+    const assigned = (ov.refAssignments || {})[g.id] || '';
+    return `
+    <div style="display:flex;align-items:center;gap:16px;padding:13px 18px;border-bottom:1px solid #EEF2F1;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:14px;font-weight:700;color:#00253D;">${esc(g.name)}</div>
+        <div style="font-size:12px;color:#6D7C83;margin-top:2px;">${esc(g.venue || '')}</div>
+      </div>
+      <span style="font-size:11px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${assigned ? '#1F8A5B' : '#C77B23'};width:96px;flex-shrink:0;">${assigned ? 'Assigned' : 'Unassigned'}</span>
+      <select data-change="admRefAssign" data-gid="${esc(g.id)}" style="width:190px;flex-shrink:0;font-size:13px;font-weight:600;color:#00253D;background:#fff;border:1px solid #DCE3E2;border-radius:7px;padding:8px 10px;cursor:pointer;">
+        <option value="">Unassigned</option>
+        ${(ov.refs || []).map(rf => `<option value="${rf.id}" ${String(assigned) === String(rf.id) ? 'selected' : ''}>${esc(rf.name)}</option>`).join('')}
+      </select>
+    </div>`;
+  }).join('');
+  return `
+  <div style="margin-bottom:16px;">
+    <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Referees</h3>
+    <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Referees create their own account with the shared join code below — no approval needed. Then assign a SUP ref to every game that needs one.</p>
+  </div>
+  <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;padding:18px;margin-bottom:20px;max-width:540px;">
+    <div style="display:flex;align-items:center;gap:9px;margin-bottom:11px;">
+      ${shieldSvg('#FF5F00')}
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">Referee join code</div>
+    </div>
+    <p style="font-size:12.5px;color:#6D7C83;margin:0 0 13px;line-height:1.5;">Anyone with this code can create a referee account from the sign-in screen. Change it any time to retire an old code.</p>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <input id="adm-refcode" data-debounce="refCode" value="${esc(S.f.refCodeDraft !== undefined ? S.f.refCodeDraft : ((ov.settings && ov.settings.refJoinCode) || ''))}" style="flex:1;font-family:'Montserrat';font-size:16px;font-weight:800;letter-spacing:0.05em;color:#00253D;border:1px solid #DCE3E2;border-radius:8px;padding:12px 14px;outline:none;"/>
+      <span style="font-size:11px;font-weight:700;color:#1F8A5B;display:flex;align-items:center;gap:5px;flex-shrink:0;">${checkSvg('#1F8A5B', 14)}Saved live</span>
+    </div>
+  </div>
+  <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;margin-bottom:10px;">Ref assignments</div>
+  <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
+    ${rows || '<div style="padding:20px;font-size:13px;color:#9AA7A5;font-style:italic;">No games need a ref.</div>'}
+  </div>`;
+}
+
+function admAnnounceSection(ov) {
+  return `
+  <div style="margin-bottom:16px;">
+    <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Announcements</h3>
+    <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Push a message to every phone in both tribes.</p>
+  </div>
+  <div style="display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;">
+    <div style="width:380px;flex-shrink:0;background:#fff;border:1px solid #E0E6E5;border-radius:10px;padding:18px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#FF7F2E;margin-bottom:11px;">New announcement</div>
+      <input id="ann-title" data-field="annTitle" value="${esc(S.f.annTitle || '')}" placeholder="Headline" style="width:100%;font-size:14px;font-weight:700;color:#00253D;border:1px solid #DCE3E2;border-radius:7px;padding:11px 12px;margin-bottom:10px;font-family:'Montserrat';outline:none;"/>
+      <textarea id="ann-body" data-field="annBody" placeholder="What do the tribes need to know?" style="width:100%;height:96px;resize:none;font-size:13px;color:#00253D;border:1px solid #DCE3E2;border-radius:7px;padding:11px 12px;font-family:'Montserrat';line-height:1.5;outline:none;">${esc(S.f.annBody || '')}</textarea>
+      <button data-act="admAnnPush" style="width:100%;margin-top:12px;background:#FF5F00;color:#011220;font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Push to all phones</button>
+    </div>
+    <div style="flex:1;min-width:260px;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#6D7C83;margin-bottom:11px;">Sent today</div>
+      <div style="display:flex;flex-direction:column;gap:11px;">
+        ${(ov.announcements || []).map(a => `
+        <div style="background:#fff;border:1px solid #E0E6E5;border-left:3px solid #FF5F00;border-radius:10px;padding:14px 16px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+            <span style="font-size:14px;font-weight:800;color:#00253D;">${esc(a.title)}</span>
+            <span style="font-size:11px;color:#9AA7A5;flex-shrink:0;">Pushed ${fmtClock(a.createdAt)}</span>
+          </div>
+          <p style="font-size:13px;color:#46545B;line-height:1.5;margin:6px 0 0;">${esc(a.body || '')}</p>
+        </div>`).join('') || '<div style="font-size:12.5px;color:#9AA7A5;font-style:italic;">Nothing sent yet.</div>'}
+      </div>
+    </div>
+  </div>`;
+}
+
+function adminScreen() {
+  const ov = S.overview;
+  const user = S.boot.user;
+  if (!ov) {
+    return `<div style="flex:1;display:flex;align-items:center;justify-content:center;background:#F3F7F5;color:#6D7C83;font-size:14px;padding:40px;">Loading the Admin Center…</div>`;
+  }
+  const sections = [
+    { id: 'people', label: 'People' }, { id: 'games', label: 'Games' }, { id: 'schedule', label: 'Schedule' },
+    { id: 'dipoff', label: 'Dip Off' }, { id: 'relay', label: 'Relay Race' },
+    { id: 'scores', label: 'Scores' }, { id: 'refs', label: 'Referees' }, { id: 'announce', label: 'Announcements' },
+  ];
+  const isSignup = (ov.settings && ov.settings.eventMode) !== 'gameday';
+  let body = '';
+  if (S.adminSection === 'people') body = admPeopleSection(ov);
+  else if (S.adminSection === 'games') body = admGamesSection(ov);
+  else if (S.adminSection === 'schedule') body = admScheduleSection(ov);
+  else if (S.adminSection === 'dipoff') body = admDipSection(ov);
+  else if (S.adminSection === 'relay') body = admRelaySection(ov);
+  else if (S.adminSection === 'scores') body = admScoresSection(ov);
+  else if (S.adminSection === 'refs') body = admRefsSection(ov);
+  else if (S.adminSection === 'announce') body = admAnnounceSection(ov);
+
+  const stat = (val, label, color) => `
+  <div style="flex:1;min-width:120px;background:#fff;border:1px solid #E0E6E5;border-radius:10px;padding:13px 15px;">
+    <div style="font-family:'BN Kragen';font-size:26px;color:${color || '#00253D'};line-height:1;">${val}</div>
+    <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;margin-top:5px;">${label}</div>
+  </div>`;
+
+  return `
+  <div class="scrl" style="flex:1;min-height:0;overflow:auto;background:#F3F7F5;">
+    <div style="min-width:1024px;height:100%;display:flex;min-height:0;">
+      <div style="width:230px;flex-shrink:0;background:#00253D;display:flex;flex-direction:column;padding:22px 0;">
+        <div style="display:flex;align-items:center;gap:9px;padding:0 22px 22px;">
+          <img src="/assets/logos/buffalo-orange.png" alt="" style="height:22px;"/>
+          <div style="line-height:1;">
+            <div style="font-family:'BN Kragen';font-size:16px;color:#F3F7F5;">BUFF OLYMPICS</div>
+            <div style="font-size:10px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#FF7F2E;margin-top:3px;">Admin Center</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:2px;padding:0 12px;">
+          ${sections.map(n => {
+            const on = n.id === S.adminSection;
+            return `<button data-act="admSection" data-id="${n.id}" style="display:flex;align-items:center;gap:11px;padding:11px 12px;border-radius:8px;font-size:14px;font-weight:600;color:${on ? '#F3F7F5' : '#8AA7B9'};background:${on ? 'rgba(255,255,255,0.08)' : 'transparent'};transition:all .15s;">
+              <span style="width:6px;height:6px;border-radius:50%;background:${on ? '#FF5F00' : 'rgba(255,255,255,0.18)'};"></span>${n.label}
+            </button>`;
+          }).join('')}
+        </div>
+        <div style="margin:20px 12px 0;padding:14px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.10);border-radius:10px;">
+          <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:#FF7F2E;margin-bottom:9px;">Event mode</div>
+          <div style="display:flex;background:rgba(0,0,0,0.30);border-radius:8px;padding:3px;gap:3px;">
+            <button data-act="admMode" data-mode="signup" style="flex:1;padding:8px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${isSignup ? '#FF5F00' : 'transparent'};color:${isSignup ? '#011220' : '#8AA7B9'};transition:all .15s;">Sign-Up</button>
+            <button data-act="admMode" data-mode="gameday" style="flex:1;padding:8px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${!isSignup ? '#FF5F00' : 'transparent'};color:${!isSignup ? '#011220' : '#8AA7B9'};transition:all .15s;">Game Day</button>
+          </div>
+          <div style="font-size:10.5px;color:#8AA7B9;margin-top:9px;line-height:1.45;">
+            ${isSignup ? 'Sign-ups open — players can join games, the Dip Off &amp; the relay.' : 'Sign-ups locked — dip voting is live on every phone.'}
+          </div>
+        </div>
+        <div style="margin-top:auto;padding:18px 22px 0;border-top:1px solid rgba(255,255,255,0.10);margin-left:12px;margin-right:12px;">
+          <div style="display:flex;align-items:center;gap:10px;">
+            <span style="width:34px;height:34px;border-radius:8px;background:#FF5F00;display:flex;align-items:center;justify-content:center;font-family:'BN Kragen';font-size:13px;color:#011220;">${esc(initials(user.name))}</span>
+            <div style="line-height:1.2;">
+              <div style="font-size:13px;font-weight:700;color:#F3F7F5;">${esc(user.name)}</div>
+              <div style="font-size:11px;color:#8AA7B9;">Event Admin</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#F3F7F5;">
+        <div style="flex-shrink:0;padding:20px 28px;border-bottom:1px solid #DCE3E2;display:flex;gap:14px;flex-wrap:wrap;">
+          ${stat(ov.stats.people, 'Participants')}
+          ${stat(ov.stats.games, 'Games')}
+          ${stat(ov.stats.refs, 'Referees', '#FF5F00')}
+          ${stat(ov.stats.admins, 'Admins')}
+        </div>
+        <div class="scrl" style="flex:1;overflow-y:auto;padding:24px 28px 40px;">${body}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+/* ════════════════════ shell: bars + nav ════════════════════ */
+const BACK_ROUTES = { game: 'games', dip: 'home', 'dip-vote': 'home', relay: 'home' };
+function topBar() {
+  const T = theme();
+  const back = BACK_ROUTES[S.route];
+  return `
+  <div style="height:54px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 18px;border-bottom:1px solid rgba(255,255,255,0.07);position:relative;z-index:20;background:${T.th.bar};">
+    ${back ? `
+    <button data-act="go" data-to="${back}" style="display:flex;align-items:center;gap:6px;color:#8AA7B9;font-size:13px;font-weight:600;">
+      ${chevL(T.A)}
+      Back
+    </button>` : `
+    <div style="display:flex;align-items:center;gap:9px;">
+      <img src="/assets/logos/buffalo-orange.png" alt="" style="height:21px;width:auto;display:block;"/>
+      <span style="font-family:'BN Kragen';font-size:19px;letter-spacing:0.01em;color:#F3F7F5;line-height:1;">BUFF OLYMPICS</span>
+    </div>`}
+    <div style="display:flex;align-items:center;gap:8px;font-size:10.5px;font-weight:700;letter-spacing:0.1em;color:#8AA7B9;text-transform:uppercase;">
+      <span style="width:7px;height:7px;border-radius:50%;background:${T.A};box-shadow:0 0 8px ${T.A};"></span>Aug 14 · Live
+    </div>
+  </div>`;
+}
+function tabBar() {
+  const T = theme();
+  const th = T.th;
+  const activeTab = S.route === 'game' ? 'games' : (['dip', 'dip-vote', 'relay'].includes(S.route) ? 'home' : S.route);
+  const tc = k => k === activeTab ? T.A : th.tabIdle;
+  return `
+  <div style="height:74px;flex-shrink:0;background:${th.bar};border-top:1px solid rgba(255,255,255,0.09);display:flex;align-items:flex-start;padding:9px 6px 0;position:relative;z-index:20;">
+    <button data-act="go" data-to="home" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;color:${tc('home')};">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M3 11l9-7 9 7M5 9.5V20h5v-6h4v6h5V9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span style="font-size:10px;font-weight:700;">Home</span>
+    </button>
+    <button data-act="go" data-to="games" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;color:${tc('games')};">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M5 21V4M5 4h12l-2 4 2 4H5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span style="font-size:10px;font-weight:700;">Games</span>
+    </button>
+    <button data-act="go" data-to="schedule" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;color:${tc('schedule')};">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><rect x="4" y="5" width="16" height="16" rx="2" stroke="currentColor" stroke-width="2"/><path d="M4 9h16M8 3v4M16 3v4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span style="font-size:10px;font-weight:700;">Schedule</span>
+    </button>
+    <button data-act="go" data-to="tribes" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;color:${tc('tribes')};">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="8" r="3" stroke="currentColor" stroke-width="2"/><path d="M3 20c0-3.3 2.7-6 6-6s6 2.7 6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16 5.5a3 3 0 010 5.4M18 20c0-2.5-1-4.5-2.5-5.6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span style="font-size:10px;font-weight:700;">Tribes</span>
+    </button>
+    <button data-act="go" data-to="score" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;color:${tc('score')};">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M7 4h10v3a5 5 0 01-10 0V4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M5 5H3v2a3 3 0 003 3M19 5h2v2a3 3 0 01-3 3M9 20h6M12 13v7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      <span style="font-size:10px;font-weight:700;">Score</span>
+    </button>
+  </div>`;
+}
+function deskNav() {
+  const T = theme();
+  const user = S.boot.user;
+  const link = (to, label) => {
+    const on = S.route === to || (to === 'games' && S.route === 'game');
+    return `<button data-act="go" data-to="${to}" style="padding:8px 13px;border-radius:7px;font-size:13px;font-weight:700;color:${on ? '#F3F7F5' : '#8AA7B9'};background:${on ? 'rgba(255,255,255,0.08)' : 'transparent'};">${label}</button>`;
+  };
+  return `
+  <div style="height:56px;flex-shrink:0;background:#011220;border-bottom:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;gap:6px;padding:0 20px;">
+    <button data-act="go" data-to="home" style="display:flex;align-items:center;gap:9px;margin-right:16px;">
+      <img src="/assets/logos/buffalo-orange.png" alt="" style="height:22px;width:auto;display:block;"/>
+      <span style="font-family:'BN Kragen';font-size:18px;color:#F3F7F5;line-height:1;">BUFF OLYMPICS</span>
+    </button>
+    ${link('home', 'Home')}${link('games', 'Games')}${link('schedule', 'Schedule')}${link('tribes', 'Tribes')}${link('score', 'Score')}
+    ${user.isAdmin ? `<button data-act="go" data-to="admin" style="padding:8px 13px;border-radius:7px;font-size:13px;font-weight:800;color:${S.route === 'admin' ? '#011220' : '#FF7F2E'};background:${S.route === 'admin' ? '#FF5F00' : 'rgba(255,95,0,0.12)'};border:1px solid rgba(255,127,46,0.4);margin-left:6px;">Admin Center</button>` : ''}
+    <div style="margin-left:auto;display:flex;align-items:center;gap:12px;">
+      <span style="font-size:12px;font-weight:700;color:#8AA7B9;">${esc(user.name)} · ${esc(theme().myTeamName)}</span>
+      <button data-act="signOut" style="font-size:12px;font-weight:700;color:#C7D3DB;border:1px solid rgba(255,255,255,0.18);border-radius:7px;padding:7px 12px;">Sign out</button>
+    </div>
+  </div>`;
+}
+
+/* ════════════════════ loading / error ════════════════════ */
+function loadingScreen() {
+  return `
+  <div style="min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;background:#01121F;">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:14px;animation:boPulse 1.6s ease-in-out infinite;">
+      <img src="/assets/logos/buffalo-orange.png" alt="" style="height:64px;width:auto;"/>
+      <div style="font-family:'BN Kragen';font-size:26px;color:#F3F7F5;letter-spacing:0.02em;">BUFF OLYMPICS</div>
+    </div>
+    <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#FF7F2E;">Saddling up…</div>
+  </div>`;
+}
+function bootErrorScreen() {
+  return `
+  <div style="min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#01121F;padding:32px;text-align:center;">
+    <img src="/assets/logos/buffalo-orange.png" alt="" style="height:48px;width:auto;opacity:0.9;"/>
+    <div style="font-family:'BN Kragen';font-size:24px;color:#F3F7F5;text-transform:uppercase;">The herd hit a snag</div>
+    <div style="font-size:13px;color:#C7D3DB;max-width:340px;line-height:1.6;">We couldn't load the event. The server said:<br/><span style="color:#FF7F2E;font-weight:700;">${esc(S.bootError || 'Unknown error')}</span></div>
+    <button data-act="retryBoot" style="background:#FF5F00;color:#011220;font-weight:800;font-size:14px;padding:13px 26px;border-radius:9px;box-shadow:0 8px 22px rgba(255,95,0,0.28);margin-top:6px;">Retry</button>
+    <button data-act="signOut" style="font-size:12px;font-weight:700;color:#8AA7B9;text-decoration:underline;">Sign out</button>
+  </div>`;
+}
+
+/* ════════════════════ render ════════════════════ */
+function screenHtml() {
+  const ref = isRefUser();
+  switch (S.route) {
+    case 'home': return ref ? refBoardScreen() : homeScreen();
+    case 'games': return gamesScreen();
+    case 'game': return gameDetailScreen();
+    case 'schedule': return scheduleScreen();
+    case 'tribes': return tribesScreen();
+    case 'score': return ref ? refBoardScreen() : scoreScreen();
+    case 'immunity': return immunityScreen();
+    case 'dip': return dipSignupScreen();
+    case 'dip-vote': return dipVoteScreen();
+    case 'relay': return relayScreen();
+    default: return homeScreen();
+  }
+}
+let lastRenderedRoute = null;
+function render() {
+  const app = document.getElementById('app');
+  if (!app) return;
+
+  // preserve focus + caret across re-renders
+  const active = document.activeElement;
+  const focusId = active && active.id ? active.id : null;
+  let selStart = null, selEnd = null;
+  if (focusId && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
+    try { selStart = active.selectionStart; selEnd = active.selectionEnd; } catch (e) { /* number inputs */ }
+  }
+  // preserve scroll of the content area on same-screen re-renders
+  const prevContent = document.getElementById('bo-content');
+  const sameScreen = lastRenderedRoute === S.route + '/' + (S.routeArg || '');
+  const prevScroll = (sameScreen && prevContent) ? prevContent.scrollTop : 0;
+  const prevWin = sameScreen ? window.scrollY : 0;
+
+  let html = '';
+  if (!S.token) {
+    html = authScreen();
+  } else if (S.loading && !S.boot) {
+    html = loadingScreen();
+  } else if (!S.boot) {
+    html = S.bootError ? bootErrorScreen() : loadingScreen();
+  } else if (!S.boot.user.team || S.forceTeamGate) {
+    html = teamGateScreen();
+  } else if (S.route === 'admin') {
+    if (!S.boot.user.isAdmin) { location.hash = '#/home'; return; }
+    html = `
+    <div style="height:100vh;height:100dvh;display:flex;flex-direction:column;">
+      ${deskNav()}
+      ${adminScreen()}
+    </div>`;
+  } else if (S.isDesk && S.route !== 'game' && (S.route === 'games')) {
+    html = `
+    <div style="height:100vh;height:100dvh;display:flex;flex-direction:column;">
+      ${deskNav()}
+      ${deskGamesScreen()}
+    </div>
+    ${videoModalHtml()}`;
+  } else if (S.isDesk) {
+    const T = theme();
+    html = `
+    <div style="height:100vh;height:100dvh;display:flex;flex-direction:column;">
+      ${deskNav()}
+      <div style="flex:1;min-height:0;display:flex;justify-content:center;padding:22px 16px;">
+        <div class="bo-col" style="background:${T.th.surface};border-radius:14px;overflow:hidden;box-shadow:0 30px 70px rgba(0,0,0,0.5),0 0 0 1px rgba(255,255,255,0.06);display:flex;flex-direction:column;min-height:0;">
+          ${topBar()}
+          <div class="scrl" id="bo-content" style="flex:1;overflow-y:auto;overflow-x:hidden;position:relative;">${screenHtml()}</div>
+        </div>
+      </div>
+    </div>
+    ${videoModalHtml()}`;
+  } else {
+    const T = theme();
+    html = `
+    <div class="bo-col" style="height:100vh;height:100dvh;background:${T.th.surface};overflow:hidden;position:relative;display:flex;flex-direction:column;">
+      ${topBar()}
+      <div class="scrl" id="bo-content" style="flex:1;overflow-y:auto;overflow-x:hidden;position:relative;">${screenHtml()}</div>
+      ${tabBar()}
+    </div>
+    ${videoModalHtml()}`;
+  }
+
+  app.innerHTML = html;
+  lastRenderedRoute = S.route + '/' + (S.routeArg || '');
+
+  const content = document.getElementById('bo-content');
+  if (content) content.scrollTop = sameScreen ? prevScroll : 0;
+  if (!content && sameScreen) window.scrollTo(0, prevWin);
+
+  if (focusId) {
+    const el = document.getElementById(focusId);
+    if (el) {
+      el.focus();
+      if (selStart != null && el.setSelectionRange) {
+        try { el.setSelectionRange(selStart, selEnd); } catch (e) { /* ok */ }
+      }
+    }
+  }
+}
+
+/* ════════════════════ routing ════════════════════ */
+const ROUTES = ['home', 'games', 'game', 'schedule', 'tribes', 'score', 'immunity', 'dip', 'dip-vote', 'relay', 'admin'];
+function parseRoute() {
+  const h = location.hash || '#/home';
+  const m = h.match(/^#\/([\w-]+)(?:\/(.+))?/);
+  let r = m ? m[1] : 'home';
+  if (!ROUTES.includes(r)) r = 'home';
+  const prev = S.route + '/' + (S.routeArg || '');
+  S.route = r;
+  S.routeArg = m && m[2] ? decodeURIComponent(m[2]) : null;
+  if (prev !== S.route + '/' + (S.routeArg || '')) {
+    S.videoOpen = null;
+    S.adminConfirmReveal = false;
+    S.editingId = null;
+  }
+  if (S.route === 'admin' && S.token && S.boot && S.boot.user.isAdmin && !S.overview) loadOverview(true);
+}
+window.addEventListener('hashchange', () => { parseRoute(); render(); });
+window.addEventListener('resize', () => {
+  const d = window.innerWidth >= 940;
+  if (d !== S.isDesk) { S.isDesk = d; render(); }
+});
+
+/* ════════════════════ actions ════════════════════ */
+async function guarded(fn) {
+  if (S.busy) return;
+  S.busy = true;
+  try { await fn(); }
+  catch (e) { if (e.code !== 'expired') toast(e.message); render(); }
+  S.busy = false;
+}
+async function afterAdminMutation() {
+  await loadOverview(true);
+  loadBoot(true);   // settings/event-mode changes affect the player app too
+}
+function collectAuthErrorReset() { S.inErr = false; S.pwErr = false; S.rcErr = false; S.authMsg = null; }
+
+const ACTIONS = {
+  // ── navigation ──
+  go: (el) => { location.hash = '#/' + el.dataset.to; },
+  openGame: (el) => { location.hash = '#/game/' + encodeURIComponent(el.dataset.id); },
+  retryBoot: () => loadBoot(),
+  signOut: () => {
+    setToken(null); S.boot = null; S.overview = null; S.forceTeamGate = false;
+    S.authView = 'signin'; collectAuthErrorReset();
+    S.f.inPass = ''; S.f.npPass = ''; S.f.npPass2 = ''; S.f.rlPass = ''; S.f.rcPass = '';
+    location.hash = '#/home';
+    render();
+  },
+  changeTribe: () => { S.forceTeamGate = true; render(); },
+
+  // ── auth ──
+  authView: (el) => { S.authView = el.dataset.view; collectAuthErrorReset(); render(); },
+  refMode: (el) => { S.refMode = el.dataset.mode; collectAuthErrorReset(); render(); },
+  pickSignupTeam: (el) => { S.signupTeam = el.dataset.team; render(); },
+  doSignIn: () => guarded(async () => {
+    collectAuthErrorReset();
+    const email = (S.f.inEmail || '').trim(), pass = S.f.inPass || '';
+    if (!email || !pass) { S.inErr = true; render(); return; }
+    try {
+      const res = await api('/auth/signin', { method: 'POST', body: { email, password: pass } });
+      setToken(res.token); S.f.inPass = '';
+      location.hash = '#/home';
+      await loadBoot();
+    } catch (e) {
+      if (e.code === 'expired') throw e;
+      S.authMsg = e.message; render();
+    }
+  }),
+  doSignUp: () => guarded(async () => {
+    collectAuthErrorReset();
+    const f = S.f;
+    if (!(f.npFirst || '').trim() || !(f.npLast || '').trim() || !(f.npEmail || '').trim() || !(f.npPass || '')) {
+      S.inErr = true; render(); return;
+    }
+    if (f.npPass !== f.npPass2) { S.pwErr = true; render(); return; }
+    try {
+      const res = await api('/auth/signup', {
+        method: 'POST',
+        body: {
+          firstName: f.npFirst.trim(), lastName: f.npLast.trim(), email: f.npEmail.trim(),
+          password: f.npPass, team: S.signupTeam || 'buffalo',
+          shirtSize: f.npShirt || 'M', years: f.npYears || '1st', songRequest: (f.npSong || '').trim(),
+        },
+      });
+      setToken(res.token); S.f.npPass = ''; S.f.npPass2 = '';
+      location.hash = '#/home';
+      await loadBoot();
+    } catch (e) {
+      if (e.code === 'expired') throw e;
+      S.authMsg = e.message; render();
+    }
+  }),
+  refLogin: () => guarded(async () => {
+    collectAuthErrorReset();
+    const u = (S.f.rlUser || '').trim(), p = S.f.rlPass || '';
+    if (!u || !p) { S.inErr = true; render(); return; }
+    try {
+      const res = await api('/auth/ref-login', { method: 'POST', body: { username: u, password: p } });
+      setToken(res.token); S.f.rlPass = '';
+      location.hash = '#/home';
+      await loadBoot();
+    } catch (e) {
+      if (e.code === 'expired') throw e;
+      S.authMsg = e.message; render();
+    }
+  }),
+  refCreate: () => guarded(async () => {
+    collectAuthErrorReset();
+    const u = (S.f.rcUser || '').trim(), p = S.f.rcPass || '', code = (S.f.rcCode || '').trim();
+    if (!u || !p) { S.inErr = true; render(); return; }
+    try {
+      const res = await api('/auth/ref-create', { method: 'POST', body: { username: u, password: p, joinCode: code } });
+      setToken(res.token); S.f.rcPass = '';
+      location.hash = '#/home';
+      await loadBoot();
+    } catch (e) {
+      if (e.code === 'expired') throw e;
+      if (e.code === 'bad_code') { S.rcErr = true; render(); return; }
+      S.authMsg = e.message; render();
+    }
+  }),
+  gateTeam: (el) => guarded(async () => {
+    await api('/me/team', { method: 'POST', body: { team: el.dataset.team } });
+    S.forceTeamGate = false;
+    await loadBoot(true);
+  }),
+
+  // ── games ──
+  setCat: (el) => { S.cat = el.dataset.cat; render(); },
+  clearSearch: () => { S.gameSearch = ''; render(); },
+  signup: (el) => guarded(async () => {
+    const res = await api('/signups', { method: 'POST', body: { gameId: el.dataset.id } });
+    applyBoot(res); toast("You're in!");
+  }),
+  cancelSignup: (el) => guarded(async () => {
+    const res = await api('/signups/' + encodeURIComponent(el.dataset.id), { method: 'DELETE' });
+    applyBoot(res); toast('Spot cancelled');
+  }),
+  openVideo: (el) => {
+    const g = (S.boot.games || []).find(x => x.id === el.dataset.id);
+    if (!g) return;
+    S.videoOpen = g.videoUrl || ('https://www.youtube.com/results?search_query=' + encodeURIComponent('how to play ' + g.name));
+    render();
+  },
+  closeVideo: () => { S.videoOpen = null; render(); },
+
+  // ── tribes ──
+  tribeTab: (el) => { S.tribeTab = el.dataset.tab; render(); },
+
+  // ── dip ──
+  dipEnter: () => guarded(async () => {
+    const res = await api('/dip', { method: 'POST', body: { action: 'enter' } });
+    applyBoot(res); toast("You're on the cook list");
+  }),
+  dipLeave: () => guarded(async () => {
+    const res = await api('/dip', { method: 'POST', body: { action: 'leave' } });
+    applyBoot(res); toast('Dropped out of the Dip Off');
+  }),
+  dipVote: (el) => guarded(async () => {
+    const res = await api('/dip/vote', { method: 'POST', body: { entryId: parseInt(el.dataset.id, 10) } });
+    applyBoot(res); toast('Vote cast');
+  }),
+
+  // ── relay ──
+  relayJoin: (el) => guarded(async () => {
+    const res = await api('/relay', { method: 'POST', body: { legId: el.dataset.id } });
+    applyBoot(res); toast("You're on the leg");
+  }),
+  relayLeave: () => guarded(async () => {
+    const res = await api('/relay', { method: 'DELETE' });
+    applyBoot(res); toast('Left the relay');
+  }),
+
+  // ── ref board ──
+  refToggle: (el) => {
+    const id = el.dataset.id;
+    if (S.refOpen === id) S.refOpen = null;
+    else {
+      S.refOpen = id;
+      S.entryB = 0; S.entryR = 0; S.walkSearch = ''; S.walkPick = null; S.walkScore = 0;
+    }
+    render();
+  },
+  entryB: (el) => { S.entryB = Math.max(0, S.entryB + parseInt(el.dataset.d, 10)); render(); },
+  entryR: (el) => { S.entryR = Math.max(0, S.entryR + parseInt(el.dataset.d, 10)); render(); },
+  vsSubmit: (el) => guarded(async () => {
+    if (!S.entryB && !S.entryR) { toast('Add a score first'); return; }
+    const st = (S.boot.refStations || []).find(x => x.gameId === el.dataset.game);
+    await api('/results', { method: 'POST', body: { type: 'vs', gameName: st ? st.name : el.dataset.game, ptsBuffalo: S.entryB, ptsRoadhouse: S.entryR } });
+    S.entryB = 0; S.entryR = 0;
+    toast('Logged');
+    loadBoot(true);
+  }),
+  soloDelta: (el) => {
+    const st = (S.boot.refStations || []).find(x => x.gameId === S.refOpen);
+    if (!st) return;
+    const p = (st.signups || [])[parseInt(el.dataset.i, 10)];
+    if (!p) return;
+    S.soloScores[p.name] = Math.max(0, (S.soloScores[p.name] || 0) + parseInt(el.dataset.d, 10));
+    render();
+  },
+  soloSubmit: (el) => guarded(async () => {
+    const st = (S.boot.refStations || []).find(x => x.gameId === el.dataset.game);
+    if (!st) return;
+    const entries = (st.signups || [])
+      .filter(p => (S.soloScores[p.name] || 0) > 0)
+      .map(p => ({ name: p.name, team: p.team, score: S.soloScores[p.name] }));
+    if (!entries.length) { toast('Score at least one player first'); return; }
+    await api('/results', { method: 'POST', body: { type: 'solo', gameName: st.name, entries } });
+    S.soloScores = {};
+    toast('Logged');
+    loadBoot(true);
+  }),
+  walkPick: (el) => { S.walkPick = { name: el.dataset.name, team: el.dataset.team }; S.walkSearch = el.dataset.name; render(); },
+  walkDelta: (el) => { S.walkScore = Math.max(0, S.walkScore + parseInt(el.dataset.d, 10)); render(); },
+  walkSubmit: (el) => guarded(async () => {
+    if (!S.walkPick) return;
+    if (!S.walkScore) { toast('Add a score first'); return; }
+    const st = (S.boot.refStations || []).find(x => x.gameId === el.dataset.game);
+    await api('/results', {
+      method: 'POST',
+      body: { type: 'walk', gameName: st ? st.name : el.dataset.game, playerName: S.walkPick.name, team: S.walkPick.team, score: S.walkScore },
+    });
+    S.walkLog.unshift({ name: S.walkPick.name, score: S.walkScore });
+    S.walkPick = null; S.walkScore = 0; S.walkSearch = '';
+    toast('Logged');
+    loadBoot(true);
+  }),
+
+  // ── admin ──
+  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; render(); },
+  admMode: (el) => guarded(async () => {
+    await api('/admin/settings', { method: 'POST', body: { eventMode: el.dataset.mode } });
+    await afterAdminMutation();
+    toast(el.dataset.mode === 'gameday' ? 'Game Day is live' : 'Back to sign-up mode');
+  }),
+  admToggle: (el) => guarded(async () => {
+    await api('/admin/people', { method: 'POST', body: { userId: parseInt(el.dataset.uid, 10), action: el.dataset.flag } });
+    await loadOverview(true);
+  }),
+  admRemoveGame: (el) => guarded(async () => {
+    await api('/admin/people', { method: 'POST', body: { userId: parseInt(el.dataset.uid, 10), action: 'removeGame', gameId: el.dataset.gid } });
+    await loadOverview(true);
+  }),
+  admSchedAdd: () => guarded(async () => {
+    await api('/admin/schedule', { method: 'POST', body: { action: 'add' } });
+    await loadOverview(true);
+  }),
+  admSchedMove: (el) => guarded(async () => {
+    await api('/admin/schedule', { method: 'POST', body: { action: 'move', id: parseInt(el.dataset.id, 10), dir: parseInt(el.dataset.dir, 10) } });
+    await loadOverview(true);
+  }),
+  admSchedRemove: (el) => guarded(async () => {
+    await api('/admin/schedule', { method: 'POST', body: { action: 'remove', id: parseInt(el.dataset.id, 10) } });
+    await loadOverview(true);
+  }),
+  admSchedView: (el) => { S.schedView = el.dataset.view; render(); },
+  admDipReveal: () => guarded(async () => {
+    const cur = !!(S.overview && S.overview.dip && S.overview.dip.revealed);
+    await api('/admin/settings', { method: 'POST', body: { dipRevealed: !cur } });
+    await afterAdminMutation();
+  }),
+  admDipRemove: (el) => guarded(async () => {
+    await api('/admin/dip/' + el.dataset.id, { method: 'DELETE' });
+    await afterAdminMutation();
+  }),
+  admLegCap: (el) => guarded(async () => {
+    await api('/admin/relay-legs', { method: 'POST', body: { legId: el.dataset.id, capDelta: parseInt(el.dataset.d, 10) } });
+    await loadOverview(true);
+  }),
+  admPeek: () => guarded(async () => {
+    const res = await api('/scores?peek=1');
+    S.adminPeek = { buffalo: res.buffalo, roadhouse: res.roadhouse };
+    render();
+  }),
+  admHidePeek: () => { S.adminPeek = null; render(); },
+  admAskReveal: () => { S.adminConfirmReveal = true; render(); },
+  admCancelReveal: () => { S.adminConfirmReveal = false; render(); },
+  admConfirmReveal: () => guarded(async () => {
+    await api('/admin/settings', { method: 'POST', body: { scoresRevealed: true } });
+    S.adminConfirmReveal = false;
+    await afterAdminMutation();
+    toast('Scores are live on every phone');
+  }),
+  admEditStart: (el) => { S.editingId = parseInt(el.dataset.id, 10); S.editVal = el.dataset.pts; S.f.editVal = el.dataset.pts; render(); },
+  admEditCancel: () => { S.editingId = null; S.editVal = ''; render(); },
+  admEditSave: (el) => guarded(async () => {
+    const v = parseInt(S.f.editVal !== undefined ? S.f.editVal : S.editVal, 10);
+    if (isNaN(v)) { toast('Enter a number'); return; }
+    await api('/admin/results/' + el.dataset.id, { method: 'PATCH', body: { pts: v } });
+    S.editingId = null; S.editVal = '';
+    await loadOverview(true);
+  }),
+  admHistory: (el) => {
+    const id = parseInt(el.dataset.id, 10);
+    S.historyOpenId = S.historyOpenId === id ? null : id;
+    render();
+  },
+  admAnnPush: () => guarded(async () => {
+    const title = (S.f.annTitle || '').trim(), body = (S.f.annBody || '').trim();
+    if (!title && !body) { toast('Give the announcement a title or a body'); return; }
+    await api('/admin/announcements', { method: 'POST', body: { title, body } });
+    S.f.annTitle = ''; S.f.annBody = '';
+    await afterAdminMutation();
+    toast('Pushed to all phones');
+  }),
+};
+
+const CHANGES = {
+  admAddGame: (el) => {
+    const gid = el.value;
+    if (!gid) return;
+    const uid = parseInt(el.dataset.uid, 10);
+    el.value = '';
+    guarded(async () => {
+      await api('/admin/people', { method: 'POST', body: { userId: uid, action: 'addGame', gameId: gid } });
+      await loadOverview(true);
+    });
+  },
+  admRefAssign: (el) => {
+    const gid = el.dataset.gid;
+    const uid = el.value ? parseInt(el.value, 10) : null;
+    guarded(async () => {
+      await api('/admin/ref-assign', { method: 'POST', body: { gameId: gid, userId: uid } });
+      await loadOverview(true);
+    });
+  },
+};
+
+/* debounced live-save inputs (ref join code, relay leg names) */
+const debounceTimers = {};
+function debounceSave(key, fn) {
+  clearTimeout(debounceTimers[key]);
+  debounceTimers[key] = setTimeout(fn, 700);
+}
+
+/* ════════════════════ event delegation ════════════════════ */
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-act]');
+  if (!el) return;
+  const fn = ACTIONS[el.dataset.act];
+  if (fn) { e.preventDefault(); fn(el, e); }
+});
+document.addEventListener('input', (e) => {
+  const el = e.target;
+  if (el.dataset && el.dataset.field) S.f[el.dataset.field] = el.value;
+  if (el.dataset && el.dataset.live === 'gameSearch') { S.gameSearch = el.value; render(); }
+  if (el.dataset && el.dataset.live === 'walkSearch') { S.walkSearch = el.value; S.walkPick = null; render(); }
+  if (el.dataset && el.dataset.debounce === 'refCode') {
+    S.f.refCodeDraft = el.value;
+    const code = el.value.trim();
+    if (code) debounceSave('refCode', () => guarded(async () => {
+      await api('/admin/settings', { method: 'POST', body: { refJoinCode: code } });
+      toast('Join code saved');
+    }));
+  }
+  if (el.dataset && el.dataset.debounce === 'legName') {
+    const legId = el.dataset.leg;
+    const name = el.value.trim();
+    if (name) debounceSave('legName:' + legId, () => guarded(async () => {
+      await api('/admin/relay-legs', { method: 'POST', body: { legId, name } });
+      toast('Leg renamed');
+    }));
+  }
+});
+document.addEventListener('change', (e) => {
+  const el = e.target;
+  if (el.dataset && el.dataset.field) S.f[el.dataset.field] = el.value;
+  if (el.dataset && el.dataset.change && CHANGES[el.dataset.change]) CHANGES[el.dataset.change](el);
+});
+
+/* ════════════════════ polling + init ════════════════════ */
+setInterval(() => {
+  if (document.visibilityState !== 'visible') return;
+  if (!S.token || !S.boot || S.busy) return;
+  loadBoot(true);
+  if (S.route === 'admin' && S.boot.user.isAdmin) loadOverview(true);
+}, 60000);
+
+parseRoute();
+render();
+if (S.token) loadBoot();
+
+})();

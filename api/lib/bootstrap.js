@@ -140,9 +140,10 @@ async function buildBootstrap(pool, user) {
   }
 
   // ── dip off ──
-  // `no` is the stable per-tribe cook number (order of entry). Names are
-  // shown only for the viewer's own tribe — cooks are anonymous to the
-  // other tribe / voters.
+  // `no` is the stable GLOBAL dip number (order of entry across both tribes)
+  // — it's what voters see on the anonymous ballot, so it must be unique.
+  // Names are shown only for the viewer's own tribe — cooks are anonymous to
+  // the other tribe / voters.
   const dipCounts = { buffalo: 0, roadhouse: 0 };
   const dipEntries = [];
   let myEntry = false;
@@ -153,7 +154,7 @@ async function buildBootstrap(pool, user) {
     if (isMine) myEntry = true;
     dipEntries.push({
       id: d.id,
-      no: dipCounts[team],
+      no: dipEntries.length + 1,
       team,
       name: team === user.team ? formatName(d.first_name, d.last_name, d.username) : null,
       isMine,

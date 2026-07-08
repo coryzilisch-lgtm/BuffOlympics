@@ -87,13 +87,15 @@ app.http('admin-overview', {
         votesByEntry[v.dip_entry_id] = v.n;
         totalVotes += v.n;
       }
+      // `no` is the GLOBAL dip number (order of entry across both tribes) —
+      // must match the numbering voters see on the anonymous ballot.
       const dipCounts = { buffalo: 0, roadhouse: 0 };
-      const dipEntries = dipR.recordset.map(d => {
+      const dipEntries = dipR.recordset.map((d, i) => {
         const team = d.team === 'roadhouse' ? 'roadhouse' : 'buffalo';
         dipCounts[team] += 1;
         return {
           id: d.id,
-          no: dipCounts[team],
+          no: i + 1,
           name: formatName(d.first_name, d.last_name, d.username),
           team,
           votes: votesByEntry[d.id] || 0,
