@@ -2,7 +2,6 @@ const { app } = require('@azure/functions');
 const { getPool } = require('../lib/db');
 const { json, requireUser, requireAdmin, formatName } = require('../lib/auth');
 const { settingsFromRows } = require('../lib/bootstrap');
-const { blockLabel } = require('../lib/blocks');
 
 // Flat route 'admin-board' — deliberately NOT under the 'admin/…' segment
 // space, because a two-segment 'admin/overview' collides with admin-actions'
@@ -28,9 +27,11 @@ app.http('ac-overview', {
         pool.request().query('SELECT [key], [value] FROM bo_settings'),
         pool.request().query('SELECT id, first_name, last_name, username, team, is_ref, is_admin FROM bo_users ORDER BY id'),
         pool.request().query(`
-          SELECT id, name, block, cap, players, time_label, points_label, needs_ref, venue, open_play
+          SELECT id, name, needs_ref, venue, open_play, runtime_label
           FROM bo_games ORDER BY sort, id`),
-        pool.request().query('SELECT user_id, game_id FROM bo_signups'),
+        pool.request().query(`
+          SELECT s.user_id, sl.game_id
+          FROM bo_signups s JOIN bo_game_slots sl ON sl.id = s.slot_id`),
         pool.request().query('SELECT id, time_label, ampm, title, place, kind FROM bo_schedule ORDER BY sort, id'),
         pool.request().query(`
           SELECT d.id, d.user_id, d.team, d.created_at, u.first_name, u.last_name, u.username
@@ -55,8 +56,13 @@ app.http('ac-overview', {
       const gameById = {};
       for (const g of gamesR.recordset) gameById[g.id] = g;
 
+      // A person can hold two slots of the same game — dedupe to distinct games.
       const gamesByUser = {};
+      const seenUG = new Set();
       for (const s of signupsR.recordset) {
+        const key = s.user_id + '|' + s.game_id;
+        if (seenUG.has(key)) continue;
+        seenUG.add(key);
         if (!gamesByUser[s.user_id]) gamesByUser[s.user_id] = [];
         const g = gameById[s.game_id];
         gamesByUser[s.user_id].push({ gameId: s.game_id, name: g ? g.name : s.game_id });
@@ -74,10 +80,8 @@ app.http('ac-overview', {
       const gamesCatalog = gamesR.recordset.map(g => ({
         id: g.id,
         name: g.name,
-        block: g.block,
-        blockLabel: blockLabel(g.block),
-        players: g.players,
-        pointsLabel: g.points_label,
+        runtimeLabel: g.runtime_label || '',
+        openPlay: !!g.open_play,
         needsRef: !!g.needs_ref,
         venue: g.venue,
       }));

@@ -187,54 +187,49 @@ function theme() {
   };
 }
 function isRefUser() {
+  // Only actual referees get the station board on Home/Score. Admins are NOT
+  // refs — they use the player app on mobile + the Admin Center on desktop.
   const u = S.boot && S.boot.user;
-  return !!(u && (u.isRef || u.isAdmin));
+  return !!(u && u.isRef);
 }
 
-/* ════════════════════ game sign-up state ════════════════════ */
-function blockOf(g) {
-  return (S.boot.blocks || []).find(b => b.id === g.block) || null;
+/* ════════════════════ slot-based sign-up state ════════════════════ */
+const SIGNUP_MAX = 2;
+function myTeamKey() {
+  return S.boot.user.team === 'roadhouse' ? 'roadhouse' : 'buffalo';
 }
-function blockLabelOf(g) {
-  const b = blockOf(g);
-  return b ? b.label : '';
+function myPickCount() {
+  return (S.boot.mySignups || []).length;
 }
-function mySignupSlots() {
-  // [{gameId, game, slot}] for each of my signups (slot may be null)
-  return (S.boot.mySignups || []).map(x => {
-    const g = (S.boot.games || []).find(gg => gg.id === x.gameId);
-    const b = g ? blockOf(g) : null;
-    return { gameId: x.gameId, game: x.game, slot: b ? b.slot : null };
-  });
-}
-function gameState(g) {
+// Per-slot state for MY tribe: 'signed' | 'open' | 'full' | 'closed' | 'max' | 'conflict' | 'locked'
+function slotState(slot) {
   const mode = S.boot.settings.eventMode;
-  const myCount = (S.boot.mySignups || []).length;
-  const myTeam = S.boot.user.team || 'buffalo';
-  const bl = blockOf(g);
-  const slot = bl ? bl.slot : null;
-  const myTribeRoster = (g.roster && g.roster[myTeam]) || [];
-  const tribeFull = !g.openPlay && g.cap > 0 && myTribeRoster.length >= g.cap && !g.mine;
-  let conflict = null;
-  if (!g.mine && myCount < 2 && slot) {
-    conflict = mySignupSlots().find(x => x.slot && x.slot[0] < slot[1] && slot[0] < x.slot[1]) || null;
+  const team = myTeamKey();
+  const cap = team === 'buffalo' ? slot.capBuffalo : slot.capRoadhouse;
+  const roster = team === 'buffalo' ? slot.buffalo : slot.roadhouse;
+  const otherCap = team === 'buffalo' ? slot.capRoadhouse : slot.capBuffalo;
+  const otherRoster = team === 'buffalo' ? slot.roadhouse : slot.buffalo;
+  let st;
+  if (slot.mine) st = mode === 'gameday' ? 'signed' : 'signed';
+  else if (mode === 'gameday') st = 'locked';
+  else if (cap <= 0) st = 'closed';
+  else if (roster.length >= cap) st = 'full';
+  else if (myPickCount() >= SIGNUP_MAX) st = 'max';
+  else if ((S.boot.mySignups || []).some(x => Math.abs(x.startMin - slot.startMin) < 5)) st = 'conflict';
+  else st = 'open';
+  return { st, cap, roster, otherCap, otherRoster };
+}
+// Whole-game summary for the list card.
+function gameSummary(g) {
+  if (g.openPlay) return { openPlay: true, mine: false };
+  const team = myTeamKey();
+  let cap = 0, filled = 0, mineLabel = null;
+  for (const s of g.slots) {
+    cap += team === 'buffalo' ? s.capBuffalo : s.capRoadhouse;
+    filled += (team === 'buffalo' ? s.buffalo : s.roadhouse).length;
+    if (s.mine) mineLabel = s.label;
   }
-  let st = 'open';
-  if (g.openPlay) st = 'openplay';
-  else if (g.mine) st = 'signed';
-  else if (myCount >= 2) st = 'full';
-  else if (tribeFull) st = 'tribefull';
-  else if (conflict) st = 'conflict';
-  if (!g.openPlay && mode === 'gameday') st = g.mine ? 'signed' : 'locked';
-  const allRoster = [].concat((g.roster && g.roster.buffalo) || [], (g.roster && g.roster.roadhouse) || []);
-  return {
-    st,
-    conflictWith: conflict ? conflict.game : '',
-    slotLabel: bl ? bl.time : 'Walk up anytime',
-    allRoster,
-    myTribeRoster,
-    showCancel: st === 'signed' && mode !== 'gameday',
-  };
+  return { openPlay: false, cap, filled, open: Math.max(0, cap - filled), mine: !!mineLabel, mineLabel };
 }
 
 /* ════════════════════ auth screens ════════════════════ */
@@ -440,12 +435,9 @@ function homeAgenda(T) {
   const items = [];
   const live = sched.find(e => e.kind === 'live');
   if (live) items.push({ time: live.timeLabel + ' ' + live.ampm, name: live.title, state: 'now' });
-  const mine = mySignupSlots()
-    .slice()
-    .sort((a, b) => ((a.slot ? a.slot[0] : 9999) - (b.slot ? b.slot[0] : 9999)));
+  const mine = (S.boot.mySignups || []).slice().sort((a, b) => a.startMin - b.startMin);
   for (const m of mine) {
-    const su = (S.boot.mySignups || []).find(x => x.gameId === m.gameId);
-    items.push({ time: slotStartLabel(su ? su.slotLabel : ''), name: m.game, state: 'up' });
+    items.push({ time: m.label, name: m.game, state: 'up' });
   }
   const next = sched.find(e => e.kind === 'up');
   if (next) items.push({ time: next.timeLabel + ' ' + next.ampm, name: next.title, state: 'up' });
@@ -766,56 +758,39 @@ function gamesScreen() {
   const th = T.th;
   const boot = S.boot;
   const q = (S.gameSearch || '').trim().toLowerCase();
-  const signupCount = (boot.mySignups || []).length;
-  const cats = [{ id: 'all', label: 'All Games' }]
-    .concat((boot.blocks || []).map(b => ({ id: b.id, label: b.id === 'open' ? 'Open Play' : b.label.replace(' Rotation', '') })));
-  const base = q ? (boot.games || []) : (boot.games || []).filter(g => S.cat === 'all' || g.block === S.cat);
-  const visible = base.filter(g => !q || (g.name + ' ' + blockLabelOf(g) + ' ' + (g.venue || '')).toLowerCase().includes(q));
-  const gamesTagline = (boot.games || []).length + ' games · ' + Math.max(0, (boot.blocks || []).length - 1) + ' rotations + open play';
+  const signupCount = myPickCount();
+  const cats = [{ id: 'all', label: 'All' }, { id: 'signup', label: 'Sign-up' }, { id: 'walkup', label: 'Walk-up' }];
+  const cat = S.cat && ['all', 'signup', 'walkup'].includes(S.cat) ? S.cat : 'all';
+  const base = (boot.games || []).filter(g =>
+    cat === 'all' || (cat === 'walkup' ? g.openPlay : !g.openPlay));
+  const visible = base.filter(g => !q || (g.name + ' ' + (g.runtimeLabel || '') + ' ' + (g.venue || '')).toLowerCase().includes(q));
+  const nGames = (boot.games || []).length;
 
   const cards = visible.map(g => {
-    const gs = gameState(g);
-    let action = '';
-    if (gs.st === 'open') action = `<button data-act="signup" data-id="${esc(g.id)}" style="background:${T.A};color:${T.on};font-weight:800;font-size:12.5px;padding:9px 14px;border-radius:8px;">Sign up</button>`;
-    else if (gs.st === 'signed') action = `
-      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;">
-        <span style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:800;color:#3FBF87;">${checkSvg('#3FBF87', 13)}You're in</span>
-        ${gs.showCancel ? `<button data-act="cancelSignup" data-id="${esc(g.id)}" style="font-size:10.5px;color:${th.sub};text-decoration:underline;">Cancel</button>` : ''}
-      </div>`;
-    else if (gs.st === 'full') action = `<span style="font-size:11px;font-weight:700;color:${th.sub};text-align:right;display:block;max-width:78px;">Limit reached (2/2)</span>`;
-    else if (gs.st === 'tribefull') action = `<span style="font-size:11px;font-weight:700;color:${th.sub};text-align:right;display:block;max-width:82px;">Tribe spots full</span>`;
-    else if (gs.st === 'openplay') action = `<span style="font-size:10.5px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:${T.A};border:1px solid ${T.A};border-radius:6px;padding:6px 10px;text-align:center;display:block;">Walk up<br/>anytime</span>`;
-    else if (gs.st === 'conflict') action = `<span style="font-size:11px;font-weight:700;color:${th.sub};text-align:right;display:block;max-width:90px;">Overlaps ${esc(gs.conflictWith)}</span>`;
-    else if (gs.st === 'locked') action = `<span style="font-size:11px;font-weight:700;color:${th.sub};text-align:right;display:block;max-width:82px;">Sign-ups locked</span>`;
+    const gm = gameSummary(g);
+    let status;
+    if (gm.openPlay) status = `<span style="font-size:10.5px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:${T.A};border:1px solid ${T.A};border-radius:6px;padding:6px 10px;text-align:center;display:block;">Walk up<br/>anytime</span>`;
+    else if (gm.mine) status = `<span style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;"><span style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:800;color:#3FBF87;">${checkSvg('#3FBF87', 13)}You're in</span><span style="font-size:10.5px;color:${th.sub};">${esc(gm.mineLabel)}</span></span>`;
+    else if (gm.open <= 0) status = `<span style="font-size:11px;font-weight:700;color:${th.sub};">Full</span>`;
+    else status = `<span style="display:flex;flex-direction:column;align-items:flex-end;gap:1px;"><span style="font-family:'BN Kragen';font-size:18px;color:${T.A};line-height:1;">${gm.open}</span><span style="font-size:9.5px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${th.sub};">spots open</span></span>`;
     return `
-    <div style="width:100%;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-left:3px solid ${T.A};border-radius:9px;padding:14px 15px;">
-      <div style="display:flex;align-items:center;gap:12px;">
-        <button data-act="openGame" data-id="${esc(g.id)}" style="flex:1;min-width:0;text-align:left;background:none;">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px;">
-            <span style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};">${esc(blockLabelOf(g))}</span>
-            ${g.needsRef ? '<span style="font-size:10px;font-weight:700;color:#FF7F2E;">· Ref needed</span>' : ''}
-          </div>
-          <div style="font-family:'BN Kragen';font-size:19px;color:${th.text};text-transform:uppercase;line-height:1;">${esc(g.name)}</div>
-          <div style="display:flex;gap:12px;margin-top:8px;flex-wrap:wrap;">
-            <span style="font-size:11.5px;color:${T.A};font-weight:700;">${esc(gs.slotLabel)}</span>
-            <span style="font-size:11.5px;color:${th.sub};">${esc(g.players)}</span>
-            <span style="font-size:11.5px;color:${th.text};font-weight:700;">${esc(g.pointsLabel || '')}</span>
-          </div>
-        </button>
-        <div style="flex-shrink:0;">${action}</div>
+    <button data-act="openGame" data-id="${esc(g.id)}" style="width:100%;text-align:left;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-left:3px solid ${gm.mine ? '#3FBF87' : T.A};border-radius:9px;padding:14px 15px;display:flex;align-items:center;gap:12px;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-family:'BN Kragen';font-size:19px;color:${th.text};text-transform:uppercase;line-height:1;">${esc(g.name)}</div>
+        <div style="display:flex;gap:10px;margin-top:7px;flex-wrap:wrap;align-items:center;">
+          <span style="font-size:11.5px;color:${T.A};font-weight:700;">${esc(g.runtimeLabel || '')}</span>
+          ${g.venue ? `<span style="font-size:11.5px;color:${th.sub};">${esc(g.venue)}</span>` : ''}
+          ${!gm.openPlay ? `<span style="font-size:11.5px;color:${th.sub};">${g.slots.length} slots</span>` : ''}
+        </div>
       </div>
-      ${gs.allRoster.length ? `
-      <div style="margin-top:10px;padding-top:9px;border-top:1px solid ${th.line};display:flex;align-items:center;gap:7px;">
-        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><circle cx="9" cy="8" r="3" stroke="${th.sub}" stroke-width="2"/><path d="M3 19c0-3 2.7-5 6-5s6 2 6 5" stroke="${th.sub}" stroke-width="2" stroke-linecap="round"/></svg>
-        <span style="font-size:11.5px;color:${th.sub};min-width:0;">${gs.allRoster.length} signed up · ${esc(gs.allRoster.join(' · '))}</span>
-      </div>` : ''}
-    </div>`;
+      <div style="flex-shrink:0;">${status}</div>
+    </button>`;
   }).join('');
 
   return `
   <div style="padding:18px 0 24px;">
     <div style="padding:0 18px;">
-      <span style="font-size:11px;font-weight:600;color:${T.A2};letter-spacing:0.04em;">${esc(gamesTagline)}</span>
+      <span style="font-size:11px;font-weight:600;color:${T.A2};letter-spacing:0.04em;">${nGames} games · pick your time slots</span>
       <h2 style="font-family:'BN Kragen';font-size:36px;color:${th.text};text-transform:uppercase;margin:6px 0 0;line-height:0.92;">The Games</h2>
     </div>
     <div style="padding:15px 18px 0;">
@@ -829,13 +804,13 @@ function gamesScreen() {
       <div style="display:flex;align-items:center;gap:11px;background:${th.panel};border:1px solid ${th.panelBorder};border-radius:10px;padding:12px 14px;">
         ${clipSvg(T.A, 20)}
         <div style="flex:1;min-width:0;">
-          <div style="font-size:12.5px;font-weight:700;color:${th.text};">You're signed up for ${signupCount} of 2 games</div>
-          <div style="font-size:11px;color:${th.sub};">Max two events, and none at overlapping times.</div>
+          <div style="font-size:12.5px;font-weight:700;color:${th.text};">You've claimed ${signupCount} of ${SIGNUP_MAX} game slots</div>
+          <div style="font-size:11px;color:${th.sub};">Tap a game to pick a time slot. Max two, no overlapping times. Relay is separate.</div>
         </div>
       </div>
     </div>
     <div class="scrl" style="display:flex;gap:8px;overflow-x:auto;padding:16px 18px;">
-      ${cats.map(c => `<button data-act="setCat" data-cat="${esc(c.id)}" style="flex-shrink:0;padding:8px 14px;border-radius:7px;font-size:12.5px;font-weight:700;white-space:nowrap;background:${c.id === S.cat ? T.A : 'rgba(255,255,255,0.06)'};color:${c.id === S.cat ? T.on : '#C7D3DB'};border:1px solid rgba(255,255,255,0.10);transition:all .15s;">${esc(c.label)}</button>`).join('')}
+      ${cats.map(c => `<button data-act="setCat" data-cat="${esc(c.id)}" style="flex-shrink:0;padding:8px 16px;border-radius:7px;font-size:12.5px;font-weight:700;white-space:nowrap;background:${c.id === cat ? T.A : 'rgba(255,255,255,0.06)'};color:${c.id === cat ? T.on : '#C7D3DB'};border:1px solid rgba(255,255,255,0.10);transition:all .15s;">${esc(c.label)}</button>`).join('')}
     </div>
     <div style="padding:0 18px;display:flex;flex-direction:column;gap:11px;">
       ${cards}
@@ -849,79 +824,81 @@ function gamesScreen() {
 }
 
 /* ════════════════════ game detail ════════════════════ */
+function slotRowHtml(g, slot) {
+  const T = theme();
+  const th = T.th;
+  const ss = slotState(slot);
+  const team = myTeamKey();
+  const myLabel = team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse';
+  const otherLabel = team === 'buffalo' ? 'Texas Roadhouse' : 'Buffalo';
+  const otherColor = team === 'buffalo' ? '#E0322E' : '#FF7F2E';
+
+  let action;
+  if (ss.st === 'signed') action = `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;"><span style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:800;color:#3FBF87;">${checkSvg('#3FBF87', 13)}You're in</span>${S.boot.settings.eventMode !== 'gameday' ? `<button data-act="leaveSlot" data-slot="${slot.id}" style="font-size:10.5px;color:${th.sub};text-decoration:underline;">Cancel</button>` : ''}</div>`;
+  else if (ss.st === 'open') action = `<button data-act="joinSlot" data-slot="${slot.id}" style="flex-shrink:0;background:${T.A};color:${T.on};font-weight:800;font-size:12.5px;padding:9px 15px;border-radius:8px;">Join</button>`;
+  else if (ss.st === 'full') action = `<span style="flex-shrink:0;font-size:11px;font-weight:700;color:${th.sub};">Full</span>`;
+  else if (ss.st === 'closed') action = `<span style="flex-shrink:0;font-size:10.5px;font-weight:700;color:${th.sub};max-width:80px;text-align:right;">${esc(myLabel)} not in this slot</span>`;
+  else if (ss.st === 'max') action = `<span style="flex-shrink:0;font-size:10.5px;font-weight:700;color:${th.sub};max-width:78px;text-align:right;">Your 2 slots are full</span>`;
+  else if (ss.st === 'conflict') action = `<span style="flex-shrink:0;font-size:10.5px;font-weight:700;color:${th.sub};max-width:78px;text-align:right;">Overlaps a pick</span>`;
+  else action = `<span style="flex-shrink:0;font-size:11px;font-weight:700;color:${th.sub};">Locked</span>`;
+
+  const mine = ss.roster;
+  return `
+  <div style="background:${slot.mine ? T.dim : 'rgba(255,255,255,0.04)'};border:1px solid ${slot.mine ? T.A : th.line};border-radius:10px;padding:12px 14px;">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-family:'BN Kragen';font-size:17px;color:${th.text};line-height:1;">${esc(slot.label)}</div>
+        <div style="display:flex;gap:12px;margin-top:6px;">
+          <span style="font-size:11.5px;font-weight:700;color:${T.A};">${myLabel} ${ss.roster.length}/${ss.cap}</span>
+          <span style="font-size:11.5px;font-weight:700;color:${otherColor};">${otherLabel} ${ss.otherRoster.length}/${ss.otherCap}</span>
+        </div>
+      </div>
+      ${action}
+    </div>
+    ${mine.length ? `<div style="margin-top:9px;padding-top:8px;border-top:1px solid ${th.line};display:flex;flex-wrap:wrap;gap:6px;">${mine.map(n => `<span style="font-size:11px;font-weight:600;color:${th.text};background:rgba(255,255,255,0.06);border-radius:6px;padding:3px 8px;">${esc(n)}</span>`).join('')}</div>` : ''}
+  </div>`;
+}
+
 function gameDetailScreen() {
   const T = theme();
   const th = T.th;
   const g = (S.boot.games || []).find(x => x.id === S.routeArg);
   if (!g) return `<div style="padding:40px 18px;text-align:center;color:${th.sub};font-size:13px;">Game not found. <button data-act="go" data-to="games" style="color:${T.A};font-weight:700;text-decoration:underline;">Back to the games</button></div>`;
-  const gs = gameState(g);
-  const invList = g.inventory ? String(g.inventory).split(', ') : [];
-  const refText = g.needsRef ? 'SUP ref required at this station' : 'No ref needed — self-run';
-  const refBg = g.needsRef ? th.dim : 'rgba(255,255,255,0.04)';
-  const refBorder = g.needsRef ? T.A : 'rgba(255,255,255,0.10)';
-  const refIcon = g.needsRef ? T.A : '#8AA7B9';
 
-  let action = '';
-  if (gs.st === 'open') action = `<button data-act="signup" data-id="${esc(g.id)}" style="width:100%;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:14px;border-radius:9px;box-shadow:0 8px 22px ${T.glow};">Sign up for ${esc(g.name)}</button>`;
-  else if (gs.st === 'signed') action = `
-    <div style="display:flex;align-items:center;gap:10px;background:${T.dim};border:1px solid ${T.A};border-radius:10px;padding:13px 15px;">
-      ${checkSvg(T.A, 18)}
-      <span style="flex:1;font-size:13.5px;font-weight:800;color:${th.text};">You're in — see you at ${esc(g.venue || 'the station')}.</span>
-      ${gs.showCancel ? `<button data-act="cancelSignup" data-id="${esc(g.id)}" style="font-size:11.5px;color:${th.sub};text-decoration:underline;flex-shrink:0;">Cancel</button>` : ''}
-    </div>`;
-  else if (gs.st === 'openplay') action = `<div style="width:100%;text-align:center;background:${T.dim};border:1px dashed ${T.A};color:${T.A};font-weight:800;font-size:12.5px;padding:12px;border-radius:9px;">Open play · walk up anytime — no sign-up needed</div>`;
-  else if (gs.st === 'conflict') action = `<div style="width:100%;text-align:center;background:rgba(255,255,255,0.04);border:1px solid ${th.line};color:${th.sub};font-weight:700;font-size:12.5px;padding:12px;border-radius:9px;">Overlaps ${esc(gs.conflictWith)} — cancel that one first</div>`;
-  else if (gs.st === 'full') action = `<div style="width:100%;text-align:center;background:rgba(255,255,255,0.04);border:1px solid ${th.line};color:${th.sub};font-weight:700;font-size:12.5px;padding:12px;border-radius:9px;">You've filled both of your game spots</div>`;
-  else if (gs.st === 'tribefull') action = `<div style="width:100%;text-align:center;background:rgba(255,255,255,0.04);border:1px solid ${th.line};color:${th.sub};font-weight:700;font-size:12.5px;padding:12px;border-radius:9px;">${esc(T.myTeamName)} spots are full for this game</div>`;
-  else if (gs.st === 'locked') action = `<div style="width:100%;text-align:center;background:rgba(255,255,255,0.04);border:1px solid ${th.line};color:${th.sub};font-weight:700;font-size:12.5px;padding:12px;border-radius:9px;">Game Day — sign-ups are locked</div>`;
-
-  return `
-  <div style="padding:0 0 28px;">
+  const header = `
     <div style="padding:20px 18px 20px;background:linear-gradient(180deg, ${th.hero}, ${th.surface});position:relative;overflow:hidden;">
       <img src="/assets/logos/buffalo-white.png" alt="" style="position:absolute;right:-50px;top:-20px;width:200px;opacity:0.06;"/>
-      <span style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A2};">${esc(blockLabelOf(g))}</span>
+      <span style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A2};">${esc(g.runtimeLabel || '')}</span>
       <h2 style="font-family:'BN Kragen';font-size:34px;color:${th.text};text-transform:uppercase;margin:8px 0 0;line-height:0.92;">${esc(g.name)}</h2>
-      <div style="display:flex;align-items:center;gap:8px;margin-top:12px;">
+      ${g.venue ? `<div style="display:flex;align-items:center;gap:8px;margin-top:12px;">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M12 2C8 2 5 5 5 9c0 5 7 13 7 13s7-8 7-13c0-4-3-7-7-7z" stroke="${T.A}" stroke-width="2"/><circle cx="12" cy="9" r="2.4" fill="${T.A}"/></svg>
-        <span style="font-size:13px;color:#C7D3DB;font-weight:600;">${esc(g.venue || '')}</span>
+        <span style="font-size:13px;color:#C7D3DB;font-weight:600;">${esc(g.venue)}</span></div>` : ''}
+    </div>`;
+
+  if (g.openPlay) {
+    return `<div style="padding:0 0 28px;">${header}
+      <div style="padding:18px;">
+        <div style="text-align:center;background:${T.dim};border:1px dashed ${T.A};border-radius:12px;padding:22px 18px;">
+          <div style="font-family:'BN Kragen';font-size:22px;color:${th.text};text-transform:uppercase;">Walk up anytime</div>
+          <div style="font-size:13px;color:${th.sub};margin-top:8px;line-height:1.5;">No sign-up needed — just head over during the games and play. Your ref will score you on the spot.</div>
+        </div>
       </div>
-    </div>
-    <div style="padding:18px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:9px;">
-      <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:9px;padding:13px 11px;">
-        <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${th.sub};">Players</div>
-        <div style="font-size:14px;font-weight:700;color:${th.text};margin-top:5px;line-height:1.2;">${esc(g.players)}</div>
-      </div>
-      <div style="background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:9px;padding:13px 11px;">
-        <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${th.sub};">Time</div>
-        <div style="font-size:14px;font-weight:700;color:${th.text};margin-top:5px;line-height:1.2;">${esc(g.timeLabel || gs.slotLabel)}</div>
-      </div>
-      <div style="background:${T.A};border-radius:9px;padding:13px 11px;">
-        <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.on};">Points</div>
-        <div style="font-size:14px;font-weight:800;color:${T.on};margin-top:5px;line-height:1.2;">${esc(g.pointsLabel || 'TBD')}</div>
-      </div>
-    </div>
-    <div style="padding:0 18px;">
-      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:8px;">How to play</div>
-      <p style="font-size:14.5px;line-height:1.6;color:#DCE5EB;margin:0;">${esc(g.desc || '')}</p>
-    </div>
+    </div>`;
+  }
+
+  const slots = (g.slots || []).map(s => slotRowHtml(g, s)).join('');
+  return `<div style="padding:0 0 28px;">${header}
     <div style="padding:16px 18px 0;">
-      <button data-act="openVideo" data-id="${esc(g.id)}" style="width:100%;position:relative;height:170px;border-radius:12px;overflow:hidden;border:1px solid ${th.line};background:radial-gradient(140px 100px at 50% 42%, ${T.dim}, transparent 72%), linear-gradient(160deg,#001b2e,#00101b);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;">
-        <span style="width:58px;height:58px;border-radius:50%;background:${T.A};display:flex;align-items:center;justify-content:center;box-shadow:0 0 28px ${T.glow};"><svg width="22" height="22" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="${T.on}"/></svg></span>
-        <span style="font-size:14.5px;font-weight:800;color:#F3F7F5;">See how it's played</span>
-        <span style="position:absolute;bottom:11px;left:13px;display:flex;align-items:center;gap:6px;font-size:10.5px;font-weight:700;letter-spacing:0.03em;color:#8AA7B9;"><svg width="16" height="12" viewBox="0 0 24 17"><rect x="1" y="1" width="22" height="15" rx="4" fill="#E0322E"/><path d="M10 5.5v6l5-3z" fill="#fff"/></svg>YouTube demo</span>
-      </button>
-    </div>
-    <div style="padding:16px 18px 0;">${action}</div>
-    <div style="padding:18px;">
-      <div style="display:flex;align-items:center;gap:10px;background:${refBg};border:1px solid ${refBorder};border-radius:9px;padding:13px 15px;margin-bottom:14px;">
-        ${shieldSvg(refIcon)}
-        <span style="font-size:13.5px;font-weight:700;color:${th.text};">${refText}</span>
-      </div>
-      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${th.sub};margin-bottom:9px;">Inventory</div>
-      <div style="display:flex;flex-wrap:wrap;gap:8px;">
-        ${invList.map(it => `<span style="font-size:12.5px;font-weight:600;color:#DCE5EB;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.10);border-radius:7px;padding:7px 12px;">${esc(it)}</span>`).join('')}
+      <div style="display:flex;align-items:flex-start;gap:10px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:10px;padding:12px 14px;">
+        ${clipSvg(T.A, 18)}
+        <div style="font-size:11.5px;color:${th.sub};line-height:1.5;">Reserve a time slot below for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong>. You can arrive anytime during the game's window — after it, it's open walk-up. Two game slots max, and no overlapping times.</div>
       </div>
     </div>
+    <div style="padding:14px 18px 0;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:10px;">Time slots</div>
+      <div style="display:flex;flex-direction:column;gap:9px;">${slots}</div>
+    </div>
+    ${g.needsRef ? `<div style="padding:16px 18px 0;"><div style="display:flex;align-items:center;gap:10px;background:${th.dim};border:1px solid ${T.A};border-radius:9px;padding:13px 15px;">${shieldSvg(T.A)}<span style="font-size:13.5px;font-weight:700;color:${th.text};">SUP ref required at this station</span></div></div>` : ''}
   </div>`;
 }
 
@@ -1373,59 +1350,31 @@ function deskGamesScreen() {
   const myName = user.name || '';
 
   const mkCard = (g) => {
-    const gs = gameState(g);
-    const chips = gs.allRoster.slice(0, 7);
-    const more = Math.max(0, gs.allRoster.length - 7);
-    const rowBg = gs.st === 'signed' ? dDim : '#fff';
-    const rowBorder = gs.st === 'signed' ? dA : '#E4EAE8';
-    let action = '';
-    if (gs.st === 'open') action = `<button data-act="signup" data-id="${esc(g.id)}" style="width:100%;background:${dA};color:${dOn};font-weight:800;font-size:13px;padding:10px;border-radius:8px;">Sign up</button>`;
-    else if (gs.st === 'signed' && gs.showCancel) action = `<button data-act="cancelSignup" data-id="${esc(g.id)}" style="width:100%;background:${dDim};border:1px solid ${dA};color:${dA};font-weight:800;font-size:13px;padding:10px;border-radius:8px;display:flex;align-items:center;justify-content:center;gap:6px;">${checkSvg(dA, 14, 2.6)}You're in · cancel</button>`;
-    else if (gs.st === 'signed') action = `<div style="width:100%;text-align:center;background:${dDim};border:1px solid ${dA};color:${dA};font-weight:800;font-size:11.5px;padding:9px;border-radius:8px;">You're in</div>`;
-    else if (gs.st === 'conflict') action = `<div style="width:100%;text-align:center;background:#FBF1E6;border:1px solid #EBCBA0;color:#B0741C;font-weight:700;font-size:11.5px;padding:9px;border-radius:8px;">Overlaps ${esc(gs.conflictWith)}</div>`;
-    else if (gs.st === 'full') action = `<div style="width:100%;text-align:center;background:#EEF2F1;color:#6D7C83;font-weight:700;font-size:11.5px;padding:9px;border-radius:8px;">You've filled both spots</div>`;
-    else if (gs.st === 'locked') action = `<div style="width:100%;text-align:center;background:#EEF2F1;color:#9AA7A5;font-weight:700;font-size:11.5px;padding:9px;border-radius:8px;">Sign-ups locked</div>`;
-    else if (gs.st === 'tribefull') action = `<div style="width:100%;text-align:center;background:#EEF2F1;color:#6D7C83;font-weight:700;font-size:11.5px;padding:9px;border-radius:8px;">${esc(T.myTeamName)} spots are full</div>`;
-    else if (gs.st === 'openplay') action = `<div style="width:100%;text-align:center;background:${dDim};border:1px dashed ${dA};color:${dA};font-weight:800;font-size:11.5px;padding:9px;border-radius:8px;">Open play · no sign-up needed</div>`;
-    const capLabel = g.openPlay ? 'Open play' : (gs.myTribeRoster.length + ' / ' + g.cap + ' ' + T.myTeamName);
+    const gm = gameSummary(g);
+    const signed = gm.mine;
+    const rowBg = signed ? dDim : '#fff';
+    const rowBorder = signed ? dA : '#E4EAE8';
+    let status;
+    if (gm.openPlay) status = `<div style="text-align:center;background:${dDim};border:1px dashed ${dA};color:${dA};font-weight:800;font-size:11.5px;padding:9px;border-radius:8px;">Walk up anytime · no sign-up</div>`;
+    else if (signed) status = `<div style="text-align:center;background:${dDim};border:1px solid ${dA};color:${dA};font-weight:800;font-size:12px;padding:9px;border-radius:8px;display:flex;align-items:center;justify-content:center;gap:6px;">${checkSvg(dA, 14, 2.6)}You're in · ${esc(gm.mineLabel)}</div>`;
+    else if (gm.open <= 0) status = `<div style="text-align:center;background:#EEF2F1;color:#6D7C83;font-weight:700;font-size:11.5px;padding:9px;border-radius:8px;">Full</div>`;
+    else status = `<div style="text-align:center;background:#fff;border:1px solid ${dA};color:${dA};font-weight:800;font-size:12px;padding:9px;border-radius:8px;">${gm.open} spots open · pick a slot</div>`;
     return `
-    <div style="background:${rowBg};border:1px solid ${rowBorder};border-radius:10px;padding:15px 16px;display:flex;flex-direction:column;">
+    <button data-act="openGame" data-id="${esc(g.id)}" style="text-align:left;background:${rowBg};border:1px solid ${rowBorder};border-radius:10px;padding:15px 16px;display:flex;flex-direction:column;">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
-        <button data-act="openGame" data-id="${esc(g.id)}" style="min-width:0;text-align:left;">
+        <div style="min-width:0;">
           <div style="font-size:15.5px;font-weight:800;color:#00253D;line-height:1.2;">${esc(g.name)}</div>
-          <div style="font-size:12px;color:#6D7C83;margin-top:3px;">${esc(g.venue || '')} · ${esc(g.players)} · ${esc(g.pointsLabel || '')}</div>
-        </button>
+          <div style="font-size:12px;color:#6D7C83;margin-top:3px;">${esc(g.runtimeLabel || '')}${g.venue ? ' · ' + esc(g.venue) : ''}${!g.openPlay ? ' · ' + g.slots.length + ' slots' : ''}</div>
+        </div>
         ${g.needsRef ? `<span style="flex-shrink:0;font-size:9.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:${dA};border:1px solid ${dA};border-radius:5px;padding:2px 7px;">Ref</span>` : ''}
       </div>
-      ${!g.openPlay ? `<div style="margin-top:9px;font-size:11px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${dA};">${esc(capLabel)}</div>` : ''}
-      <div style="margin-top:12px;display:flex;align-items:center;gap:8px;min-height:30px;">
-        ${gs.allRoster.length ? `
-        <div style="display:flex;">
-          ${chips.map(n => `<span title="${esc(n)}" style="width:28px;height:28px;border-radius:50%;margin-left:-6px;border:2px solid ${rowBg};background:${T.deskChipBg};color:${T.deskChipFg};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:800;">${esc(initials(n))}</span>`).join('')}
-        </div>
-        <span style="font-size:11.5px;color:#6D7C83;">${gs.allRoster.length} signed up${more ? ' · +' + more + ' more' : ''}</span>`
-        : (!g.openPlay ? '<span style="font-size:11.5px;color:#9AA7A5;font-style:italic;">No one signed up yet</span>' : '')}
-      </div>
-      <div style="margin-top:13px;">${action}</div>
-    </div>`;
+      <div style="margin-top:13px;">${status}</div>
+    </button>`;
   };
 
-  const blocksHtml = (boot.blocks || []).map(b => {
-    const games = (boot.games || []).filter(g => g.block === b.id);
-    if (!games.length) return '';
-    return `
-    <div>
-      <div style="display:flex;align-items:baseline;gap:12px;margin-bottom:13px;padding-bottom:11px;border-bottom:2px solid #00253D;">
-        <span style="font-family:'BN Kragen';font-size:22px;color:#00253D;text-transform:uppercase;">${esc(b.label)}</span>
-        <span style="font-size:12.5px;font-weight:700;color:${dA};letter-spacing:0.02em;">${esc(b.time)}</span>
-        <span style="font-size:12px;color:#6D7C83;">· ${esc(b.place)}</span>
-        <span style="margin-left:auto;font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#9AA7A5;">${games.length} games</span>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${games.map(mkCard).join('')}</div>
-    </div>`;
-  }).join('');
+  const blocksHtml = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${(boot.games || []).map(mkCard).join('')}</div>`;
 
-  const mySignups = (boot.mySignups || []).map(x => {
+  const mySignups = (boot.mySignups || []).slice().sort((a, b) => a.startMin - b.startMin).map(x => {
     const g = (boot.games || []).find(gg => gg.id === x.gameId);
     return { ...x, where: g ? g.venue : '' };
   });
@@ -1457,8 +1406,8 @@ function deskGamesScreen() {
           ${mySignups.map(m => `
           <div style="border:1px solid ${dA};background:${dDim};border-radius:10px;padding:14px;">
             <div style="font-size:14.5px;font-weight:800;color:#00253D;">${esc(m.game)}</div>
-            <div style="font-size:12px;color:#6D7C83;margin-top:4px;">${esc(m.slotLabel)} · ${esc(m.where || '')}</div>
-            ${!isGameDay ? `<button data-act="cancelSignup" data-id="${esc(m.gameId)}" style="margin-top:11px;font-size:11.5px;font-weight:700;color:${dA};display:flex;align-items:center;gap:5px;">Cancel this spot</button>` : ''}
+            <div style="font-size:12px;color:#6D7C83;margin-top:4px;">${esc(m.label)}${m.where ? ' · ' + esc(m.where) : ''}</div>
+            ${!isGameDay ? `<button data-act="leaveSlot" data-slot="${m.slotId}" style="margin-top:11px;font-size:11.5px;font-weight:700;color:${dA};display:flex;align-items:center;gap:5px;">Cancel this spot</button>` : ''}
           </div>`).join('')}
         </div>` : `
         <div style="text-align:center;padding:30px 10px;">
@@ -1567,10 +1516,11 @@ function admGamesSection(ov) {
   <div style="background:#fff;border:1px solid #E0E6E5;border-left:3px solid #FF5F00;border-radius:10px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;">
     <div style="min-width:0;">
       <div style="display:flex;align-items:center;gap:8px;">
-        <span style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">${esc(g.blockLabel || '')}</span>
+        <span style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">${esc(g.runtimeLabel || '')}</span>
+        ${g.openPlay ? '<span style="font-size:9px;font-weight:800;color:#fff;background:#00253D;border-radius:4px;padding:2px 6px;">Walk-up</span>' : ''}
       </div>
       <div style="font-family:'BN Kragen';font-size:18px;color:#00253D;text-transform:uppercase;line-height:1;margin-top:5px;">${esc(g.name)}</div>
-      <div style="font-size:12px;color:#6D7C83;margin-top:6px;">${esc(g.players)} · <span style="color:${g.needsRef ? '#FF5F00' : '#9AA7A5'};font-weight:700;">${g.needsRef ? 'Ref needed' : 'No ref'}</span> · ${esc(g.venue || '')}</div>
+      <div style="font-size:12px;color:#6D7C83;margin-top:6px;"><span style="color:${g.needsRef ? '#FF5F00' : '#9AA7A5'};font-weight:700;">${g.needsRef ? 'Ref needed' : 'No ref'}</span>${g.venue ? ' · ' + esc(g.venue) : ''}</div>
     </div>
   </div>`).join('');
   return `
@@ -2312,12 +2262,12 @@ const ACTIONS = {
   // ── games ──
   setCat: (el) => { S.cat = el.dataset.cat; render(); },
   clearSearch: () => { S.gameSearch = ''; render(); },
-  signup: (el) => guarded(async () => {
-    const res = await api('/signups', { method: 'POST', body: { gameId: el.dataset.id } });
+  joinSlot: (el) => guarded(async () => {
+    const res = await api('/signups', { method: 'POST', body: { slotId: parseInt(el.dataset.slot, 10) } });
     applyBoot(res); toast("You're in!");
   }),
-  cancelSignup: (el) => guarded(async () => {
-    const res = await api('/signups/' + encodeURIComponent(el.dataset.id), { method: 'DELETE' });
+  leaveSlot: (el) => guarded(async () => {
+    const res = await api('/signups/' + encodeURIComponent(el.dataset.slot), { method: 'DELETE' });
     applyBoot(res); toast('Spot cancelled');
   }),
   openVideo: (el) => {
