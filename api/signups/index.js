@@ -61,24 +61,45 @@ async function handleSignup(pool, user, slotId) {
     }
   }
 
-  // Per-tribe slot capacity.
-  const capR = await pool.request()
+  // Per-tribe slot capacity — ATOMIC. This is the authority (the checks above
+  // are fast, friendly pre-validation off a possibly-cached view). We take an
+  // UPDLOCK/HOLDLOCK on THIS slot's row so every request competing for the same
+  // slot serializes: each one re-counts under the lock and inserts only if
+  // there's still room. Different slots lock different rows, so unrelated
+  // sign-ups never block each other. The lock lives in the DB, so it holds even
+  // across separate SWA Function instances. Single-row lock per request ⇒ no
+  // deadlock cycle.
+  const ins = await pool.request()
+    .input('uid', sql.Int, user.id)
     .input('sid', sql.Int, sid)
     .input('team', sql.NVarChar, team)
     .query(`
-      SELECT COUNT(*) AS n
-      FROM bo_signups s JOIN bo_users u ON u.id = s.user_id
-      WHERE s.slot_id = @sid AND u.team = @team`);
-  if (capR.recordset[0].n >= teamCap) {
-    return json({ error: `That ${slot.label} slot is full for your tribe` }, 409);
-  }
+      SET NOCOUNT ON;
+      SET XACT_ABORT ON;
+      BEGIN TRANSACTION;
+        DECLARE @cap INT;
+        SELECT @cap = CASE WHEN @team = 'buffalo' THEN cap_buffalo ELSE cap_roadhouse END
+          FROM bo_game_slots WITH (UPDLOCK, HOLDLOCK) WHERE id = @sid;
+        DECLARE @n INT = (
+          SELECT COUNT(*) FROM bo_signups s JOIN bo_users u ON u.id = s.user_id
+          WHERE s.slot_id = @sid AND u.team = @team
+        );
+        DECLARE @already INT = CASE WHEN EXISTS
+          (SELECT 1 FROM bo_signups WHERE user_id = @uid AND slot_id = @sid) THEN 1 ELSE 0 END;
+        DECLARE @inserted INT = 0;
+        IF @already = 0 AND @cap IS NOT NULL AND @n < @cap
+        BEGIN
+          INSERT INTO bo_signups (user_id, slot_id) VALUES (@uid, @sid);
+          SET @inserted = 1;
+        END
+      COMMIT TRANSACTION;
+      SELECT @inserted AS inserted, @already AS already;`);
 
-  await pool.request()
-    .input('uid', sql.Int, user.id)
-    .input('sid', sql.Int, sid)
-    .query(`
-      IF NOT EXISTS (SELECT 1 FROM bo_signups WHERE user_id = @uid AND slot_id = @sid)
-        INSERT INTO bo_signups (user_id, slot_id) VALUES (@uid, @sid);`);
+  const row = ins.recordset[0] || {};
+  if (!row.inserted && !row.already) {
+    // Lost the race — someone else took the last spot between our read and write.
+    return json({ error: `That ${slot.label} slot just filled up for your tribe — grab another time` }, 409);
+  }
 
   return json({ bootstrap: await buildBootstrap(pool, user, { fresh: true }) });
 }
