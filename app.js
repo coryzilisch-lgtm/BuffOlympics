@@ -8,7 +8,7 @@
 const S = {
   token: localStorage.getItem('bo_token') || null,
   boot: null,            // GET /api/bootstrap payload
-  overview: null,        // GET /api/admin-overview payload
+  overview: null,        // GET /api/admin-board payload
   route: 'home', routeArg: null,
   loading: false, bootError: null,
   isDesk: window.innerWidth >= 940,
@@ -147,7 +147,7 @@ async function loadBoot(silent) {
 async function loadOverview(silent) {
   if (!S.token) return;
   try {
-    S.overview = await api('/admin-overview');
+    S.overview = await api('/admin-board');
   } catch (e) {
     if (!silent) toast(e.message);
   }

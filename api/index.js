@@ -12,7 +12,7 @@ require('./dip-vote/index');
 require('./relay/index');
 require('./scores/index');
 require('./results/index');
-require('./admin-overview/index');
+require('./admin-board/index');
 require('./admin-actions/index');
 require('./admin-results/index');
 require('./admin-dip/index');
