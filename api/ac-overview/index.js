@@ -10,10 +10,10 @@ const { blockLabel } = require('../lib/blocks');
 // a FRESH function name (was 'admin-overview'): SWA wedges a function name to
 // 404 once it deploys with a conflicting route, and only a full rename
 // (folder + name + route) forces re-registration.
-app.http('admin-board', {
+app.http('ac-overview', {
   methods: ['GET'],
   authLevel: 'anonymous',
-  route: 'admin-board',
+  route: 'ac-overview',
   handler: async (request, context) => {
     try {
       const user = await requireUser(request);

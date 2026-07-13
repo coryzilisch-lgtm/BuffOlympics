@@ -2,10 +2,10 @@ const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
 const { json, requireUser, requireAdmin, formatName } = require('../lib/auth');
 
-app.http('admin-results', {
+app.http('ac-results', {
   methods: ['PATCH'],
   authLevel: 'anonymous',
-  route: 'admin/results/{id}',
+  route: 'ac/results/{id}',
   handler: async (request, context) => {
     try {
       const user = await requireUser(request);

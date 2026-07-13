@@ -212,10 +212,10 @@ async function handleRefAssign(pool, body) {
   return json({ ok: true });
 }
 
-app.http('admin-actions', {
+app.http('ac-actions', {
   methods: ['POST'],
   authLevel: 'anonymous',
-  route: 'admin/{action}',
+  route: 'ac/{action}',
   handler: async (request, context) => {
     try {
       const user = await requireUser(request);

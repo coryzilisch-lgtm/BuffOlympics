@@ -1,5 +1,5 @@
 /* Buff Olympics service worker — precache the app shell, network-first for API. */
-const CACHE = 'buffolympics-v1';
+const CACHE = 'buffolympics-v2';
 const SHELL = [
   '/',
   '/index.html',
@@ -39,7 +39,23 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  // Static assets: cache first, then network (and cache the result).
+  // App code (JS/CSS): network-first so a new deploy is picked up immediately;
+  // fall back to cache only when offline. (Cache-first here would pin a stale
+  // app.js across deploys.)
+  if (url.pathname.endsWith('.js') || url.pathname.endsWith('.css')) {
+    e.respondWith(
+      fetch(e.request).then((res) => {
+        if (res.ok) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(e.request, copy));
+        }
+        return res;
+      }).catch(() => caches.match(e.request))
+    );
+    return;
+  }
+
+  // Other static assets (images, fonts): cache first, then network.
   e.respondWith(
     caches.match(e.request).then((hit) => hit || fetch(e.request).then((res) => {
       if (res.ok) {
