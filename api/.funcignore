@@ -1,0 +1,5 @@
+test
+tests
+.vscode
+*.test.js
+local.settings.json

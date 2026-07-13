@@ -1,0 +1,10 @@
+{
+  "name": "buffolympics-api",
+  "version": "1.0.0",
+  "description": "Buff Olympics — Azure Functions API (SWA managed functions, Fabric SQL)",
+  "main": "index.js",
+  "dependencies": {
+    "@azure/functions": "^4.5.0",
+    "mssql": "^11.0.1"
+  }
+}
