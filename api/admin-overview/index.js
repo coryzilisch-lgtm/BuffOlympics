@@ -4,10 +4,14 @@ const { json, requireUser, requireAdmin, formatName } = require('../lib/auth');
 const { settingsFromRows } = require('../lib/bootstrap');
 const { blockLabel } = require('../lib/blocks');
 
+// Route is the flat 'admin-overview' (NOT 'admin/overview') on purpose: a
+// two-segment 'admin/overview' collides with admin-actions' 'admin/{action}'
+// template and the Functions host drops one, 404-ing the GET. Keeping this
+// off the 'admin/…' segment space avoids the conflict.
 app.http('admin-overview', {
   methods: ['GET'],
   authLevel: 'anonymous',
-  route: 'admin/overview',
+  route: 'admin-overview',
   handler: async (request, context) => {
     try {
       const user = await requireUser(request);
