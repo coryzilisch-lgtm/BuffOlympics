@@ -119,6 +119,21 @@ walk-up. For refs, a walk-up station shows the **signed-up roster to score** fir
   in the API (`api/lib/bootstrap.js` → `signupMaxFor`), not the schema.
 - Sign-up API: `POST /api/signups {slotId}` / `DELETE /api/signups/{slotId}`.
 
+**Editing the lineup mid-event — use the Admin Center, not the migration.** Re-running `002` wipes
+sign-ups (it drops `bo_signups` and reseeds slots with new IDs). Instead, **Admin Center → Games &
+slots** lets you add/edit/remove games and time slots from the browser. Editing a time or a cap is
+an `UPDATE` on a stable slot ID, so **everyone stays signed up**; deleting a slot or game only drops
+that item's sign-ups. It's the safe path once people have started signing up.
+
+### Keeping Fabric load down
+
+The event runs on the small **shared F2** Fabric capacity, so the read-heavy `GET /api/bootstrap`
+(hit on every load and re-polled every 60s by every player) splits into a **shared block cached
+in-process ~20s** (`api/lib/cache.js`) plus **2 per-user queries** that always run live. Under a
+game-day crowd this collapses the shared dozen-query cost to ~3 refills/minute instead of once per
+request. Writes (`{fresh:true}` on signup/dip/relay, `bustSharedBootstrap()` on results/admin/team)
+bust the cache so nobody sees stale data beyond their own poll.
+
 ## Gotchas hit during setup (so the next person doesn't relearn them)
 
 - **Fabric SQL database name:** use the **full `Initial Catalog`** value from the DB's connection

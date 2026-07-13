@@ -57,7 +57,7 @@ app.http('dip', {
             DELETE FROM bo_dip_entries WHERE user_id = @uid;`);
       }
 
-      return json({ bootstrap: await buildBootstrap(pool, user) });
+      return json({ bootstrap: await buildBootstrap(pool, user, { fresh: true }) });
     } catch (err) {
       context.error('dip error:', err);
       return json({ error: 'Internal server error' }, 500);

@@ -17,7 +17,7 @@ app.http('relay', {
         await pool.request()
           .input('uid', sql.Int, user.id)
           .query('DELETE FROM bo_relay_signups WHERE user_id = @uid');
-        return json({ bootstrap: await buildBootstrap(pool, user) });
+        return json({ bootstrap: await buildBootstrap(pool, user, { fresh: true }) });
       }
 
       // POST — join a leg (switching removes me from any other leg).
@@ -43,7 +43,7 @@ app.http('relay', {
       const currentLeg = mineR.recordset.length ? mineR.recordset[0].leg_id : null;
       if (currentLeg === leg.id) {
         // Already in this leg — no-op.
-        return json({ bootstrap: await buildBootstrap(pool, user) });
+        return json({ bootstrap: await buildBootstrap(pool, user, { fresh: true }) });
       }
 
       const countR = await pool.request()
@@ -64,7 +64,7 @@ app.http('relay', {
           DELETE FROM bo_relay_signups WHERE user_id = @uid;
           INSERT INTO bo_relay_signups (user_id, leg_id) VALUES (@uid, @lid);`);
 
-      return json({ bootstrap: await buildBootstrap(pool, user) });
+      return json({ bootstrap: await buildBootstrap(pool, user, { fresh: true }) });
     } catch (err) {
       context.error('relay error:', err);
       return json({ error: 'Internal server error' }, 500);

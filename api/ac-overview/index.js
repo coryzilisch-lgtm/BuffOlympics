@@ -22,7 +22,7 @@ app.http('ac-overview', {
       const pool = await getPool();
       const [
         settingsR, usersR, gamesR, signupsR, scheduleR, dipR, votesR,
-        legsR, relayR, scoresR, resultsR, historyR, refAssignR, annR,
+        legsR, relayR, scoresR, resultsR, historyR, refAssignR, annR, gameSlotsR,
       ] = await Promise.all([
         pool.request().query('SELECT [key], [value] FROM bo_settings'),
         pool.request().query('SELECT id, first_name, last_name, username, team, is_ref, is_admin FROM bo_users ORDER BY id'),
@@ -49,6 +49,15 @@ app.http('ac-overview', {
         pool.request().query('SELECT id, result_id, pts, by_name, created_at FROM bo_result_history ORDER BY created_at DESC, id DESC'),
         pool.request().query('SELECT game_id, user_id FROM bo_ref_assignments'),
         pool.request().query('SELECT id, title, body, created_at FROM bo_announcements ORDER BY created_at DESC, id DESC'),
+        pool.request().query(`
+          SELECT sl.id, sl.game_id, sl.start_min, sl.label, sl.cap_buffalo, sl.cap_roadhouse, sl.sort,
+                 SUM(CASE WHEN u.team = 'buffalo' THEN 1 ELSE 0 END) AS n_buffalo,
+                 SUM(CASE WHEN u.team = 'roadhouse' THEN 1 ELSE 0 END) AS n_roadhouse
+          FROM bo_game_slots sl
+          LEFT JOIN bo_signups s ON s.slot_id = sl.id
+          LEFT JOIN bo_users u ON u.id = s.user_id
+          GROUP BY sl.id, sl.game_id, sl.start_min, sl.label, sl.cap_buffalo, sl.cap_roadhouse, sl.sort
+          ORDER BY sl.game_id, sl.sort, sl.start_min`),
       ]);
 
       const settings = settingsFromRows(settingsR.recordset);
@@ -77,6 +86,19 @@ app.http('ac-overview', {
         games: gamesByUser[u.id] || [],
       }));
 
+      const slotsByGame = {};
+      for (const s of gameSlotsR.recordset) {
+        if (!slotsByGame[s.game_id]) slotsByGame[s.game_id] = [];
+        slotsByGame[s.game_id].push({
+          id: s.id,
+          startMin: s.start_min,
+          label: s.label,
+          capBuffalo: s.cap_buffalo,
+          capRoadhouse: s.cap_roadhouse,
+          nBuffalo: s.n_buffalo || 0,
+          nRoadhouse: s.n_roadhouse || 0,
+        });
+      }
       const gamesCatalog = gamesR.recordset.map(g => ({
         id: g.id,
         name: g.name,
@@ -84,6 +106,7 @@ app.http('ac-overview', {
         openPlay: !!g.open_play,
         needsRef: !!g.needs_ref,
         venue: g.venue,
+        slots: slotsByGame[g.id] || [],
       }));
 
       const schedule = scheduleR.recordset.map(r => ({

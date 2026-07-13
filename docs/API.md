@@ -75,6 +75,11 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 | `POST /api/admin/announcements` | `{title, body}` → `{ok:true}` |
 | `POST /api/admin/schedule` | `{action:'add'}` (appends "New Block" 5:00 PM), `{action:'remove', id}`, `{action:'move', id, dir:-1|1}`, `{action:'update', id, timeLabel?, ampm?, title?, place?, kind?}`. `{ok:true}` |
 | `POST /api/admin/ref-assign` | `{gameId, userId}` (userId null/'' = unassign). `{ok:true}` |
+| `POST /api/ac/games` | Games + slots CRUD, **safe mid-event** (edits never touch sign-ups; deletes drop only that item's sign-ups). Actions:<br>`{action:'addGame', name, timeLabel?, venue?, needsRef?, openPlay?}` → `{ok, id}` (id derived from name).<br>`{action:'updateGame', gameId, name?, timeLabel?, venue?, needsRef?, openPlay?}`.<br>`{action:'removeGame', gameId}` (deletes its slots + sign-ups + ref assignment).<br>`{action:'addSlot', gameId, startMin, label, capBuffalo, capRoadhouse}`.<br>`{action:'updateSlot', slotId, startMin?, label?, capBuffalo?, capRoadhouse?}` (slot id is stable, so sign-ups survive an edit).<br>`{action:'removeSlot', slotId}` (drops that slot's sign-ups). Returns `{ok:true}`. `ac-overview.gamesCatalog[].slots[]` carries `{id,startMin,label,capBuffalo,capRoadhouse,nBuffalo,nRoadhouse}` for the editor. |
+
+**Note on real routes:** the admin functions live under the **`ac`** prefix (`/api/ac-overview`, `/api/ac/{action}`) because Azure Functions reserves `admin`. The `/api/admin/*` paths above are the logical contract names; the client calls the `ac` forms.
+
+**Server caching (Fabric load):** the shared half of the bootstrap payload (games, slots, rosters, tribes, schedule, dip, relay, scores, announcements — 12 queries) is cached in-process for ~20s (`api/lib/cache.js`). Only the 2 per-user queries run every call. Mutations pass `{fresh:true}` or call `bustSharedBootstrap()` so the writer sees their change immediately and others pick it up on the next 60s poll.
 
 ## `GET /api/bootstrap` response shape
 

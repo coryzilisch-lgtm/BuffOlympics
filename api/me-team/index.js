@@ -1,6 +1,7 @@
 const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
 const { json, requireUser, userToJson } = require('../lib/auth');
+const { bustSharedBootstrap } = require('../lib/bootstrap');
 
 app.http('me-team', {
   methods: ['POST'],
@@ -23,6 +24,7 @@ app.http('me-team', {
         .input('team', sql.NVarChar, team)
         .query('UPDATE bo_users SET team = @team WHERE id = @id');
       user.team = team;
+      bustSharedBootstrap();  // tribes + slot rosters change with a team switch
 
       return json({ user: userToJson(user) });
     } catch (err) {

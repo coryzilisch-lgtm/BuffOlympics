@@ -37,7 +37,7 @@ app.http('dip-vote', {
           ELSE
             INSERT INTO bo_dip_votes (user_id, dip_entry_id) VALUES (@uid, @eid);`);
 
-      return json({ bootstrap: await buildBootstrap(pool, user) });
+      return json({ bootstrap: await buildBootstrap(pool, user, { fresh: true }) });
     } catch (err) {
       context.error('dip-vote error:', err);
       return json({ error: 'Internal server error' }, 500);

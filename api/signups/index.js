@@ -80,7 +80,7 @@ async function handleSignup(pool, user, slotId) {
       IF NOT EXISTS (SELECT 1 FROM bo_signups WHERE user_id = @uid AND slot_id = @sid)
         INSERT INTO bo_signups (user_id, slot_id) VALUES (@uid, @sid);`);
 
-  return json({ bootstrap: await buildBootstrap(pool, user) });
+  return json({ bootstrap: await buildBootstrap(pool, user, { fresh: true }) });
 }
 
 async function handleCancel(pool, user, slotId) {
@@ -90,7 +90,7 @@ async function handleCancel(pool, user, slotId) {
     .input('uid', sql.Int, user.id)
     .input('sid', sql.Int, sid)
     .query('DELETE FROM bo_signups WHERE user_id = @uid AND slot_id = @sid');
-  return json({ bootstrap: await buildBootstrap(pool, user) });
+  return json({ bootstrap: await buildBootstrap(pool, user, { fresh: true }) });
 }
 
 app.http('signups', {
