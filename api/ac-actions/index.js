@@ -53,21 +53,28 @@ async function handlePeople(pool, body) {
     const gameId = String(body.gameId || '').trim();
     if (!gameId) return json({ error: 'gameId is required' }, 400);
     if (action === 'addGame') {
-      const gameR = await pool.request()
+      // Admin override: drop the person into the earliest slot of the game
+      // (ignoring caps / overlap / event mode). Skip open-play games (no slots).
+      const slotR = await pool.request()
         .input('gid', sql.NVarChar, gameId)
-        .query('SELECT id FROM bo_games WHERE id = @gid');
-      if (!gameR.recordset.length) return json({ error: 'Game not found' }, 404);
+        .query('SELECT TOP 1 id FROM bo_game_slots WHERE game_id = @gid ORDER BY sort, start_min');
+      const slot = slotR.recordset[0];
+      if (!slot) return json({ error: 'That game has no sign-up slots (walk-up game)' }, 409);
+      await pool.request()
+        .input('uid', sql.Int, userId)
+        .input('sid', sql.Int, slot.id)
+        .query(`
+          IF NOT EXISTS (SELECT 1 FROM bo_signups WHERE user_id = @uid AND slot_id = @sid)
+            INSERT INTO bo_signups (user_id, slot_id) VALUES (@uid, @sid);`);
+    } else {
+      // Remove the person from every slot of this game.
       await pool.request()
         .input('uid', sql.Int, userId)
         .input('gid', sql.NVarChar, gameId)
         .query(`
-          IF NOT EXISTS (SELECT 1 FROM bo_signups WHERE user_id = @uid AND game_id = @gid)
-            INSERT INTO bo_signups (user_id, game_id) VALUES (@uid, @gid);`);
-    } else {
-      await pool.request()
-        .input('uid', sql.Int, userId)
-        .input('gid', sql.NVarChar, gameId)
-        .query('DELETE FROM bo_signups WHERE user_id = @uid AND game_id = @gid');
+          DELETE FROM bo_signups
+          WHERE user_id = @uid
+            AND slot_id IN (SELECT id FROM bo_game_slots WHERE game_id = @gid)`);
     }
     return json({ ok: true });
   }

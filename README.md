@@ -96,3 +96,29 @@ staticwebapp.config.json — SPA fallback, node:20 apiRuntime, anonymous routes
   `api/package.json` keeps `"main": "index.js"`. Keep API deps minimal (SWA ~15k-file deploy cap).
 - Fabric SQL: no `USE`, no `GO`, no `TRUNCATE`, portal-managed SP access. See Herd-Intranet's
   CLAUDE.md gotchas — they all apply here.
+
+## Slot-based sign-ups (migration 002)
+
+Games sign-ups are **per time slot**, not per game. Each game (`bo_games`) has rows in
+`bo_game_slots` — a 5-minute slot with a **per-team headcount** (`cap_buffalo` / `cap_roadhouse`;
+`0` = that tribe isn't in that slot). Players reserve a slot for their tribe (max **2 slots/day**,
+no overlapping times); they can arrive anytime in the game's window, and after it the game is free
+walk-up. The 8 no-headcount games are walk-up the whole time (`open_play = 1`, no slots). Relay +
+Dip Off are separate from the 2-slot cap.
+
+- Data is generated from the event spreadsheet into `infra/migrations/002_slots.sql`
+  (28 games, 117 slots, 7 relay legs). **Run it in the Fabric SQL editor** after `001_init.sql`.
+  It creates `bo_game_slots`, reshapes `bo_signups` to `(user_id, slot_id)`, and reseeds
+  games/slots/relay. It **resets existing sign-ups** — safe pre-event.
+- Sign-up API: `POST /api/signups {slotId}` / `DELETE /api/signups/{slotId}`.
+
+## Gotchas hit during setup (so the next person doesn't relearn them)
+
+- **Fabric SQL database name:** use the **full `Initial Catalog`** value from the DB's connection
+  string (`buffolympics-<guid>`) for `FABRIC_SQL_DATABASE`, not the short name — the short name
+  fails login routing with "Cannot open server … The login failed."
+- **Azure Functions reserves the `admin` route prefix.** Any function route starting with `admin`
+  (`admin/…`, even `admin-board`) is intercepted by the Functions host and 404s. The admin API is
+  under the **`ac`** prefix (`/api/ac-overview`, `/api/ac/{action}`, …) for this reason.
+- **Service worker is network-first for JS/CSS** (cache-first would pin a stale `app.js` across
+  deploys). Bump `CACHE` in `sw.js` when you need to force a hard refresh of cached assets.

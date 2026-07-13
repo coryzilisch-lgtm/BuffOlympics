@@ -1,6 +1,8 @@
 const { sql } = require('./db');
-const { BLOCKS, blockById } = require('./blocks');
-const { formatName, userToJson, requireRef } = require('./auth');
+const { formatName, userToJson } = require('./auth');
+
+const SIGNUP_MAX = 2;          // max game-slot sign-ups per person (relay + dip are separate)
+const SLOT_MINUTES = 5;        // each slot occupies a 5-minute window for overlap checks
 
 // ── settings helpers ───────────────────────────────────────────────────────
 
@@ -32,12 +34,14 @@ async function upsertSetting(pool, key, value) {
     `);
 }
 
-// Ref-station type: walk-up for open play, head-to-head for small refereed
-// games, solo (per-player scores) otherwise.
+// Two 5-minute slots overlap when they start within SLOT_MINUTES of each other.
+function slotsOverlap(a, b) {
+  return Math.abs(a - b) < SLOT_MINUTES;
+}
+
+// Ref stations: walk-up for open play, otherwise head-to-head (Buffalo vs TXRH).
 function stationType(g) {
-  if (g.open_play) return 'walk';
-  if (g.needs_ref && g.cap <= 2) return 'vs';
-  return 'solo';
+  return g.open_play ? 'walk' : 'vs';
 }
 
 // ── the full bootstrap payload ─────────────────────────────────────────────
@@ -46,19 +50,22 @@ function stationType(g) {
 
 async function buildBootstrap(pool, user) {
   const uid = user.id;
+  const myTeam = user.team === 'roadhouse' ? 'roadhouse' : (user.team === 'buffalo' ? 'buffalo' : null);
   const myName = formatName(user.first_name, user.last_name, user.username);
 
   const [
-    settingsR, gamesR, signupsR, scheduleR, usersR, dipR, myVoteR,
+    settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR, myVoteR,
     legsR, relayR, annR, myResultsR, scoresR, refAssignR,
   ] = await Promise.all([
     pool.request().query('SELECT [key], [value] FROM bo_settings'),
     pool.request().query(`
-      SELECT id, name, block, cap, players, time_label, points_label,
-             needs_ref, venue, descr, inventory, video_url, open_play
+      SELECT id, name, needs_ref, venue, open_play, runtime_label
       FROM bo_games ORDER BY sort, id`),
     pool.request().query(`
-      SELECT s.game_id, s.user_id, u.team, u.first_name, u.last_name, u.username
+      SELECT id, game_id, start_min, label, cap_buffalo, cap_roadhouse
+      FROM bo_game_slots ORDER BY game_id, sort, start_min`),
+    pool.request().query(`
+      SELECT s.slot_id, s.user_id, u.team, u.first_name, u.last_name, u.username
       FROM bo_signups s JOIN bo_users u ON u.id = s.user_id`),
     pool.request().query('SELECT id, time_label, ampm, title, place, kind FROM bo_schedule ORDER BY sort, id'),
     pool.request().query('SELECT id, first_name, last_name, username, team, is_ref, is_admin FROM bo_users'),
@@ -81,45 +88,65 @@ async function buildBootstrap(pool, user) {
 
   const settings = settingsFromRows(settingsR.recordset);
 
-  // ── games + rosters ──
-  const rosterByGame = {};   // gameId -> { buffalo:[names], roadhouse:[names] }
-  const signupPeople = {};   // gameId -> [{ name, team }]  (for ref stations)
-  const myGameIds = new Set();
+  // ── per-slot rosters ──
+  const slotRoster = {};          // slotId -> { buffalo:[names], roadhouse:[names] }
+  const mySlotIds = new Set();
+  const signupPeopleByGame = {};  // gameId -> [{ name, team }]  (for ref stations)
+  const slotGameId = {};          // slotId -> gameId  (filled below)
+  for (const s of slotsR.recordset) slotGameId[s.id] = s.game_id;
   for (const s of signupsR.recordset) {
     const name = formatName(s.first_name, s.last_name, s.username);
-    if (!rosterByGame[s.game_id]) rosterByGame[s.game_id] = { buffalo: [], roadhouse: [] };
-    if (s.team === 'buffalo' || s.team === 'roadhouse') rosterByGame[s.game_id][s.team].push(name);
-    if (!signupPeople[s.game_id]) signupPeople[s.game_id] = [];
-    signupPeople[s.game_id].push({ name, team: s.team || null });
-    if (s.user_id === uid) myGameIds.add(s.game_id);
+    if (!slotRoster[s.slot_id]) slotRoster[s.slot_id] = { buffalo: [], roadhouse: [] };
+    if (s.team === 'buffalo' || s.team === 'roadhouse') slotRoster[s.slot_id][s.team].push(name);
+    if (s.user_id === uid) mySlotIds.add(s.slot_id);
+    const gid = slotGameId[s.slot_id];
+    if (gid) {
+      if (!signupPeopleByGame[gid]) signupPeopleByGame[gid] = [];
+      signupPeopleByGame[gid].push({ name, team: s.team || null });
+    }
   }
+
+  // ── slots grouped by game ──
+  const slotsByGame = {};
+  for (const s of slotsR.recordset) {
+    if (!slotsByGame[s.game_id]) slotsByGame[s.game_id] = [];
+    const roster = slotRoster[s.id] || { buffalo: [], roadhouse: [] };
+    slotsByGame[s.game_id].push({
+      id: s.id,
+      startMin: s.start_min,
+      label: s.label,
+      capBuffalo: s.cap_buffalo,
+      capRoadhouse: s.cap_roadhouse,
+      buffalo: roster.buffalo,
+      roadhouse: roster.roadhouse,
+      mine: mySlotIds.has(s.id),
+    });
+  }
+
+  // ── my picks (for overlap + the "My games" rail) ──
+  const slotById = {};
+  for (const s of slotsR.recordset) slotById[s.id] = s;
+  const gameNameById = {};
+  for (const g of gamesR.recordset) gameNameById[g.id] = g.name;
+  const mySignups = [...mySlotIds].map(id => {
+    const s = slotById[id];
+    return s ? {
+      slotId: id, gameId: s.game_id, game: gameNameById[s.game_id] || s.game_id,
+      label: s.label, startMin: s.start_min,
+    } : null;
+  }).filter(Boolean).sort((a, b) => a.startMin - b.startMin);
 
   const games = gamesR.recordset.map(g => ({
     id: g.id,
     name: g.name,
-    block: g.block,
-    cap: g.cap,
-    players: g.players,
-    timeLabel: g.time_label,
-    pointsLabel: g.points_label,
     needsRef: !!g.needs_ref,
     venue: g.venue,
-    desc: g.descr,
-    inventory: g.inventory,
-    videoUrl: g.video_url || null,
     openPlay: !!g.open_play,
-    roster: rosterByGame[g.id] || { buffalo: [], roadhouse: [] },
-    mine: myGameIds.has(g.id),
+    runtimeLabel: g.runtime_label || '',
+    slots: slotsByGame[g.id] || [],
+    mySlotId: (slotsByGame[g.id] || []).find(s => s.mine)?.id ?? null,
+    mine: (slotsByGame[g.id] || []).some(s => s.mine),
   }));
-
-  const gameById = {};
-  for (const g of gamesR.recordset) gameById[g.id] = g;
-
-  const mySignups = [...myGameIds].map(gid => {
-    const g = gameById[gid];
-    const bl = g ? blockById(g.block) : null;
-    return { gameId: gid, game: g ? g.name : gid, slotLabel: bl ? bl.time : '' };
-  });
 
   // ── schedule ──
   const schedule = scheduleR.recordset.map(r => ({
@@ -140,10 +167,6 @@ async function buildBootstrap(pool, user) {
   }
 
   // ── dip off ──
-  // `no` is the stable GLOBAL dip number (order of entry across both tribes)
-  // — it's what voters see on the anonymous ballot, so it must be unique.
-  // Names are shown only for the viewer's own tribe — cooks are anonymous to
-  // the other tribe / voters.
   const dipCounts = { buffalo: 0, roadhouse: 0 };
   const dipEntries = [];
   let myEntry = false;
@@ -197,8 +220,9 @@ async function buildBootstrap(pool, user) {
     },
     serverTime: new Date().toISOString(),
     games,
-    blocks: BLOCKS,
     mySignups,
+    signupCount: mySignups.length,
+    signupMax: SIGNUP_MAX,
     schedule,
     tribes,
     dip: { counts: dipCounts, entries: dipEntries, myEntry, myVote },
@@ -208,23 +232,21 @@ async function buildBootstrap(pool, user) {
     scores,
   };
 
-  // ── refs/admins only ──
-  if (requireRef(user)) {
+  // ── referees only (admins are NOT refs — they use the Admin Center) ──
+  if (user.is_ref) {
     const assignments = {};
     for (const a of refAssignR.recordset) assignments[a.game_id] = a.user_id;
 
-    // My assigned games + every open-play game (walk-up stations are
-    // shared). Admins get all needs_ref games as stations.
     const stations = gamesR.recordset.filter(g =>
-      g.open_play || (user.is_admin ? g.needs_ref : assignments[g.id] === uid));
+      g.open_play || assignments[g.id] === uid);
 
     payload.refStations = stations.map(g => ({
       gameId: g.id,
       name: g.name,
       venue: g.venue,
-      timeLabel: g.time_label,
+      timeLabel: g.runtime_label,
       type: stationType(g),
-      signups: signupPeople[g.id] || [],
+      signups: signupPeopleByGame[g.id] || [],
     }));
 
     payload.allPlayers = usersR.recordset
@@ -235,4 +257,7 @@ async function buildBootstrap(pool, user) {
   return payload;
 }
 
-module.exports = { buildBootstrap, getSettings, upsertSetting, settingsFromRows, stationType };
+module.exports = {
+  buildBootstrap, getSettings, upsertSetting, settingsFromRows, stationType,
+  slotsOverlap, SIGNUP_MAX, SLOT_MINUTES,
+};

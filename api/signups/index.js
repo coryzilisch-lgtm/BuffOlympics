@@ -1,85 +1,94 @@
 const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
 const { json, requireUser } = require('../lib/auth');
-const { buildBootstrap, getSettings } = require('../lib/bootstrap');
-const { blockById, slotsOverlap } = require('../lib/blocks');
+const { buildBootstrap, getSettings, slotsOverlap, SIGNUP_MAX } = require('../lib/bootstrap');
 
-const MAX_GAMES = 2;
-
-async function handleSignup(pool, user, gameId) {
-  if (!gameId) return json({ error: 'gameId is required' }, 400);
+// Sign up for a SLOT (a specific 5-minute time within a game). Enforces, all
+// server-side: signup phase only, slot exists, my tribe has room in that slot,
+// the SIGNUP_MAX (2) cap across the day, and no two of my slots overlap in time.
+async function handleSignup(pool, user, slotId) {
+  const sid = parseInt(slotId, 10);
+  if (!Number.isInteger(sid)) return json({ error: 'slotId is required' }, 400);
   if (!user.team) return json({ error: 'Pick your tribe before signing up' }, 409);
+  const team = user.team === 'roadhouse' ? 'roadhouse' : 'buffalo';
 
   const settings = await getSettings(pool);
   if (settings.eventMode !== 'signup') {
     return json({ error: "Signups are locked — it's game day!" }, 409);
   }
 
-  const gameR = await pool.request()
-    .input('id', sql.NVarChar, gameId)
-    .query('SELECT id, name, block, cap, open_play FROM bo_games WHERE id = @id');
-  const game = gameR.recordset[0];
-  if (!game) return json({ error: 'Game not found' }, 404);
-  if (game.open_play) return json({ error: `${game.name} is open play — just walk up on game day` }, 409);
+  const slotR = await pool.request()
+    .input('sid', sql.Int, sid)
+    .query(`
+      SELECT sl.id, sl.game_id, sl.start_min, sl.label, sl.cap_buffalo, sl.cap_roadhouse, g.name
+      FROM bo_game_slots sl JOIN bo_games g ON g.id = sl.game_id
+      WHERE sl.id = @sid`);
+  const slot = slotR.recordset[0];
+  if (!slot) return json({ error: 'That time slot no longer exists' }, 404);
 
+  const teamCap = team === 'buffalo' ? slot.cap_buffalo : slot.cap_roadhouse;
+  if (teamCap <= 0) {
+    return json({ error: `${slot.name} at ${slot.label} isn't open to your tribe` }, 409);
+  }
+
+  // My current slots (for cap + overlap checks).
   const mineR = await pool.request()
     .input('uid', sql.Int, user.id)
     .query(`
-      SELECT s.game_id, g.name, g.block
-      FROM bo_signups s JOIN bo_games g ON g.id = s.game_id
+      SELECT s.slot_id, sl.game_id, sl.start_min, sl.label, g.name
+      FROM bo_signups s
+      JOIN bo_game_slots sl ON sl.id = s.slot_id
+      JOIN bo_games g ON g.id = sl.game_id
       WHERE s.user_id = @uid`);
   const mine = mineR.recordset;
 
-  if (mine.some(m => m.game_id === game.id)) {
-    return json({ error: `You're already signed up for ${game.name}` }, 409);
+  if (mine.some(m => m.slot_id === sid)) {
+    return json({ error: `You're already in ${slot.name} at ${slot.label}` }, 409);
   }
-  if (mine.length >= MAX_GAMES) {
-    return json({ error: `You can sign up for a maximum of ${MAX_GAMES} games` }, 409);
+  if (mine.length >= SIGNUP_MAX) {
+    return json({ error: `You can sign up for a maximum of ${SIGNUP_MAX} games` }, 409);
   }
-
-  const targetBlock = blockById(game.block);
-  const targetSlot = targetBlock ? targetBlock.slot : null;
-  for (const m of mine) {
-    const b = blockById(m.block);
-    if (slotsOverlap(targetSlot, b ? b.slot : null)) {
-      return json({ error: `That time block overlaps with ${m.name} — pick a game in another rotation` }, 409);
-    }
+  const clash = mine.find(m => slotsOverlap(m.start_min, slot.start_min));
+  if (clash) {
+    return json({ error: `That overlaps with ${clash.name} at ${clash.label} — pick another time` }, 409);
   }
 
+  // Per-tribe slot capacity.
   const capR = await pool.request()
-    .input('gid', sql.NVarChar, game.id)
-    .input('team', sql.NVarChar, user.team)
+    .input('sid', sql.Int, sid)
+    .input('team', sql.NVarChar, team)
     .query(`
       SELECT COUNT(*) AS n
       FROM bo_signups s JOIN bo_users u ON u.id = s.user_id
-      WHERE s.game_id = @gid AND u.team = @team`);
-  if (capR.recordset[0].n >= game.cap) {
-    return json({ error: `${game.name} is full for your tribe` }, 409);
+      WHERE s.slot_id = @sid AND u.team = @team`);
+  if (capR.recordset[0].n >= teamCap) {
+    return json({ error: `That ${slot.label} slot is full for your tribe` }, 409);
   }
 
   await pool.request()
     .input('uid', sql.Int, user.id)
-    .input('gid', sql.NVarChar, game.id)
+    .input('sid', sql.Int, sid)
     .query(`
-      IF NOT EXISTS (SELECT 1 FROM bo_signups WHERE user_id = @uid AND game_id = @gid)
-        INSERT INTO bo_signups (user_id, game_id) VALUES (@uid, @gid);`);
+      IF NOT EXISTS (SELECT 1 FROM bo_signups WHERE user_id = @uid AND slot_id = @sid)
+        INSERT INTO bo_signups (user_id, slot_id) VALUES (@uid, @sid);`);
 
   return json({ bootstrap: await buildBootstrap(pool, user) });
 }
 
-async function handleCancel(pool, user, gameId) {
-  if (!gameId) return json({ error: 'gameId is required' }, 400);
+async function handleCancel(pool, user, slotId) {
+  const sid = parseInt(slotId, 10);
+  if (!Number.isInteger(sid)) return json({ error: 'slotId is required' }, 400);
   await pool.request()
     .input('uid', sql.Int, user.id)
-    .input('gid', sql.NVarChar, gameId)
-    .query('DELETE FROM bo_signups WHERE user_id = @uid AND game_id = @gid');
+    .input('sid', sql.Int, sid)
+    .query('DELETE FROM bo_signups WHERE user_id = @uid AND slot_id = @sid');
   return json({ bootstrap: await buildBootstrap(pool, user) });
 }
 
 app.http('signups', {
   methods: ['POST', 'DELETE'],
   authLevel: 'anonymous',
-  route: 'signups/{gameId?}',
+  route: 'signups/{slotId?}',
   handler: async (request, context) => {
     try {
       const user = await requireUser(request);
@@ -88,10 +97,10 @@ app.http('signups', {
 
       if (request.method === 'POST') {
         const body = await request.json().catch(() => ({}));
-        return await handleSignup(pool, user, body.gameId);
+        return await handleSignup(pool, user, body.slotId);
       }
-      // DELETE /api/signups/{gameId}
-      return await handleCancel(pool, user, request.params.gameId);
+      // DELETE /api/signups/{slotId}
+      return await handleCancel(pool, user, request.params.slotId);
     } catch (err) {
       context.error('signups error:', err);
       return json({ error: 'Internal server error' }, 500);
