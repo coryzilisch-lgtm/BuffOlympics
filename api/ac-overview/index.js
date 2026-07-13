@@ -27,7 +27,7 @@ app.http('ac-overview', {
         pool.request().query('SELECT [key], [value] FROM bo_settings'),
         pool.request().query('SELECT id, first_name, last_name, username, team, is_ref, is_admin FROM bo_users ORDER BY id'),
         pool.request().query(`
-          SELECT id, name, needs_ref, venue, open_play, runtime_label
+          SELECT id, name, needs_ref, venue, open_play, time_label
           FROM bo_games ORDER BY sort, id`),
         pool.request().query(`
           SELECT s.user_id, sl.game_id
@@ -80,7 +80,7 @@ app.http('ac-overview', {
       const gamesCatalog = gamesR.recordset.map(g => ({
         id: g.id,
         name: g.name,
-        runtimeLabel: g.runtime_label || '',
+        runtimeLabel: g.time_label || '',
         openPlay: !!g.open_play,
         needsRef: !!g.needs_ref,
         venue: g.venue,

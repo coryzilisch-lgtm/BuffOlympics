@@ -59,7 +59,7 @@ async function buildBootstrap(pool, user) {
   ] = await Promise.all([
     pool.request().query('SELECT [key], [value] FROM bo_settings'),
     pool.request().query(`
-      SELECT id, name, needs_ref, venue, open_play, runtime_label
+      SELECT id, name, needs_ref, venue, open_play, time_label
       FROM bo_games ORDER BY sort, id`),
     pool.request().query(`
       SELECT id, game_id, start_min, label, cap_buffalo, cap_roadhouse
@@ -142,7 +142,7 @@ async function buildBootstrap(pool, user) {
     needsRef: !!g.needs_ref,
     venue: g.venue,
     openPlay: !!g.open_play,
-    runtimeLabel: g.runtime_label || '',
+    runtimeLabel: g.time_label || '',
     slots: slotsByGame[g.id] || [],
     mySlotId: (slotsByGame[g.id] || []).find(s => s.mine)?.id ?? null,
     mine: (slotsByGame[g.id] || []).some(s => s.mine),
@@ -244,7 +244,7 @@ async function buildBootstrap(pool, user) {
       gameId: g.id,
       name: g.name,
       venue: g.venue,
-      timeLabel: g.runtime_label,
+      timeLabel: g.time_label,
       type: stationType(g),
       signups: signupPeopleByGame[g.id] || [],
     }));
