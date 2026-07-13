@@ -4,14 +4,16 @@ const { json, requireUser, requireAdmin, formatName } = require('../lib/auth');
 const { settingsFromRows } = require('../lib/bootstrap');
 const { blockLabel } = require('../lib/blocks');
 
-// Route is the flat 'admin-overview' (NOT 'admin/overview') on purpose: a
-// two-segment 'admin/overview' collides with admin-actions' 'admin/{action}'
-// template and the Functions host drops one, 404-ing the GET. Keeping this
-// off the 'admin/…' segment space avoids the conflict.
-app.http('admin-overview', {
+// Flat route 'admin-board' — deliberately NOT under the 'admin/…' segment
+// space, because a two-segment 'admin/overview' collides with admin-actions'
+// 'admin/{action}' template (the host drops one, 404-ing the GET). It's also
+// a FRESH function name (was 'admin-overview'): SWA wedges a function name to
+// 404 once it deploys with a conflicting route, and only a full rename
+// (folder + name + route) forces re-registration.
+app.http('admin-board', {
   methods: ['GET'],
   authLevel: 'anonymous',
-  route: 'admin-overview',
+  route: 'admin-board',
   handler: async (request, context) => {
     try {
       const user = await requireUser(request);
@@ -176,7 +178,7 @@ app.http('admin-overview', {
         })),
       });
     } catch (err) {
-      context.error('admin-overview error:', err);
+      context.error('admin-board error:', err);
       return json({ error: 'Internal server error' }, 500);
     }
   },
