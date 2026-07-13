@@ -147,7 +147,7 @@ async function loadBoot(silent) {
 async function loadOverview(silent) {
   if (!S.token) return;
   try {
-    S.overview = await api('/admin-board');
+    S.overview = await api('/ac-overview');
   } catch (e) {
     if (!silent) toast(e.message);
   }
@@ -2414,42 +2414,42 @@ const ACTIONS = {
   // ── admin ──
   admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; render(); },
   admMode: (el) => guarded(async () => {
-    await api('/admin/settings', { method: 'POST', body: { eventMode: el.dataset.mode } });
+    await api('/ac/settings', { method: 'POST', body: { eventMode: el.dataset.mode } });
     await afterAdminMutation();
     toast(el.dataset.mode === 'gameday' ? 'Game Day is live' : 'Back to sign-up mode');
   }),
   admToggle: (el) => guarded(async () => {
-    await api('/admin/people', { method: 'POST', body: { userId: parseInt(el.dataset.uid, 10), action: el.dataset.flag } });
+    await api('/ac/people', { method: 'POST', body: { userId: parseInt(el.dataset.uid, 10), action: el.dataset.flag } });
     await loadOverview(true);
   }),
   admRemoveGame: (el) => guarded(async () => {
-    await api('/admin/people', { method: 'POST', body: { userId: parseInt(el.dataset.uid, 10), action: 'removeGame', gameId: el.dataset.gid } });
+    await api('/ac/people', { method: 'POST', body: { userId: parseInt(el.dataset.uid, 10), action: 'removeGame', gameId: el.dataset.gid } });
     await loadOverview(true);
   }),
   admSchedAdd: () => guarded(async () => {
-    await api('/admin/schedule', { method: 'POST', body: { action: 'add' } });
+    await api('/ac/schedule', { method: 'POST', body: { action: 'add' } });
     await loadOverview(true);
   }),
   admSchedMove: (el) => guarded(async () => {
-    await api('/admin/schedule', { method: 'POST', body: { action: 'move', id: parseInt(el.dataset.id, 10), dir: parseInt(el.dataset.dir, 10) } });
+    await api('/ac/schedule', { method: 'POST', body: { action: 'move', id: parseInt(el.dataset.id, 10), dir: parseInt(el.dataset.dir, 10) } });
     await loadOverview(true);
   }),
   admSchedRemove: (el) => guarded(async () => {
-    await api('/admin/schedule', { method: 'POST', body: { action: 'remove', id: parseInt(el.dataset.id, 10) } });
+    await api('/ac/schedule', { method: 'POST', body: { action: 'remove', id: parseInt(el.dataset.id, 10) } });
     await loadOverview(true);
   }),
   admSchedView: (el) => { S.schedView = el.dataset.view; render(); },
   admDipReveal: () => guarded(async () => {
     const cur = !!(S.overview && S.overview.dip && S.overview.dip.revealed);
-    await api('/admin/settings', { method: 'POST', body: { dipRevealed: !cur } });
+    await api('/ac/settings', { method: 'POST', body: { dipRevealed: !cur } });
     await afterAdminMutation();
   }),
   admDipRemove: (el) => guarded(async () => {
-    await api('/admin/dip/' + el.dataset.id, { method: 'DELETE' });
+    await api('/ac/dip/' + el.dataset.id, { method: 'DELETE' });
     await afterAdminMutation();
   }),
   admLegCap: (el) => guarded(async () => {
-    await api('/admin/relay-legs', { method: 'POST', body: { legId: el.dataset.id, capDelta: parseInt(el.dataset.d, 10) } });
+    await api('/ac/relay-legs', { method: 'POST', body: { legId: el.dataset.id, capDelta: parseInt(el.dataset.d, 10) } });
     await loadOverview(true);
   }),
   admPeek: () => guarded(async () => {
@@ -2461,7 +2461,7 @@ const ACTIONS = {
   admAskReveal: () => { S.adminConfirmReveal = true; render(); },
   admCancelReveal: () => { S.adminConfirmReveal = false; render(); },
   admConfirmReveal: () => guarded(async () => {
-    await api('/admin/settings', { method: 'POST', body: { scoresRevealed: true } });
+    await api('/ac/settings', { method: 'POST', body: { scoresRevealed: true } });
     S.adminConfirmReveal = false;
     await afterAdminMutation();
     toast('Scores are live on every phone');
@@ -2471,7 +2471,7 @@ const ACTIONS = {
   admEditSave: (el) => guarded(async () => {
     const v = parseInt(S.f.editVal !== undefined ? S.f.editVal : S.editVal, 10);
     if (isNaN(v)) { toast('Enter a number'); return; }
-    await api('/admin/results/' + el.dataset.id, { method: 'PATCH', body: { pts: v } });
+    await api('/ac/results/' + el.dataset.id, { method: 'PATCH', body: { pts: v } });
     S.editingId = null; S.editVal = '';
     await loadOverview(true);
   }),
@@ -2483,7 +2483,7 @@ const ACTIONS = {
   admAnnPush: () => guarded(async () => {
     const title = (S.f.annTitle || '').trim(), body = (S.f.annBody || '').trim();
     if (!title && !body) { toast('Give the announcement a title or a body'); return; }
-    await api('/admin/announcements', { method: 'POST', body: { title, body } });
+    await api('/ac/announcements', { method: 'POST', body: { title, body } });
     S.f.annTitle = ''; S.f.annBody = '';
     await afterAdminMutation();
     toast('Pushed to all phones');
@@ -2497,7 +2497,7 @@ const CHANGES = {
     const uid = parseInt(el.dataset.uid, 10);
     el.value = '';
     guarded(async () => {
-      await api('/admin/people', { method: 'POST', body: { userId: uid, action: 'addGame', gameId: gid } });
+      await api('/ac/people', { method: 'POST', body: { userId: uid, action: 'addGame', gameId: gid } });
       await loadOverview(true);
     });
   },
@@ -2505,7 +2505,7 @@ const CHANGES = {
     const gid = el.dataset.gid;
     const uid = el.value ? parseInt(el.value, 10) : null;
     guarded(async () => {
-      await api('/admin/ref-assign', { method: 'POST', body: { gameId: gid, userId: uid } });
+      await api('/ac/ref-assign', { method: 'POST', body: { gameId: gid, userId: uid } });
       await loadOverview(true);
     });
   },
@@ -2534,7 +2534,7 @@ document.addEventListener('input', (e) => {
     S.f.refCodeDraft = el.value;
     const code = el.value.trim();
     if (code) debounceSave('refCode', () => guarded(async () => {
-      await api('/admin/settings', { method: 'POST', body: { refJoinCode: code } });
+      await api('/ac/settings', { method: 'POST', body: { refJoinCode: code } });
       toast('Join code saved');
     }));
   }
@@ -2542,7 +2542,7 @@ document.addEventListener('input', (e) => {
     const legId = el.dataset.leg;
     const name = el.value.trim();
     if (name) debounceSave('legName:' + legId, () => guarded(async () => {
-      await api('/admin/relay-legs', { method: 'POST', body: { legId, name } });
+      await api('/ac/relay-legs', { method: 'POST', body: { legId, name } });
       toast('Leg renamed');
     }));
   }

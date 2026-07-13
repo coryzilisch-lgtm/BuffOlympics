@@ -2,10 +2,10 @@ const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
 const { json, requireUser, requireAdmin } = require('../lib/auth');
 
-app.http('admin-dip', {
+app.http('ac-dip', {
   methods: ['DELETE'],
   authLevel: 'anonymous',
-  route: 'admin/dip/{entryId}',
+  route: 'ac/dip/{entryId}',
   handler: async (request, context) => {
     try {
       const user = await requireUser(request);
