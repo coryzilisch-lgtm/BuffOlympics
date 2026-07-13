@@ -50,8 +50,8 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 | `GET /api/me` | — | `{user}` |
 | `POST /api/me/team` | `{team}` | Set/switch my tribe. Returns `{user}`. |
 | `GET /api/bootstrap` | — | Everything the app needs — see shape below. |
-| `POST /api/signups` | `{gameId}` | Sign me up. Server enforces: event_mode='signup', game exists & not open-play, not already in, max **2** games total, per-tribe cap (`bo_games.cap`), **no overlapping time blocks** (block slots below). Errors: 409 `{error:'…'}` with message. Returns fresh `{bootstrap}` payload. |
-| `DELETE /api/signups/{gameId}` | — | Cancel. Returns `{bootstrap}`. |
+| `POST /api/signups` | `{slotId}` | Sign me up for a time slot. Server enforces: event_mode='signup', slot exists, my tribe has room in that slot (`cap_buffalo`/`cap_roadhouse`), not already in, **per-tribe day cap** (Buffalo **4** / Texas Roadhouse **2**, via `signupMaxFor`), and **no overlapping fixed-time slots** — walk-up (`open_play`) slots are exempt and MAY overlap. Errors: 409 `{error:'…'}` with message. Returns fresh `{bootstrap}` payload. |
+| `DELETE /api/signups/{slotId}` | — | Cancel. Returns `{bootstrap}`. |
 | `POST /api/dip` | `{action:'enter'|'leave'}` | Sign-up phase only. Max 5 cooks per tribe. One entry per user. Returns `{bootstrap}`. |
 | `POST /api/dip/vote` | `{entryId}` | Game-day only. Upserts my one vote. Returns `{bootstrap}`. |
 | `POST /api/relay` | `{legId}` | Join/switch (removes me from any other leg). Cap per team per leg. Sign-up phase only. Returns `{bootstrap}`. |
