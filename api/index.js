@@ -1,6 +1,7 @@
 // Explicit entry point — SWA managed Functions discover handlers by
 // require()ing this file ("main": "index.js" in package.json).
 // One app.http() registration per module (SWA gotcha).
+require('./health/index');
 require('./auth/index');
 require('./me/index');
 require('./me-team/index');
