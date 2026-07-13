@@ -1,11 +1,13 @@
 const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
 const { json, requireUser } = require('../lib/auth');
-const { buildBootstrap, getSettings, slotsOverlap, SIGNUP_MAX } = require('../lib/bootstrap');
+const { buildBootstrap, getSettings, slotsOverlap, signupMaxFor } = require('../lib/bootstrap');
 
 // Sign up for a SLOT (a specific 5-minute time within a game). Enforces, all
 // server-side: signup phase only, slot exists, my tribe has room in that slot,
-// the SIGNUP_MAX (2) cap across the day, and no two of my slots overlap in time.
+// the per-tribe day cap (Buffalo 4 / TXRH 2), and no two of my slots overlap in
+// time — EXCEPT walk-up (open_play) games, which may overlap (the UI warns to
+// finish inside the window, then the game reverts to free walk-up).
 async function handleSignup(pool, user, slotId) {
   const sid = parseInt(slotId, 10);
   if (!Number.isInteger(sid)) return json({ error: 'slotId is required' }, 400);
@@ -20,7 +22,7 @@ async function handleSignup(pool, user, slotId) {
   const slotR = await pool.request()
     .input('sid', sql.Int, sid)
     .query(`
-      SELECT sl.id, sl.game_id, sl.start_min, sl.label, sl.cap_buffalo, sl.cap_roadhouse, g.name
+      SELECT sl.id, sl.game_id, sl.start_min, sl.label, sl.cap_buffalo, sl.cap_roadhouse, g.name, g.open_play
       FROM bo_game_slots sl JOIN bo_games g ON g.id = sl.game_id
       WHERE sl.id = @sid`);
   const slot = slotR.recordset[0];
@@ -35,7 +37,7 @@ async function handleSignup(pool, user, slotId) {
   const mineR = await pool.request()
     .input('uid', sql.Int, user.id)
     .query(`
-      SELECT s.slot_id, sl.game_id, sl.start_min, sl.label, g.name
+      SELECT s.slot_id, sl.game_id, sl.start_min, sl.label, g.name, g.open_play
       FROM bo_signups s
       JOIN bo_game_slots sl ON sl.id = s.slot_id
       JOIN bo_games g ON g.id = sl.game_id
@@ -45,12 +47,18 @@ async function handleSignup(pool, user, slotId) {
   if (mine.some(m => m.slot_id === sid)) {
     return json({ error: `You're already in ${slot.name} at ${slot.label}` }, 409);
   }
-  if (mine.length >= SIGNUP_MAX) {
-    return json({ error: `You can sign up for a maximum of ${SIGNUP_MAX} games` }, 409);
+  const signupMax = signupMaxFor(team);
+  if (mine.length >= signupMax) {
+    return json({ error: `You can sign up for a maximum of ${signupMax} games` }, 409);
   }
-  const clash = mine.find(m => slotsOverlap(m.start_min, slot.start_min));
-  if (clash) {
-    return json({ error: `That overlaps with ${clash.name} at ${clash.label} — pick another time` }, 409);
+  // Walk-up games (open_play) are allowed to overlap — a player can report to a
+  // walk-up window even while signed up for a fixed-time game. Only enforce the
+  // no-overlap rule between two FIXED-time games.
+  if (!slot.open_play) {
+    const clash = mine.find(m => !m.open_play && slotsOverlap(m.start_min, slot.start_min));
+    if (clash) {
+      return json({ error: `That overlaps with ${clash.name} at ${clash.label} — pick another time` }, 409);
+    }
   }
 
   // Per-tribe slot capacity.

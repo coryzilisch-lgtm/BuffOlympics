@@ -194,7 +194,11 @@ function isRefUser() {
 }
 
 /* ════════════════════ slot-based sign-up state ════════════════════ */
-const SIGNUP_MAX = 2;
+// Per-tribe day cap comes from the server (Buffalo 4 / TXRH 2). Fall back to 2.
+function signupMax() {
+  const m = S.boot && S.boot.signupMax;
+  return Number.isFinite(m) ? m : 2;
+}
 function myTeamKey() {
   return S.boot.user.team === 'roadhouse' ? 'roadhouse' : 'buffalo';
 }
@@ -202,34 +206,43 @@ function myPickCount() {
   return (S.boot.mySignups || []).length;
 }
 // Per-slot state for MY tribe: 'signed' | 'open' | 'full' | 'closed' | 'max' | 'conflict' | 'locked'
-function slotState(slot) {
+// Pass the game so walk-up (open_play) slots can ALLOW overlap (with a warning)
+// instead of blocking it the way fixed-time games do.
+function slotState(slot, g) {
   const mode = S.boot.settings.eventMode;
   const team = myTeamKey();
   const cap = team === 'buffalo' ? slot.capBuffalo : slot.capRoadhouse;
   const roster = team === 'buffalo' ? slot.buffalo : slot.roadhouse;
   const otherCap = team === 'buffalo' ? slot.capRoadhouse : slot.capBuffalo;
   const otherRoster = team === 'buffalo' ? slot.roadhouse : slot.buffalo;
+  const openPlay = !!(g && g.openPlay);
+  const overlaps = (S.boot.mySignups || []).some(x => x.slotId !== slot.id && Math.abs(x.startMin - slot.startMin) < 5);
   let st;
-  if (slot.mine) st = mode === 'gameday' ? 'signed' : 'signed';
+  if (slot.mine) st = 'signed';
   else if (mode === 'gameday') st = 'locked';
   else if (cap <= 0) st = 'closed';
   else if (roster.length >= cap) st = 'full';
-  else if (myPickCount() >= SIGNUP_MAX) st = 'max';
-  else if ((S.boot.mySignups || []).some(x => Math.abs(x.startMin - slot.startMin) < 5)) st = 'conflict';
+  else if (myPickCount() >= signupMax()) st = 'max';
+  else if (overlaps && !openPlay) st = 'conflict';
   else st = 'open';
-  return { st, cap, roster, otherCap, otherRoster };
+  // For walk-up slots we still surface the overlap so the row can warn.
+  return { st, cap, roster, otherCap, otherRoster, openPlay, overlap: openPlay && overlaps && st === 'open' };
 }
-// Whole-game summary for the list card.
+// Whole-game summary for the list card. Walk-up games now carry time slots too,
+// so compute spots for them as well; `openPlay`/`hasSlots` drive the badge.
 function gameSummary(g) {
-  if (g.openPlay) return { openPlay: true, mine: false };
   const team = myTeamKey();
+  const slots = g.slots || [];
   let cap = 0, filled = 0, mineLabel = null;
-  for (const s of g.slots) {
+  for (const s of slots) {
     cap += team === 'buffalo' ? s.capBuffalo : s.capRoadhouse;
     filled += (team === 'buffalo' ? s.buffalo : s.roadhouse).length;
     if (s.mine) mineLabel = s.label;
   }
-  return { openPlay: false, cap, filled, open: Math.max(0, cap - filled), mine: !!mineLabel, mineLabel };
+  return {
+    openPlay: !!g.openPlay, hasSlots: slots.length > 0,
+    cap, filled, open: Math.max(0, cap - filled), mine: !!mineLabel, mineLabel,
+  };
 }
 
 /* ════════════════════ auth screens ════════════════════ */
@@ -687,8 +700,27 @@ function refBoardScreen() {
         <button data-act="soloSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:13px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Save range scores</button>`;
     } else if (open && isWalk) {
       const matches = q2 ? allPlayers.filter(p => p.name.toLowerCase().includes(q2)).slice(0, 4) : [];
-      body = `
-        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:10px;">Walk-up · find a player to score</div>
+      const roster = st.signups || [];
+      const rosterHtml = roster.length ? `
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Signed up for this window · score each</div>
+        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
+          ${roster.map((p, i) => `
+          <div style="display:flex;align-items:center;gap:11px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:9px;padding:9px 12px;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}${p.slot ? `<span style="font-size:10.5px;font-weight:700;color:${th.sub};"> · ${esc(p.slot)}</span>` : ''}</div>
+              <div style="font-size:10.5px;font-weight:700;text-transform:uppercase;color:${p.team === 'buffalo' ? '#FF7F2E' : '#E0322E'};">${p.team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'}</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:9px;flex-shrink:0;">
+              <button data-act="soloDelta" data-i="${i}" data-d="-1" style="width:30px;height:30px;border-radius:7px;background:rgba(255,255,255,0.08);color:${th.text};font-size:19px;display:flex;align-items:center;justify-content:center;">−</button>
+              <span style="font-family:'BN Kragen';font-size:20px;color:${T.A};min-width:26px;text-align:center;">${S.soloScores[p.name] || 0}</span>
+              <button data-act="soloDelta" data-i="${i}" data-d="1" style="width:30px;height:30px;border-radius:7px;background:${T.A};color:${T.on};font-size:19px;display:flex;align-items:center;justify-content:center;">+</button>
+            </div>
+          </div>`).join('')}
+        </div>
+        <button data-act="soloSubmit" data-game="${esc(st.gameId)}" style="width:100%;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;margin-bottom:18px;">Save signed-up scores</button>
+        <div style="height:1px;background:${th.line};margin-bottom:15px;"></div>` : '';
+      body = rosterHtml + `
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:10px;">${roster.length ? 'Walk-on · anyone who shows up after' : 'Walk-up · find a player to score'}</div>
         <div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.05);border:1px solid ${th.line};border-radius:9px;padding:11px 13px;">
           ${searchSvg(th.sub)}
           <input id="walk-input" data-live="walkSearch" value="${esc(S.walkSearch)}" placeholder="Search player name…" style="flex:1;min-width:0;background:transparent;border:none;outline:none;color:${th.text};font-size:14px;font-family:'Montserrat';"/>
@@ -769,10 +801,10 @@ function gamesScreen() {
   const cards = visible.map(g => {
     const gm = gameSummary(g);
     let status;
-    if (gm.openPlay) status = `<span style="font-size:10.5px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:${T.A};border:1px solid ${T.A};border-radius:6px;padding:6px 10px;text-align:center;display:block;">Walk up<br/>anytime</span>`;
-    else if (gm.mine) status = `<span style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;"><span style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:800;color:#3FBF87;">${checkSvg('#3FBF87', 13)}You're in</span><span style="font-size:10.5px;color:${th.sub};">${esc(gm.mineLabel)}</span></span>`;
-    else if (gm.open <= 0) status = `<span style="font-size:11px;font-weight:700;color:${th.sub};">Full</span>`;
-    else status = `<span style="display:flex;flex-direction:column;align-items:flex-end;gap:1px;"><span style="font-family:'BN Kragen';font-size:18px;color:${T.A};line-height:1;">${gm.open}</span><span style="font-size:9.5px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${th.sub};">spots open</span></span>`;
+    if (gm.mine) status = `<span style="display:flex;flex-direction:column;align-items:flex-end;gap:2px;"><span style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:800;color:#3FBF87;">${checkSvg('#3FBF87', 13)}You're in</span><span style="font-size:10.5px;color:${th.sub};">${esc(gm.mineLabel)}</span></span>`;
+    else if (gm.hasSlots && gm.open > 0) status = `<span style="display:flex;flex-direction:column;align-items:flex-end;gap:1px;"><span style="font-family:'BN Kragen';font-size:18px;color:${T.A};line-height:1;">${gm.open}</span><span style="font-size:9.5px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${th.sub};">spots open</span></span>`;
+    else if (gm.openPlay) status = `<span style="font-size:10.5px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:${T.A};border:1px solid ${T.A};border-radius:6px;padding:6px 10px;text-align:center;display:block;">Walk up<br/>anytime</span>`;
+    else status = `<span style="font-size:11px;font-weight:700;color:${th.sub};">Full</span>`;
     return `
     <button data-act="openGame" data-id="${esc(g.id)}" style="width:100%;text-align:left;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-left:3px solid ${gm.mine ? '#3FBF87' : T.A};border-radius:9px;padding:14px 15px;display:flex;align-items:center;gap:12px;">
       <div style="flex:1;min-width:0;">
@@ -780,7 +812,7 @@ function gamesScreen() {
         <div style="display:flex;gap:10px;margin-top:7px;flex-wrap:wrap;align-items:center;">
           <span style="font-size:11.5px;color:${T.A};font-weight:700;">${esc(g.runtimeLabel || '')}</span>
           ${g.venue ? `<span style="font-size:11.5px;color:${th.sub};">${esc(g.venue)}</span>` : ''}
-          ${!gm.openPlay ? `<span style="font-size:11.5px;color:${th.sub};">${g.slots.length} slots</span>` : ''}
+          ${gm.hasSlots ? `<span style="font-size:11.5px;color:${th.sub};">${g.slots.length} slots${gm.openPlay ? ' · then walk-up' : ''}</span>` : ''}
         </div>
       </div>
       <div style="flex-shrink:0;">${status}</div>
@@ -804,8 +836,8 @@ function gamesScreen() {
       <div style="display:flex;align-items:center;gap:11px;background:${th.panel};border:1px solid ${th.panelBorder};border-radius:10px;padding:12px 14px;">
         ${clipSvg(T.A, 20)}
         <div style="flex:1;min-width:0;">
-          <div style="font-size:12.5px;font-weight:700;color:${th.text};">You've claimed ${signupCount} of ${SIGNUP_MAX} game slots</div>
-          <div style="font-size:11px;color:${th.sub};">Tap a game to pick a time slot. Max two, no overlapping times. Relay is separate.</div>
+          <div style="font-size:12.5px;font-weight:700;color:${th.text};">You've claimed ${signupCount} of ${signupMax()} game slots</div>
+          <div style="font-size:11px;color:${th.sub};">Tap a game to pick a time slot. Up to ${signupMax()}, no overlapping times (walk-up games can overlap). Relay is separate.</div>
         </div>
       </div>
     </div>
@@ -827,7 +859,7 @@ function gamesScreen() {
 function slotRowHtml(g, slot) {
   const T = theme();
   const th = T.th;
-  const ss = slotState(slot);
+  const ss = slotState(slot, g);
   const team = myTeamKey();
   const myLabel = team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse';
   const otherLabel = team === 'buffalo' ? 'Texas Roadhouse' : 'Buffalo';
@@ -838,7 +870,7 @@ function slotRowHtml(g, slot) {
   else if (ss.st === 'open') action = `<button data-act="joinSlot" data-slot="${slot.id}" style="flex-shrink:0;background:${T.A};color:${T.on};font-weight:800;font-size:12.5px;padding:9px 15px;border-radius:8px;">Join</button>`;
   else if (ss.st === 'full') action = `<span style="flex-shrink:0;font-size:11px;font-weight:700;color:${th.sub};">Full</span>`;
   else if (ss.st === 'closed') action = `<span style="flex-shrink:0;font-size:10.5px;font-weight:700;color:${th.sub};max-width:80px;text-align:right;">${esc(myLabel)} not in this slot</span>`;
-  else if (ss.st === 'max') action = `<span style="flex-shrink:0;font-size:10.5px;font-weight:700;color:${th.sub};max-width:78px;text-align:right;">Your 2 slots are full</span>`;
+  else if (ss.st === 'max') action = `<span style="flex-shrink:0;font-size:10.5px;font-weight:700;color:${th.sub};max-width:78px;text-align:right;">Your ${signupMax()} slots are full</span>`;
   else if (ss.st === 'conflict') action = `<span style="flex-shrink:0;font-size:10.5px;font-weight:700;color:${th.sub};max-width:78px;text-align:right;">Overlaps a pick</span>`;
   else action = `<span style="flex-shrink:0;font-size:11px;font-weight:700;color:${th.sub};">Locked</span>`;
 
@@ -855,6 +887,7 @@ function slotRowHtml(g, slot) {
       </div>
       ${action}
     </div>
+    ${ss.overlap ? `<div style="margin-top:9px;display:flex;align-items:center;gap:7px;font-size:10.5px;font-weight:600;color:#F5C518;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><path d="M12 3 2 20h20L12 3z" stroke="#F5C518" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4M12 16.5v.5" stroke="#F5C518" stroke-width="2" stroke-linecap="round"/></svg>Overlaps another pick — fine for a walk-up, just finish inside the window.</div>` : ''}
     ${mine.length ? `<div style="margin-top:9px;padding-top:8px;border-top:1px solid ${th.line};display:flex;flex-wrap:wrap;gap:6px;">${mine.map(n => `<span style="font-size:11px;font-weight:600;color:${th.text};background:rgba(255,255,255,0.06);border-radius:6px;padding:3px 8px;">${esc(n)}</span>`).join('')}</div>` : ''}
   </div>`;
 }
@@ -875,7 +908,10 @@ function gameDetailScreen() {
         <span style="font-size:13px;color:#C7D3DB;font-weight:600;">${esc(g.venue)}</span></div>` : ''}
     </div>`;
 
-  if (g.openPlay) {
+  const hasSlots = (g.slots || []).length > 0;
+
+  // Pure walk-up game (no slots at all) — no sign-up, just show up.
+  if (g.openPlay && !hasSlots) {
     return `<div style="padding:0 0 28px;">${header}
       <div style="padding:18px;">
         <div style="text-align:center;background:${T.dim};border:1px dashed ${T.A};border-radius:12px;padding:22px 18px;">
@@ -887,15 +923,18 @@ function gameDetailScreen() {
   }
 
   const slots = (g.slots || []).map(s => slotRowHtml(g, s)).join('');
+  const intro = g.openPlay
+    ? `Grab a time slot to lock your run for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong> — or just walk up during the window. After the window closes it's open walk-up for everyone. Walk-up slots may overlap another game you're in; that's OK, just leave yourself time to finish.`
+    : `Reserve a time slot below for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong>. You can arrive anytime during the game's window — after it, it's open walk-up. Up to ${signupMax()} game slots, and no overlapping times.`;
   return `<div style="padding:0 0 28px;">${header}
     <div style="padding:16px 18px 0;">
       <div style="display:flex;align-items:flex-start;gap:10px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:10px;padding:12px 14px;">
         ${clipSvg(T.A, 18)}
-        <div style="font-size:11.5px;color:${th.sub};line-height:1.5;">Reserve a time slot below for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong>. You can arrive anytime during the game's window — after it, it's open walk-up. Two game slots max, and no overlapping times.</div>
+        <div style="font-size:11.5px;color:${th.sub};line-height:1.5;">${intro}</div>
       </div>
     </div>
     <div style="padding:14px 18px 0;">
-      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:10px;">Time slots</div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:10px;">${g.openPlay ? 'Sign-up slots · then walk-up' : 'Time slots'}</div>
       <div style="display:flex;flex-direction:column;gap:9px;">${slots}</div>
     </div>
     ${g.needsRef ? `<div style="padding:16px 18px 0;"><div style="display:flex;align-items:center;gap:10px;background:${th.dim};border:1px solid ${T.A};border-radius:9px;padding:13px 15px;">${shieldSvg(T.A)}<span style="font-size:13.5px;font-weight:700;color:${th.text};">SUP ref required at this station</span></div></div>` : ''}
@@ -1355,16 +1394,16 @@ function deskGamesScreen() {
     const rowBg = signed ? dDim : '#fff';
     const rowBorder = signed ? dA : '#E4EAE8';
     let status;
-    if (gm.openPlay) status = `<div style="text-align:center;background:${dDim};border:1px dashed ${dA};color:${dA};font-weight:800;font-size:11.5px;padding:9px;border-radius:8px;">Walk up anytime · no sign-up</div>`;
-    else if (signed) status = `<div style="text-align:center;background:${dDim};border:1px solid ${dA};color:${dA};font-weight:800;font-size:12px;padding:9px;border-radius:8px;display:flex;align-items:center;justify-content:center;gap:6px;">${checkSvg(dA, 14, 2.6)}You're in · ${esc(gm.mineLabel)}</div>`;
-    else if (gm.open <= 0) status = `<div style="text-align:center;background:#EEF2F1;color:#6D7C83;font-weight:700;font-size:11.5px;padding:9px;border-radius:8px;">Full</div>`;
-    else status = `<div style="text-align:center;background:#fff;border:1px solid ${dA};color:${dA};font-weight:800;font-size:12px;padding:9px;border-radius:8px;">${gm.open} spots open · pick a slot</div>`;
+    if (signed) status = `<div style="text-align:center;background:${dDim};border:1px solid ${dA};color:${dA};font-weight:800;font-size:12px;padding:9px;border-radius:8px;display:flex;align-items:center;justify-content:center;gap:6px;">${checkSvg(dA, 14, 2.6)}You're in · ${esc(gm.mineLabel)}</div>`;
+    else if (gm.hasSlots && gm.open > 0) status = `<div style="text-align:center;background:#fff;border:1px solid ${dA};color:${dA};font-weight:800;font-size:12px;padding:9px;border-radius:8px;">${gm.open} spots open · pick a slot${gm.openPlay ? ' · then walk-up' : ''}</div>`;
+    else if (gm.openPlay) status = `<div style="text-align:center;background:${dDim};border:1px dashed ${dA};color:${dA};font-weight:800;font-size:11.5px;padding:9px;border-radius:8px;">Walk up anytime</div>`;
+    else status = `<div style="text-align:center;background:#EEF2F1;color:#6D7C83;font-weight:700;font-size:11.5px;padding:9px;border-radius:8px;">Full</div>`;
     return `
     <button data-act="openGame" data-id="${esc(g.id)}" style="text-align:left;background:${rowBg};border:1px solid ${rowBorder};border-radius:10px;padding:15px 16px;display:flex;flex-direction:column;">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
         <div style="min-width:0;">
           <div style="font-size:15.5px;font-weight:800;color:#00253D;line-height:1.2;">${esc(g.name)}</div>
-          <div style="font-size:12px;color:#6D7C83;margin-top:3px;">${esc(g.runtimeLabel || '')}${g.venue ? ' · ' + esc(g.venue) : ''}${!g.openPlay ? ' · ' + g.slots.length + ' slots' : ''}</div>
+          <div style="font-size:12px;color:#6D7C83;margin-top:3px;">${esc(g.runtimeLabel || '')}${g.venue ? ' · ' + esc(g.venue) : ''}${gm.hasSlots ? ' · ' + g.slots.length + ' slots' : ''}</div>
         </div>
         ${g.needsRef ? `<span style="flex-shrink:0;font-size:9.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:${dA};border:1px solid ${dA};border-radius:5px;padding:2px 7px;">Ref</span>` : ''}
       </div>
@@ -1386,7 +1425,7 @@ function deskGamesScreen() {
         <img src="/assets/logos/buffalo-white.png" alt="" style="position:absolute;right:-40px;top:-30px;width:260px;opacity:0.06;"/>
         <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${dA};">Sign up for games · August 14</div>
         <h1 style="font-family:'BN Kragen';font-size:40px;color:#F3F7F5;text-transform:uppercase;line-height:0.92;margin:9px 0 0;">The day's run of play</h1>
-        <p style="font-size:14px;color:#C7D3DB;max-width:620px;line-height:1.55;margin:11px 0 0;">Browse every game by time block, see who's already in, and claim your spots. You can sign up for up to <strong style="color:#fff;">two games</strong> — as long as they don't overlap.</p>
+        <p style="font-size:14px;color:#C7D3DB;max-width:620px;line-height:1.55;margin:11px 0 0;">Browse every game by time block, see who's already in, and claim your spots. You can sign up for up to <strong style="color:#fff;">${signupMax()} games</strong> — as long as they don't overlap (walk-up games can overlap).</p>
         ${isGameDay ? `
         <div style="display:inline-flex;align-items:center;gap:8px;margin-top:15px;background:rgba(255,95,0,0.16);border:1px solid ${dA};border-radius:8px;padding:9px 14px;">
           <span style="width:8px;height:8px;border-radius:50%;background:${dA};"></span>

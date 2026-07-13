@@ -1,7 +1,13 @@
 const { sql } = require('./db');
 const { formatName, userToJson } = require('./auth');
 
-const SIGNUP_MAX = 2;          // max game-slot sign-ups per person (relay + dip are separate)
+// Per-tribe sign-up cap (relay + dip are separate). Texas Roadhouse brings
+// more people, so each Roadie takes fewer slots to spread them around.
+const SIGNUP_MAX_BUFFALO = 4;
+const SIGNUP_MAX_ROADHOUSE = 2;
+function signupMaxFor(team) {
+  return team === 'roadhouse' ? SIGNUP_MAX_ROADHOUSE : SIGNUP_MAX_BUFFALO;
+}
 const SLOT_MINUTES = 5;        // each slot occupies a 5-minute window for overlap checks
 
 // ── settings helpers ───────────────────────────────────────────────────────
@@ -91,9 +97,13 @@ async function buildBootstrap(pool, user) {
   // ── per-slot rosters ──
   const slotRoster = {};          // slotId -> { buffalo:[names], roadhouse:[names] }
   const mySlotIds = new Set();
-  const signupPeopleByGame = {};  // gameId -> [{ name, team }]  (for ref stations)
+  const signupPeopleByGame = {};  // gameId -> [{ name, team, slot, startMin }]  (for ref stations)
   const slotGameId = {};          // slotId -> gameId  (filled below)
-  for (const s of slotsR.recordset) slotGameId[s.id] = s.game_id;
+  const slotMeta = {};            // slotId -> { label, startMin }
+  for (const s of slotsR.recordset) {
+    slotGameId[s.id] = s.game_id;
+    slotMeta[s.id] = { label: s.label, startMin: s.start_min };
+  }
   for (const s of signupsR.recordset) {
     const name = formatName(s.first_name, s.last_name, s.username);
     if (!slotRoster[s.slot_id]) slotRoster[s.slot_id] = { buffalo: [], roadhouse: [] };
@@ -102,8 +112,13 @@ async function buildBootstrap(pool, user) {
     const gid = slotGameId[s.slot_id];
     if (gid) {
       if (!signupPeopleByGame[gid]) signupPeopleByGame[gid] = [];
-      signupPeopleByGame[gid].push({ name, team: s.team || null });
+      const meta = slotMeta[s.slot_id] || {};
+      signupPeopleByGame[gid].push({ name, team: s.team || null, slot: meta.label || '', startMin: meta.startMin ?? null });
     }
+  }
+  // Order each game's ref roster by slot time so refs work top-to-bottom.
+  for (const gid of Object.keys(signupPeopleByGame)) {
+    signupPeopleByGame[gid].sort((a, b) => (a.startMin ?? 0) - (b.startMin ?? 0));
   }
 
   // ── slots grouped by game ──
@@ -222,7 +237,7 @@ async function buildBootstrap(pool, user) {
     games,
     mySignups,
     signupCount: mySignups.length,
-    signupMax: SIGNUP_MAX,
+    signupMax: signupMaxFor(myTeam),
     schedule,
     tribes,
     dip: { counts: dipCounts, entries: dipEntries, myEntry, myVote },
@@ -259,5 +274,5 @@ async function buildBootstrap(pool, user) {
 
 module.exports = {
   buildBootstrap, getSettings, upsertSetting, settingsFromRows, stationType,
-  slotsOverlap, SIGNUP_MAX, SLOT_MINUTES,
+  slotsOverlap, signupMaxFor, SIGNUP_MAX_BUFFALO, SIGNUP_MAX_ROADHOUSE, SLOT_MINUTES,
 };

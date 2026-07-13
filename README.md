@@ -78,9 +78,9 @@ staticwebapp.config.json — SPA fallback, node:20 apiRuntime, anonymous routes
 
 ## How the event runs (admin cheat-sheet)
 
-1. **Sign-Up phase** (default): players create accounts, pick a tribe, claim up to **2 games**
-   (no overlapping time blocks, per-tribe caps), join the **Dip Off** (5 cooks/tribe) and one
-   **relay leg**.
+1. **Sign-Up phase** (default): players create accounts, pick a tribe, claim time slots up to their
+   per-tribe cap (**Buffalo 4 / Texas Roadhouse 2**, no overlapping fixed-time blocks), join the
+   **Dip Off** (5 cooks/tribe) and one **relay leg**.
 2. Flip **Event mode → Game Day** in the Admin Center sidebar: sign-ups lock, **dip voting** opens
    on every phone (one vote each; dips stay numbered/anonymous).
 3. Refs log results all day from their stations (assign refs to games in Admin → Referees).
@@ -101,15 +101,22 @@ staticwebapp.config.json — SPA fallback, node:20 apiRuntime, anonymous routes
 
 Games sign-ups are **per time slot**, not per game. Each game (`bo_games`) has rows in
 `bo_game_slots` — a 5-minute slot with a **per-team headcount** (`cap_buffalo` / `cap_roadhouse`;
-`0` = that tribe isn't in that slot). Players reserve a slot for their tribe (max **2 slots/day**,
-no overlapping times); they can arrive anytime in the game's window, and after it the game is free
-walk-up. The 8 no-headcount games are walk-up the whole time (`open_play = 1`, no slots). Relay +
-Dip Off are separate from the 2-slot cap.
+`0` = that tribe isn't in that slot). Players reserve a slot for their tribe up to a **per-tribe
+day cap** — **Buffalo 4 slots, Texas Roadhouse 2** (TXRH brings more people, so each Roadie takes
+fewer slots to spread them around). Fixed-time games can't overlap; they can arrive anytime in the
+game's window, and after it the game is free walk-up. Relay + Dip Off are separate from the cap.
+
+**Walk-up games** (`open_play = 1`) also carry sign-up slots now: a player can lock a time inside
+the game's window (e.g. Unity Circle 1:30–1:50), and **walk-up slots are allowed to overlap another
+pick** (the UI warns to finish inside the window). After the window the game reverts to free
+walk-up. For refs, a walk-up station shows the **signed-up roster to score** first, then a
+**walk-on search** to add scores for anyone who shows up after the window.
 
 - Data is generated from the event spreadsheet into `infra/migrations/002_slots.sql`
-  (28 games, 117 slots, 7 relay legs). **Run it in the Fabric SQL editor** after `001_init.sql`.
+  (28 games, 156 slots, 7 relay legs). **Run it in the Fabric SQL editor** after `001_init.sql`.
   It creates `bo_game_slots`, reshapes `bo_signups` to `(user_id, slot_id)`, and reseeds
-  games/slots/relay. It **resets existing sign-ups** — safe pre-event.
+  games/slots/relay. It **resets existing sign-ups** — safe pre-event. The per-tribe cap is enforced
+  in the API (`api/lib/bootstrap.js` → `signupMaxFor`), not the schema.
 - Sign-up API: `POST /api/signups {slotId}` / `DELETE /api/signups/{slotId}`.
 
 ## Gotchas hit during setup (so the next person doesn't relearn them)
