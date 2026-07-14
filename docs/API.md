@@ -61,6 +61,7 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 ### Ref+ (require isRef or isAdmin)
 | Method & path | Body |
 |---|---|
+| `POST /api/ref-claim` | `{gameId, claim:true|false}` — the ref self-assigns (`claim:true`, takes the game over since `bo_ref_assignments` is one-ref-per-game) or releases it (`claim:false`, only if it's theirs). Returns fresh `{bootstrap}`. Lets refs move coverage without an admin. |
 | `POST /api/results` | One of:<br>`{type:'winner', gameName, winnerTeam:'buffalo'|'roadhouse', winnerName?, scores?}` → ref picks the winner of a head-to-head / bracket match. Points come from the game's `win_points` (server-authoritative). `scores:false` (within-tribe bracket round) logs advancement with `pts=0`; `scores:true` (cross-tribe championship or plain head-to-head) awards `win_points` to `winnerTeam`.<br>`{type:'vs', gameName, ptsBuffalo, ptsRoadhouse}` → one result row, winner = higher side, `pts = max`, detail `"Buffalo B – R Roadhouse"` (legacy scorekeeping).<br>`{type:'solo', gameName, entries:[{name, team, score}]}` → one row per entry with score>0, winner=team, pts=score, detail `"<name> scored <n>"`, `player_name` set.<br>`{type:'walk', gameName, playerName, team, score}` → one row like solo.<br>Each row records `pts_buffalo`/`pts_roadhouse` contributions and `entered_by` = caller's name. Returns `{ok:true}`. |
 
 ### Admin (require isAdmin)
@@ -119,18 +120,26 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
   "myResults": [ {"game":"Penny Stacking","detail":"18 pennies, one hand","pts":5} ],
   "scores": { "revealed": false },       // same shape as GET /api/scores
 
-  // ── refs/admins only (omitted for plain players) ──
+  // ── refs only (omitted for plain players) ──
   "refStations": [
     { "gameId":"corn", "name":"Cornhole", "venue":"The Lawn", "timeLabel":"1:30 – 2:00 PM",
-      "type":"vs",                        // 'walk' if open_play; 'vs' if needs_ref && cap<=2; else 'solo'
-      "signups":[ {"name":"Marcus T.","team":"buffalo"} ] }   // game roster, for solo scoring
+      "type":"vs", "openPlay":false, "winPoints":20,          // 'vs' or 'walk' (open_play)
+      "slots":[ {"id":11,"label":"1:30 PM","startMin":810,"buffalo":["Cory Z."],"roadhouse":["Maggie F."]} ],
+      "signups":[ {"name":"Marcus T.","team":"buffalo","slot":"1:30 PM"} ] }
+  ],
+  "refGames": [                                               // every game + assignment status, for the ref Games tab
+    { "gameId":"corn","name":"Cornhole","venue":"The Lawn","timeLabel":"…","openPlay":false,
+      "needsRef":true,"refUserId":3,"refName":"Will F.","mine":true,"slotCount":2 }
   ],
   "allPlayers": [ {"name":"Dana W.","team":"buffalo"} ]       // for walk-up search (refs only)
 }
 ```
 
-`refStations` = games assigned to the calling ref in `bo_ref_assignments`, **plus** every `open_play`
-game (walk-up stations are shared). Admins get all `needs_ref` games as stations.
+`refStations` = games **assigned to the calling ref** in `bo_ref_assignments` (walk-up games included —
+they're assigned like anything else, no longer auto-shared to every ref). Each station carries its
+`slots` (with per-tribe rosters) so the ref picks which timeslot they're scoring. The ref UI groups the
+scoring by slot; results are still logged per `POST /api/results`. `refGames` lists every game with its
+assignment status to power the ref self-assign tab.
 
 Notes:
 - `dip.entries[].name` is included **only** for entries on the viewer's own team (cooks are anonymous

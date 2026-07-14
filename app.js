@@ -24,7 +24,7 @@ const S = {
   tribeTab: 'buffalo',
   videoOpen: null,       // url string
   // ref board UI
-  refOpen: null, entryB: 0, entryR: 0, soloScores: {}, refWinner: null, refRound: 'round',
+  refOpen: null, refSlot: {}, entryB: 0, entryR: 0, soloScores: {}, refWinner: null, refRound: 'round',
   walkSearch: '', walkPick: null, walkScore: 0, walkLog: [],
   // admin UI
   adminSection: 'people', schedView: 'list',
@@ -675,132 +675,93 @@ function refBoardScreen() {
 
   const stationHtml = stations.map(st => {
     const open = S.refOpen === st.gameId;
-    const isVs = st.type === 'vs', isSolo = st.type === 'solo', isWalk = st.type === 'walk';
-    const typeLabel = isVs ? 'Head-to-head' : (isSolo ? 'Solo · sign-up list' : 'Walk-up · scored on arrival');
-    const statusLabel = isWalk ? 'Open all day' : 'On station now';
+    const isVs = st.type === 'vs', isWalk = st.type === 'walk';
+    const typeLabel = isVs ? 'Head-to-head' : 'Walk-up';
+    const statusLabel = isWalk ? 'Open all day' : 'On station';
     const statusColor = isWalk ? '#3FBF87' : T.A;
-    const rowBg = open ? th.panel : (isWalk ? 'rgba(255,255,255,0.04)' : T.dim);
-    const rowBorder = (open || !isWalk) ? T.A : th.line;
-    const bufNames = (st.signups || []).filter(p => p.team === 'buffalo').map(p => p.name);
-    const roadNames = (st.signups || []).filter(p => p.team === 'roadhouse').map(p => p.name);
+    const rowBg = open ? th.panel : T.dim;
+    const rowBorder = T.A;
 
     let body = '';
-    if (open && isVs) {
+    if (open) {
+      const slots = (st.slots || []).slice().sort((a, b) => a.startMin - b.startMin);
+      const selId = S.refSlot[st.gameId];
+      const selSlot = slots.find(s => String(s.id) === String(selId)) || null;
       const isBracket = !!BRACKETS[st.gameId];
       const winPts = st.winPoints != null ? st.winPoints : 10;
-      const round = isBracket ? (S.refRound || 'round') : 'champ';
-      const sel = S.refWinner;
       const teamColor = (t) => t === 'buffalo' ? '#FF5F00' : '#E0322E';
       const teamLabel = (t) => t === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse';
-      // A big tribe "winner" button (used for cross-tribe / championship picks).
-      const tribeBtn = (team, names) => {
-        const picked = sel && sel.scores && sel.team === team;
-        const c = teamColor(team);
-        return `<button data-act="refPickWinner" data-team="${team}" data-name="${esc(names || teamLabel(team))}" data-scores="1" style="flex:1;text-align:left;border-radius:10px;padding:13px 12px;border:2px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};">
-          <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;color:${c};">${teamLabel(team)}</div>
-          <div style="font-size:13px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.25;">${esc(names || '—')}</div>
-          ${picked ? `<div style="margin-top:7px;font-size:10.5px;font-weight:800;color:${c};display:flex;align-items:center;gap:5px;">${checkSvg(c, 12)}Winner</div>` : ''}
-        </button>`;
-      };
-      // Round selector (bracket games only): within-tribe round vs championship.
-      const roundTabs = isBracket ? `
-        <div style="display:flex;background:rgba(255,255,255,0.05);border:1px solid ${th.line};border-radius:9px;padding:3px;gap:3px;margin-bottom:13px;">
-          <button data-act="refRound" data-round="round" style="flex:1;padding:9px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${round === 'round' ? T.A : 'transparent'};color:${round === 'round' ? T.on : th.sub};">Bracket round<br/><span style="font-size:9px;opacity:0.8;">within tribe · no points</span></button>
-          <button data-act="refRound" data-round="champ" style="flex:1;padding:9px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${round === 'champ' ? T.A : 'transparent'};color:${round === 'champ' ? T.on : th.sub};">Championship<br/><span style="font-size:9px;opacity:0.8;">+${winPts} pts</span></button>
+
+      // ── timeslot picker — the ref chooses which slot they're scoring (games
+      //    can be played out of order) and sees the players in each ──
+      const slotPicker = slots.length ? `
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Which timeslot are you scoring?</div>
+        <div style="display:flex;flex-direction:column;gap:7px;">
+          ${slots.map(s => {
+            const on = String(s.id) === String(selId);
+            const buf = s.buffalo || [], road = s.roadhouse || [];
+            const n = buf.length + road.length;
+            const summ = n ? [buf.length ? `Buffalo: ${esc(buf.join(', '))}` : '', road.length ? `TXRH: ${esc(road.join(', '))}` : ''].filter(Boolean).join('  ·  ') : 'No players signed up';
+            return `<button data-act="refSelectSlot" data-game="${esc(st.gameId)}" data-slot="${s.id}" style="text-align:left;border-radius:9px;padding:11px 12px;border:1px solid ${on ? T.A : th.line};background:${on ? T.dim : 'rgba(255,255,255,0.03)'};">
+              <div style="display:flex;align-items:center;gap:8px;"><span style="font-family:'BN Kragen';font-size:15px;color:${on ? T.A : th.text};">${esc(s.label)}</span>${on ? `<span style="font-size:9px;font-weight:800;color:${T.on};background:${T.A};border-radius:4px;padding:1px 6px;">SCORING</span>` : ''}</div>
+              <div style="font-size:11px;color:${th.sub};margin-top:3px;">${summ}</div>
+            </button>`;
+          }).join('')}
         </div>` : '';
 
-      let picker;
-      if (round === 'champ') {
-        // Cross-tribe: tap the winning tribe → awards win points.
-        picker = `
-          <div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Who won? Winner earns ${winPts} pts for their tribe</div>
-          <div style="display:flex;gap:11px;">${tribeBtn('buffalo', bufNames.join(' & '))}${tribeBtn('roadhouse', roadNames.join(' & '))}</div>`;
-      } else {
-        // Within-tribe bracket round: tap the winning team/person → advances, no points.
-        const players = st.signups || [];
-        picker = `
-          <div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:4px;">Within-tribe match — tap the winner</div>
-          <div style="font-size:11px;color:${th.sub};margin-bottom:10px;">Buffalo vs Buffalo &amp; TXRH vs TXRH. Advances the winner — no tribe points until the championship.</div>
-          <div style="display:flex;flex-direction:column;gap:7px;">
-            ${players.length ? players.map(p => {
-              const picked = sel && !sel.scores && sel.name === p.name && sel.team === p.team;
-              const c = teamColor(p.team);
-              return `<button data-act="refPickWinner" data-team="${esc(p.team)}" data-name="${esc(p.name)}" data-scores="0" style="display:flex;align-items:center;gap:11px;border-radius:9px;padding:11px 12px;text-align:left;border:1px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};">
-                <span style="flex:1;min-width:0;font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}${p.slot ? `<span style="font-size:10.5px;font-weight:700;color:${th.sub};"> · ${esc(p.slot)}</span>` : ''}</span>
-                <span style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};flex-shrink:0;">${teamLabel(p.team)}</span>
-                ${picked ? checkSvg(c, 14) : ''}
-              </button>`;
-            }).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No one signed up at this station yet.</div>`}
-          </div>`;
-      }
-
-      const canSubmit = !!sel;
-      const submitLabel = !sel ? 'Pick the winner first'
-        : (sel.scores ? `Log ${teamLabel(sel.team)} win · +${winPts} pts` : `Log winner — ${sel.name} advances`);
-      body = `
-        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">${esc(st.timeLabel || 'Head-to-head')} · ${esc(st.venue || '')}</div>
-        ${roundTabs}
-        ${picker}
-        <button data-act="refWinnerSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:14px;background:${canSubmit ? T.A : 'rgba(255,255,255,0.08)'};color:${canSubmit ? T.on : th.sub};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">${submitLabel}</button>`;
-    } else if (open && isSolo) {
-      body = `
-        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:10px;">Sign-up list · type each player's score</div>
-        <div style="display:flex;flex-direction:column;gap:8px;">
-          ${(st.signups || []).length ? (st.signups || []).map((p, i) => `
-          <div style="display:flex;align-items:center;gap:11px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:9px;padding:9px 12px;">
-            <div style="flex:1;min-width:0;">
-              <div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}</div>
-              <div style="font-size:10.5px;font-weight:700;text-transform:uppercase;color:${p.team === 'buffalo' ? '#FF7F2E' : '#E0322E'};">${p.team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'}</div>
-            </div>
-            <div style="flex-shrink:0;">${scoreInput(p.name, i)}</div>
-          </div>`).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No sign-ups for this station yet.</div>`}
-        </div>
-        <button data-act="soloSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:13px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Save scores</button>`;
-    } else if (open && isWalk) {
-      const matches = q2 ? allPlayers.filter(p => p.name.toLowerCase().includes(q2)).slice(0, 4) : [];
-      const roster = st.signups || [];
-      const rosterHtml = roster.length ? `
-        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Signed up for this window · type each score</div>
-        <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
-          ${roster.map((p, i) => `
-          <div style="display:flex;align-items:center;gap:11px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:9px;padding:9px 12px;">
-            <div style="flex:1;min-width:0;">
-              <div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}${p.slot ? `<span style="font-size:10.5px;font-weight:700;color:${th.sub};"> · ${esc(p.slot)}</span>` : ''}</div>
-              <div style="font-size:10.5px;font-weight:700;text-transform:uppercase;color:${p.team === 'buffalo' ? '#FF7F2E' : '#E0322E'};">${p.team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'}</div>
-            </div>
-            <div style="flex-shrink:0;">${scoreInput(p.name, i)}</div>
-          </div>`).join('')}
-        </div>
-        <button data-act="soloSubmit" data-game="${esc(st.gameId)}" style="width:100%;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;margin-bottom:18px;">Save signed-up scores</button>
-        <div style="height:1px;background:${th.line};margin-bottom:15px;"></div>` : '';
-      body = rosterHtml + `
-        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:10px;">${roster.length ? 'Walk-on · anyone who shows up after' : 'Walk-up · find a player to score'}</div>
+      // ── walk-on add (walk-up games): score anyone not on the slot list ──
+      const walkOnBlock = () => {
+        const matches = q2 ? allPlayers.filter(p => p.name.toLowerCase().includes(q2)).slice(0, 4) : [];
+        return `
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin:2px 0 10px;">Walk-on · anyone not on the list</div>
         <div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.05);border:1px solid ${th.line};border-radius:9px;padding:11px 13px;">
           ${searchSvg(th.sub)}
           <input id="walk-input" data-live="walkSearch" value="${esc(S.walkSearch)}" placeholder="Search player name…" style="flex:1;min-width:0;background:transparent;border:none;outline:none;color:${th.text};font-size:14px;font-family:'Montserrat';"/>
         </div>
-        ${matches.length ? `
-        <div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">
-          ${matches.map((m, i) => `
-          <button data-act="walkPick" data-i="${i}" data-name="${esc(m.name)}" data-team="${esc(m.team)}" style="display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:8px;padding:10px 12px;">
-            <span style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(m.name)}</span>
-            <span style="font-size:10.5px;font-weight:700;text-transform:uppercase;color:${th.sub};">${m.team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'}</span>
-          </button>`).join('')}
-        </div>` : ''}
-        ${S.walkPick ? `
-        <div style="margin-top:11px;display:flex;align-items:center;gap:12px;background:${th.dim};border:1px solid ${th.line};border-radius:9px;padding:12px 13px;">
-          <span style="flex:1;font-size:13.5px;font-weight:700;color:${th.text};">${esc(S.walkPick.name)}</span>
-          <div style="flex-shrink:0;"><input id="walk-score-in" data-walkscore value="${S.walkScore || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:72px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:9px 8px;color:${th.text};font-family:'BN Kragen';font-size:18px;outline:none;"/></div>
-        </div>
-        <button data-act="walkSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:11px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Add ${esc(S.walkPick.name)}'s score</button>` : ''}
-        <div style="margin-top:14px;font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${th.sub};margin-bottom:8px;">Scored so far</div>
-        <div style="display:flex;flex-direction:column;gap:7px;">
-          ${S.walkLog.length ? S.walkLog.map(w => `
-          <div style="display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:8px;padding:9px 12px;">
-            <span style="font-size:13px;font-weight:600;color:${th.text};">${esc(w.name)}</span>
-            <span style="font-family:'BN Kragen';font-size:16px;color:${T.A};">${w.score}</span>
-          </div>`).join('') : `<div style="font-size:12px;color:${th.sub};font-style:italic;">Nothing logged this session yet.</div>`}
-        </div>`;
+        ${matches.length ? `<div style="display:flex;flex-direction:column;gap:6px;margin-top:8px;">${matches.map((m, i) => `<button data-act="walkPick" data-i="${i}" data-name="${esc(m.name)}" data-team="${esc(m.team)}" style="display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:8px;padding:10px 12px;"><span style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(m.name)}</span><span style="font-size:10.5px;font-weight:700;text-transform:uppercase;color:${th.sub};">${teamLabel(m.team)}</span></button>`).join('')}</div>` : ''}
+        ${S.walkPick ? `<div style="margin-top:11px;display:flex;align-items:center;gap:12px;background:${th.dim};border:1px solid ${th.line};border-radius:9px;padding:12px 13px;"><span style="flex:1;font-size:13.5px;font-weight:700;color:${th.text};">${esc(S.walkPick.name)}</span><div style="flex-shrink:0;"><input id="walk-score-in" data-walkscore value="${S.walkScore || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:72px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:9px 8px;color:${th.text};font-family:'BN Kragen';font-size:18px;outline:none;"/></div></div><button data-act="walkSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:11px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Add ${esc(S.walkPick.name)}'s score</button>` : ''}`;
+      };
+
+      // ── scoring panel, scoped to the selected slot ──
+      let scorer;
+      if (!slots.length) {
+        scorer = walkOnBlock();                          // pure walk-up, no slots
+      } else if (!selSlot) {
+        scorer = `<div style="margin-top:14px;font-size:12.5px;color:${th.sub};font-style:italic;">Pick a timeslot above to score it.</div>`;
+      } else if (isWalk) {
+        const players = [...(selSlot.buffalo || []).map(n => ({ name: n, team: 'buffalo' })), ...(selSlot.roadhouse || []).map(n => ({ name: n, team: 'roadhouse' }))];
+        scorer = `
+          <div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>
+          <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:10px;">${esc(selSlot.label)} · type each score</div>
+          <div style="display:flex;flex-direction:column;gap:8px;">
+            ${players.length ? players.map((p, i) => `<div style="display:flex;align-items:center;gap:11px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:9px;padding:9px 12px;"><div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}</div><div style="font-size:10.5px;font-weight:700;text-transform:uppercase;color:${teamColor(p.team)};">${teamLabel(p.team)}</div></div><div style="flex-shrink:0;">${scoreInput(p.name, i)}</div></div>`).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No one signed up for this slot.</div>`}
+          </div>
+          ${players.length ? `<button data-act="soloSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:13px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Save scores</button>` : ''}
+          <div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>
+          ${walkOnBlock()}`;
+      } else {
+        // head-to-head — winner picker for this slot's players
+        const buf = selSlot.buffalo || [], road = selSlot.roadhouse || [];
+        const round = isBracket ? (S.refRound || 'round') : 'champ';
+        const sel = S.refWinner;
+        const tribeBtn = (team, names) => {
+          const picked = sel && sel.scores && sel.team === team;
+          const c = teamColor(team);
+          return `<button data-act="refPickWinner" data-team="${team}" data-name="${esc(names || teamLabel(team))}" data-scores="1" style="flex:1;text-align:left;border-radius:10px;padding:13px 12px;border:2px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};"><div style="font-size:10.5px;font-weight:800;text-transform:uppercase;color:${c};">${teamLabel(team)}</div><div style="font-size:13px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.25;">${esc(names || '—')}</div>${picked ? `<div style="margin-top:7px;font-size:10.5px;font-weight:800;color:${c};display:flex;align-items:center;gap:5px;">${checkSvg(c, 12)}Winner</div>` : ''}</button>`;
+        };
+        const roundTabs = isBracket ? `<div style="display:flex;background:rgba(255,255,255,0.05);border:1px solid ${th.line};border-radius:9px;padding:3px;gap:3px;margin-bottom:13px;"><button data-act="refRound" data-round="round" style="flex:1;padding:9px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${round === 'round' ? T.A : 'transparent'};color:${round === 'round' ? T.on : th.sub};">Bracket round<br/><span style="font-size:9px;opacity:0.8;">within tribe · no points</span></button><button data-act="refRound" data-round="champ" style="flex:1;padding:9px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${round === 'champ' ? T.A : 'transparent'};color:${round === 'champ' ? T.on : th.sub};">Championship<br/><span style="font-size:9px;opacity:0.8;">+${winPts} pts</span></button></div>` : '';
+        let picker;
+        if (round === 'champ') {
+          picker = `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Who won ${esc(selSlot.label)}? Winner earns ${winPts} pts</div><div style="display:flex;gap:11px;">${tribeBtn('buffalo', buf.join(' & '))}${tribeBtn('roadhouse', road.join(' & '))}</div>`;
+        } else {
+          const players = [...buf.map(n => ({ name: n, team: 'buffalo' })), ...road.map(n => ({ name: n, team: 'roadhouse' }))];
+          picker = `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:4px;">${esc(selSlot.label)} · tap the winner</div><div style="font-size:11px;color:${th.sub};margin-bottom:10px;">Within-tribe round — advances the winner, no tribe points until the championship.</div><div style="display:flex;flex-direction:column;gap:7px;">${players.length ? players.map(p => { const picked = sel && !sel.scores && sel.name === p.name && sel.team === p.team; const c = teamColor(p.team); return `<button data-act="refPickWinner" data-team="${esc(p.team)}" data-name="${esc(p.name)}" data-scores="0" style="display:flex;align-items:center;gap:11px;border-radius:9px;padding:11px 12px;text-align:left;border:1px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};"><span style="flex:1;min-width:0;font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}</span><span style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};flex-shrink:0;">${teamLabel(p.team)}</span>${picked ? checkSvg(c, 14) : ''}</button>`; }).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No one signed up for this slot.</div>`}</div>`;
+        }
+        const canSubmit = !!sel;
+        const submitLabel = !sel ? 'Pick the winner first' : (sel.scores ? `Log ${teamLabel(sel.team)} win · +${winPts} pts` : `Log winner — ${sel.name} advances`);
+        scorer = `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>${roundTabs}${picker}<button data-act="refWinnerSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:14px;background:${canSubmit ? T.A : 'rgba(255,255,255,0.08)'};color:${canSubmit ? T.on : th.sub};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">${submitLabel}</button>`;
+      }
+      body = slotPicker + scorer;
     }
 
     return `
@@ -825,12 +786,44 @@ function refBoardScreen() {
         <span style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A};">Ref HQ · your stations</span>
       </div>
       <h2 style="font-family:'BN Kragen';font-size:32px;color:${T.th.text};text-transform:uppercase;margin:8px 0 0;line-height:0.92;">Run the game.</h2>
-      <p style="font-size:13px;color:${T.th.sub};margin:7px 0 0;">You're posted on a station for a stretch. Tap it to score the current matchup or log players.</p>
+      <p style="font-size:13px;color:${T.th.sub};margin:7px 0 0;">These are the games you're reffing. Tap one, pick the timeslot you're scoring, then log the result.</p>
     </div>
     <div style="padding:16px 18px 0;display:flex;flex-direction:column;gap:11px;">
-      ${stations.length ? stationHtml : `<div style="background:rgba(255,255,255,0.04);border:1px solid ${T.th.line};border-radius:11px;padding:16px;font-size:13px;color:${T.th.sub};">No stations assigned to you yet — an admin assigns refs to games in the Admin Center.</div>`}
+      ${stations.length ? stationHtml : `<div style="background:rgba(255,255,255,0.04);border:1px solid ${T.th.line};border-radius:11px;padding:16px;font-size:13px;color:${T.th.sub};">No games assigned to you yet — grab one from the <strong style="color:${T.A};">Games</strong> tab, or an admin can assign you in the Admin Center.</div>`}
     </div>
     ${S.isDesk ? '' : `<div style="padding:24px 18px 0;"><button data-act="signOut" style="font-size:12px;font-weight:700;color:${T.th.sub};text-decoration:underline;">Sign out</button></div>`}
+  </div>`;
+}
+
+/* ════════════════════ ref games tab — self-assign ════════════════════ */
+function refGamesScreen() {
+  const T = theme();
+  const th = T.th;
+  const games = S.boot.refGames || [];
+  const mine = games.filter(g => g.mine);
+  const others = games.filter(g => !g.mine);
+  const card = (g) => `
+    <div style="background:rgba(255,255,255,0.04);border:1px solid ${g.mine ? T.A : th.line};border-radius:11px;padding:14px 15px;display:flex;align-items:center;gap:12px;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:15px;font-weight:800;color:${th.text};">${esc(g.name)}</div>
+        <div style="font-size:11.5px;color:${th.sub};margin-top:3px;">${esc(g.timeLabel || '')}${g.venue ? ` · ${esc(g.venue)}` : ''}${g.openPlay ? ' · Walk-up' : ''}</div>
+        <div style="font-size:11px;font-weight:700;margin-top:5px;color:${g.mine ? T.A : (g.refName ? th.sub : '#3FBF87')};">${g.mine ? "You're reffing this" : (g.refName ? `Ref: ${esc(g.refName)}` : 'Unassigned')}</div>
+      </div>
+      <button data-act="refClaim" data-game="${esc(g.gameId)}" data-claim="${g.mine ? '0' : '1'}" style="flex-shrink:0;font-size:12px;font-weight:800;padding:9px 13px;border-radius:8px;${g.mine ? `background:transparent;border:1px solid ${th.line};color:${th.sub};` : `background:${T.A};color:${T.on};`}">${g.mine ? 'Release' : "I'll ref it"}</button>
+    </div>`;
+  return `
+  <div style="padding:20px 0 24px;">
+    <div style="padding:0 18px;">
+      <div style="display:flex;align-items:center;gap:9px;">${shieldSvg(T.A)}<span style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A};">Ref · assign yourself</span></div>
+      <h2 style="font-family:'BN Kragen';font-size:32px;color:${th.text};text-transform:uppercase;margin:8px 0 0;line-height:0.92;">Cover a game</h2>
+      <p style="font-size:13px;color:${th.sub};margin:7px 0 0;">Grab any game to ref it — it moves onto your Home board. Handy when coverage needs to shuffle.</p>
+    </div>
+    <div style="padding:16px 18px 0;">
+      ${mine.length ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:${th.sub};margin-bottom:9px;">Your games</div><div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">${mine.map(card).join('')}</div>` : ''}
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:${th.sub};margin-bottom:9px;">All games</div>
+      <div style="display:flex;flex-direction:column;gap:10px;">${others.length ? others.map(card).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No other games.</div>`}</div>
+    </div>
+    ${S.isDesk ? '' : `<div style="padding:24px 18px 0;"><button data-act="signOut" style="font-size:12px;font-weight:700;color:${th.sub};text-decoration:underline;">Sign out</button></div>`}
   </div>`;
 }
 
@@ -2536,7 +2529,7 @@ function screenHtml() {
   const ref = isRefUser();
   switch (S.route) {
     case 'home': return ref ? refBoardScreen() : homeScreen();
-    case 'games': return gamesScreen();
+    case 'games': return ref ? refGamesScreen() : gamesScreen();
     case 'game': return gameDetailScreen();
     case 'schedule': return scheduleScreen();
     case 'tribes': return tribesScreen();
@@ -2580,7 +2573,8 @@ function render() {
     html = loadingScreen();
   } else if (!S.boot) {
     html = S.bootError ? bootErrorScreen() : loadingScreen();
-  } else if (!S.boot.user.team || S.forceTeamGate) {
+  } else if (!isRefUser() && (!S.boot.user.team || S.forceTeamGate)) {
+    // Refs have no tribe — they never see the team gate; they go to the ref board.
     html = teamGateScreen();
   } else if (S.route === 'admin') {
     if (!S.boot.user.isAdmin) { location.hash = '#/home'; return; }
@@ -2827,6 +2821,13 @@ const ACTIONS = {
     }
     render();
   },
+  refSelectSlot: (el) => { S.refSlot[el.dataset.game] = parseInt(el.dataset.slot, 10); S.refWinner = null; S.soloScores = {}; render(); },
+  refClaim: (el) => guarded(async () => {
+    const claim = el.dataset.claim === '1';
+    const res = await api('/ref-claim', { method: 'POST', body: { gameId: el.dataset.game, claim } });
+    applyBoot(res);
+    toast(claim ? "You're reffing it" : 'Released');
+  }),
   refRound: (el) => { S.refRound = el.dataset.round; S.refWinner = null; render(); },
   refPickWinner: (el) => {
     S.refWinner = { team: el.dataset.team, name: el.dataset.name, scores: el.dataset.scores === '1' };
@@ -2847,8 +2848,16 @@ const ACTIONS = {
   soloSubmit: (el) => guarded(async () => {
     const st = (S.boot.refStations || []).find(x => x.gameId === el.dataset.game);
     if (!st) return;
-    const entries = (st.signups || [])
-      .filter(p => (S.soloScores[p.name] || 0) > 0)
+    // Score the players in the SELECTED slot (fall back to the game's full
+    // sign-up list for a no-slot game).
+    const selId = S.refSlot[el.dataset.game];
+    const slot = (st.slots || []).find(s => String(s.id) === String(selId));
+    const players = slot
+      ? [...(slot.buffalo || []).map(n => ({ name: n, team: 'buffalo' })), ...(slot.roadhouse || []).map(n => ({ name: n, team: 'roadhouse' }))]
+      : (st.signups || []).map(p => ({ name: p.name, team: p.team }));
+    const seen = new Set();
+    const entries = players
+      .filter(p => (S.soloScores[p.name] || 0) > 0 && !seen.has(p.name) && seen.add(p.name))
       .map(p => ({ name: p.name, team: p.team, score: S.soloScores[p.name] }));
     if (!entries.length) { toast('Score at least one player first'); return; }
     await api('/results', { method: 'POST', body: { type: 'solo', gameName: st.name, entries } });

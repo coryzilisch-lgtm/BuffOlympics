@@ -321,19 +321,36 @@ async function buildBootstrap(pool, user, opts = {}) {
   if (user.is_ref) {
     const assignments = {};
     for (const a of refAssignR.recordset) assignments[a.game_id] = a.user_id;
+    const nameById = {};
+    for (const u of usersR.recordset) nameById[u.id] = formatName(u.first_name, u.last_name, u.username);
 
-    const stations = gamesR.recordset.filter(g =>
-      g.open_play || assignments[g.id] === uid);
-
-    payload.refStations = stations.map(g => ({
+    // A ref only sees the games they're ASSIGNED to (walk-up games included —
+    // they're assigned like any other game, not auto-added to everyone).
+    const assignedGames = gamesR.recordset.filter(g => assignments[g.id] === uid);
+    payload.refStations = assignedGames.map(g => ({
       gameId: g.id,
       name: g.name,
       venue: g.venue,
       timeLabel: g.time_label,
       type: stationType(g),
+      openPlay: !!g.open_play,
       winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
+      slots: slotsByGame[g.id] || [],
       signups: signupPeopleByGame[g.id] || [],
     }));
+
+    // Every game, with assignment status — powers the ref Games tab where a ref
+    // can self-assign (take over) a game to move coverage around.
+    payload.refGames = gamesR.recordset.map(g => {
+      const rid = assignments[g.id];
+      return {
+        gameId: g.id, name: g.name, venue: g.venue, timeLabel: g.time_label,
+        openPlay: !!g.open_play, needsRef: !!g.needs_ref,
+        refUserId: rid || null, refName: rid ? (nameById[rid] || '') : '',
+        mine: rid === uid,
+        slotCount: (slotsByGame[g.id] || []).length,
+      };
+    });
 
     payload.allPlayers = usersR.recordset
       .filter(u => u.team === 'buffalo' || u.team === 'roadhouse')
