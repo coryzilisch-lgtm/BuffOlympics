@@ -61,7 +61,7 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 ### Ref+ (require isRef or isAdmin)
 | Method & path | Body |
 |---|---|
-| `POST /api/results` | One of:<br>`{type:'vs', gameName, ptsBuffalo, ptsRoadhouse}` → one result row, winner = higher side, `pts = max`, detail `"Buffalo B – R Roadhouse"`.<br>`{type:'solo', gameName, entries:[{name, team, score}]}` → one row per entry with score>0, winner=team, pts=score, detail `"<name> scored <n>"`, `player_name` set.<br>`{type:'walk', gameName, playerName, team, score}` → one row like solo.<br>Each row records `pts_buffalo`/`pts_roadhouse` contributions and `entered_by` = caller's name. Returns `{ok:true}`. |
+| `POST /api/results` | One of:<br>`{type:'winner', gameName, winnerTeam:'buffalo'|'roadhouse', winnerName?, scores?}` → ref picks the winner of a head-to-head / bracket match. Points come from the game's `win_points` (server-authoritative). `scores:false` (within-tribe bracket round) logs advancement with `pts=0`; `scores:true` (cross-tribe championship or plain head-to-head) awards `win_points` to `winnerTeam`.<br>`{type:'vs', gameName, ptsBuffalo, ptsRoadhouse}` → one result row, winner = higher side, `pts = max`, detail `"Buffalo B – R Roadhouse"` (legacy scorekeeping).<br>`{type:'solo', gameName, entries:[{name, team, score}]}` → one row per entry with score>0, winner=team, pts=score, detail `"<name> scored <n>"`, `player_name` set.<br>`{type:'walk', gameName, playerName, team, score}` → one row like solo.<br>Each row records `pts_buffalo`/`pts_roadhouse` contributions and `entered_by` = caller's name. Returns `{ok:true}`. |
 
 ### Admin (require isAdmin)
 | Method & path | Body / returns |
@@ -73,10 +73,10 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 | `DELETE /api/admin/dip/{entryId}` | Remove a dip entry (+ its votes). `{ok:true}` |
 | `POST /api/admin/relay-legs` | `{legId, name?, capDelta?}` (cap min 1). `{ok:true}` |
 | `POST /api/admin/announcements` | `{title, body}` → `{ok:true}` |
-| `POST /api/admin/schedule` | `{action:'add'}` (appends "New Block" 5:00 PM), `{action:'remove', id}`, `{action:'move', id, dir:-1|1}`, `{action:'update', id, timeLabel?, ampm?, title?, place?, kind?}`. `{ok:true}` |
+| `POST /api/admin/schedule` | `{action:'add'}` (appends "New Block" 5:00 PM), `{action:'remove', id}`, `{action:'move', id, dir:-1|1}`, `{action:'update', id, timeLabel?, ampm?, title?, place?, kind?, endLabel?, endAmpm?}` (`endLabel`/`endAmpm` = optional end time, migration 006; empty clears it back to no end). `{ok:true}` |
 | `POST /api/admin/ref-assign` | `{gameId, userId}` (userId null/'' = unassign). `{ok:true}` |
 | `POST /api/ac/idols` | Idol clues (hidden-immunity), table `bo_idols` (migration 003). `{action:'add'}` (appends blank "New clue"), `{action:'update', id, title?, clue?, releaseMin?}` (`releaseMin` = minutes since midnight, event-local; `null`/'' = stays hidden), `{action:'toggleFound', id}`, `{action:'remove', id}`. `{ok:true}`. Clues are HIDDEN by default; a clue reveals once its `releaseMin` passes on the viewer's clock or it's marked found. |
-| `POST /api/ac/games` | Games + slots CRUD, **safe mid-event** (edits never touch sign-ups; deletes drop only that item's sign-ups). Actions:<br>`{action:'addGame', name, timeLabel?, venue?, needsRef?, openPlay?}` → `{ok, id}` (id derived from name).<br>`{action:'updateGame', gameId, name?, timeLabel?, venue?, needsRef?, openPlay?}`.<br>`{action:'removeGame', gameId}` (deletes its slots + sign-ups + ref assignment).<br>`{action:'addSlot', gameId, startMin, label, capBuffalo, capRoadhouse}`.<br>`{action:'updateSlot', slotId, startMin?, label?, capBuffalo?, capRoadhouse?}` (slot id is stable, so sign-ups survive an edit).<br>`{action:'removeSlot', slotId}` (drops that slot's sign-ups). Returns `{ok:true}`. `ac-overview.gamesCatalog[].slots[]` carries `{id,startMin,label,capBuffalo,capRoadhouse,nBuffalo,nRoadhouse}` for the editor. |
+| `POST /api/ac/games` | Games + slots CRUD, **safe mid-event** (edits never touch sign-ups; deletes drop only that item's sign-ups). Actions:<br>`{action:'addGame', name, timeLabel?, venue?, needsRef?, openPlay?}` → `{ok, id}` (id derived from name; `win_points` defaults to 10 via the column DEFAULT — set a custom value with a follow-up updateGame).<br>`{action:'updateGame', gameId, name?, timeLabel?, venue?, needsRef?, openPlay?, winPoints?}` (`winPoints` = points the winning tribe earns when a ref logs a winner; migration 004).<br>`{action:'removeGame', gameId}` (deletes its slots + sign-ups + ref assignment).<br>`{action:'addSlot', gameId, startMin, label, capBuffalo, capRoadhouse}`.<br>`{action:'updateSlot', slotId, startMin?, label?, capBuffalo?, capRoadhouse?}` (slot id is stable, so sign-ups survive an edit).<br>`{action:'removeSlot', slotId}` (drops that slot's sign-ups). Returns `{ok:true}`. `ac-overview.gamesCatalog[].slots[]` carries `{id,startMin,label,capBuffalo,capRoadhouse,nBuffalo,nRoadhouse}` for the editor. |
 
 **Note on real routes:** the admin functions live under the **`ac`** prefix (`/api/ac-overview`, `/api/ac/{action}`) because Azure Functions reserves `admin`. The `/api/admin/*` paths above are the logical contract names; the client calls the `ac` forms.
 
@@ -99,7 +99,7 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
   ],
   "blocks": [ {"id":"b130","label":"1:30 PM Rotation","time":"1:30 – 2:00 PM","slot":[810,840],"place":"Courts · Lawn · Cafe"}, … ],
   "mySignups": [ {"gameId":"corn","game":"Cornhole","slotLabel":"1:30 – 2:00 PM"} ],
-  "schedule": [ {"id":1,"timeLabel":"8:00","ampm":"AM","title":"Check-In & Tribe Paint","place":"Main Lawn","kind":"done"} ],
+  "schedule": [ {"id":1,"timeLabel":"8:00","ampm":"AM","endLabel":"9:00","endAmpm":"AM","title":"Check-In & Tribe Paint","place":"Main Lawn","kind":"done"} ],
   "tribes": {
     "buffalo":   [ {"name":"Marcus T.","role":"SUP Ref"}, {"name":"Dana W.","role":""} ],
     "roadhouse": [ … ]

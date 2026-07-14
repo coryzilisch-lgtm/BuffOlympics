@@ -203,8 +203,21 @@ async function handleSchedule(pool, body) {
         req.input(col, sql.NVarChar, String(body[k]));
       }
     }
-    if (!sets.length) return json({ error: 'Nothing to update' }, 400);
-    await req.query(`UPDATE bo_schedule SET ${sets.join(', ')} WHERE id = @id`);
+    if (sets.length) await req.query(`UPDATE bo_schedule SET ${sets.join(', ')} WHERE id = @id`);
+    // End time (migration 006) — separate + defensive so editing keeps working
+    // even before 006 is run. Empty string clears the end back to NULL.
+    if (body.endLabel !== undefined || body.endAmpm !== undefined) {
+      try {
+        await pool.request()
+          .input('id', sql.Int, id)
+          .input('el', sql.NVarChar, String(body.endLabel || '').trim() || null)
+          .input('ea', sql.NVarChar, String(body.endAmpm || '').trim() || null)
+          .query('UPDATE bo_schedule SET end_label = @el, end_ampm = @ea WHERE id = @id');
+      } catch (e) { /* columns not present yet — ignore */ }
+    }
+    if (!sets.length && body.endLabel === undefined && body.endAmpm === undefined) {
+      return json({ error: 'Nothing to update' }, 400);
+    }
     return json({ ok: true });
   }
 
@@ -351,6 +364,10 @@ async function handleGames(pool, body) {
     }
     if (body.needsRef !== undefined) { sets.push('needs_ref = @needs_ref'); req.input('needs_ref', sql.Bit, body.needsRef ? 1 : 0); }
     if (body.openPlay !== undefined) { sets.push('open_play = @open_play'); req.input('open_play', sql.Bit, body.openPlay ? 1 : 0); }
+    if (body.winPoints !== undefined) {
+      const wp = parseInt(body.winPoints, 10);
+      sets.push('win_points = @win_points'); req.input('win_points', sql.Int, Number.isInteger(wp) && wp >= 0 ? wp : 10);
+    }
     if (!sets.length) return json({ error: 'Nothing to update' }, 400);
     const r = await req.query(`UPDATE bo_games SET ${sets.join(', ')} WHERE id = @gid`);
     if (!r.rowsAffected[0]) return json({ error: 'Game not found' }, 404);
