@@ -55,6 +55,7 @@ infra/main.bicep           — SWA resource + app settings
 infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
   001_init.sql             — all bo_* tables + seed (games, schedule, relay legs, settings)
   002_slots.sql            — GENERATED slot migration (see "Slots" below). RESETS sign-ups.
+  003_idols.sql            — bo_idols table + seed (hidden-immunity clues; Admin → Idols)
 scripts/
   concurrency-loadtest.js  — proves the atomic slot guard against a live deploy (Node 18+, no deps)
 .github/workflows/azure-static-web-apps.yml  — deploy on push to main
@@ -173,7 +174,8 @@ on stable ids (sign-ups preserved); removing drops only that item's sign-ups.
 
 `settings` (eventMode/refJoinCode/scoresRevealed[one-way]/dipRevealed) · `people`
 (toggleAdmin/toggleRef/addGame/removeGame/**resetPassword**/**removeUser**) · `relay-legs` · `announcements` ·
-`schedule` (add/remove/move/update) · `ref-assign` · `games` (see above). Every `ac` action busts the
+`schedule` (add/remove/move/update) · **`idols`** (add/update/remove/toggleFound — hidden-immunity clues,
+`bo_idols`, migration 003; hidden by default, reveal by release time or found) · `ref-assign` · `games` (see above). Every `ac` action busts the
 shared bootstrap cache. `removeUser` deletes a user + their sign-ups/dip/relay/ref-assignment (keeps
 `bo_results`) — for clearing test/bogus accounts. `resetPassword` sets a new `password_hash` (admin-
 driven reset — no email infra, so the admin sets it and tells the person). The Admin Center → People

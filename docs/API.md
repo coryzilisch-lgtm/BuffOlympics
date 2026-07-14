@@ -75,6 +75,7 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 | `POST /api/admin/announcements` | `{title, body}` → `{ok:true}` |
 | `POST /api/admin/schedule` | `{action:'add'}` (appends "New Block" 5:00 PM), `{action:'remove', id}`, `{action:'move', id, dir:-1|1}`, `{action:'update', id, timeLabel?, ampm?, title?, place?, kind?}`. `{ok:true}` |
 | `POST /api/admin/ref-assign` | `{gameId, userId}` (userId null/'' = unassign). `{ok:true}` |
+| `POST /api/ac/idols` | Idol clues (hidden-immunity), table `bo_idols` (migration 003). `{action:'add'}` (appends blank "New clue"), `{action:'update', id, title?, clue?, releaseMin?}` (`releaseMin` = minutes since midnight, event-local; `null`/'' = stays hidden), `{action:'toggleFound', id}`, `{action:'remove', id}`. `{ok:true}`. Clues are HIDDEN by default; a clue reveals once its `releaseMin` passes on the viewer's clock or it's marked found. |
 | `POST /api/ac/games` | Games + slots CRUD, **safe mid-event** (edits never touch sign-ups; deletes drop only that item's sign-ups). Actions:<br>`{action:'addGame', name, timeLabel?, venue?, needsRef?, openPlay?}` → `{ok, id}` (id derived from name).<br>`{action:'updateGame', gameId, name?, timeLabel?, venue?, needsRef?, openPlay?}`.<br>`{action:'removeGame', gameId}` (deletes its slots + sign-ups + ref assignment).<br>`{action:'addSlot', gameId, startMin, label, capBuffalo, capRoadhouse}`.<br>`{action:'updateSlot', slotId, startMin?, label?, capBuffalo?, capRoadhouse?}` (slot id is stable, so sign-ups survive an edit).<br>`{action:'removeSlot', slotId}` (drops that slot's sign-ups). Returns `{ok:true}`. `ac-overview.gamesCatalog[].slots[]` carries `{id,startMin,label,capBuffalo,capRoadhouse,nBuffalo,nRoadhouse}` for the editor. |
 
 **Note on real routes:** the admin functions live under the **`ac`** prefix (`/api/ac-overview`, `/api/ac/{action}`) because Azure Functions reserves `admin`. The `/api/admin/*` paths above are the logical contract names; the client calls the `ac` forms.
@@ -100,7 +101,7 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
   "mySignups": [ {"gameId":"corn","game":"Cornhole","slotLabel":"1:30 – 2:00 PM"} ],
   "schedule": [ {"id":1,"timeLabel":"8:00","ampm":"AM","title":"Check-In & Tribe Paint","place":"Main Lawn","kind":"done"} ],
   "tribes": {
-    "buffalo":   [ {"name":"Cory Z.","role":"Captain"}, {"name":"Marcus T.","role":"SUP Ref"}, {"name":"Dana W.","role":""} ],
+    "buffalo":   [ {"name":"Marcus T.","role":"SUP Ref"}, {"name":"Dana W.","role":""} ],
     "roadhouse": [ … ]
   },
   "dip": {
@@ -113,6 +114,7 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
     "roster": { "rl1": {"buffalo":["Cory Z."],"roadhouse":[]} },
     "myLeg": null
   },
+  "idols": [ {"id":1,"title":"Clue 1","clue":"Where the herd refuels.","releaseMin":null,"found":false} ],
   "announcements": [ {"id":1,"title":"…","body":"…","createdAt":"…"} ],
   "myResults": [ {"game":"Penny Stacking","detail":"18 pennies, one hand","pts":5} ],
   "scores": { "revealed": false },       // same shape as GET /api/scores
@@ -133,7 +135,7 @@ game (walk-up stations are shared). Admins get all `needs_ref` games as stations
 Notes:
 - `dip.entries[].name` is included **only** for entries on the viewer's own team (cooks are anonymous
   to the other tribe / voters). `no` is the stable dip number (order of entry).
-- `tribes` rosters are built from `bo_users` with a team, name-formatted; role is `'Captain'` if admin
+- `tribes` rosters are built from `bo_users` with a team, name-formatted; role is `'SUP Ref'` if ref, else `''`
   with a team, `'SUP Ref'` if ref with a team, else `''`.
 - `blocks` are constants (defined in `api/lib/blocks.js`), mirrored in the seed data:
   `b130 [810,840]`, `b200 [840,870]`, `b230 [870,900]`, `b300 [900,930]`, `open` (no slot).

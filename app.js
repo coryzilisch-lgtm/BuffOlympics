@@ -33,6 +33,10 @@ const S = {
   historyOpenId: null,
   admGameEdit: null,     // { mode:'add'|'edit', id?, needsRef, openPlay } — game modal
   admSlotEdit: null,     // { mode:'add'|'edit', gameId, slotId? } — slot modal
+  admSchedEdit: null,    // schedule row id currently being edited inline
+  admSchedKind: 'up',    // kind of the schedule row being edited: up|live|done
+  admIdolEdit: null,     // idol clue id currently being edited inline
+  walkupOpen: false,     // game-day home "earn more points" walk-up expander
   busy: false,
 };
 
@@ -495,6 +499,12 @@ function homeScreen() {
   const scores = boot.scores || { revealed: false };
   const agenda = homeAgenda(T);
   const feed = aroundCamp(T);
+  // Walk-up games open for free scoring after their sign-up window closes.
+  const walkups = (boot.games || []).filter(g => g.openPlay).map(g => {
+    const slots = (g.slots || []).slice().sort((a, b) => a.startMin - b.startMin);
+    const last = slots[slots.length - 1];
+    return { name: g.name, venue: g.venue || '', openLabel: last ? `Open for walk-up after ${last.label}` : 'Open all day' };
+  });
 
   const scoresCard = scores.revealed ? `
       <button data-act="go" data-to="score" style="width:100%;background:${th.panel};border:1px solid ${T.A};border-radius:10px;padding:15px;display:flex;align-items:center;gap:13px;">
@@ -557,13 +567,36 @@ function homeScreen() {
         </div>
         ${chevR(T.on, 9, 15, 2.4)}
       </button>
+    </div>
+    <div style="padding:14px 18px 0;">
+      <div style="background:${th.panel};border:1px solid ${th.panelBorder};border-radius:11px;overflow:hidden;">
+        <button data-act="toggleWalkup" style="width:100%;text-align:left;display:flex;align-items:center;gap:13px;padding:15px;">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><path d="M7 4h10v3a5 5 0 01-10 0V4z" stroke="${T.A}" stroke-width="2" stroke-linejoin="round"/><path d="M5 5H3v2a3 3 0 003 3M19 5h2v2a3 3 0 01-3 3M9 20h6M12 13v7" stroke="${T.A}" stroke-width="2" stroke-linecap="round"/></svg>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:14.5px;font-weight:800;color:${th.text};">Want to earn more points for your team?</div>
+            <div style="font-size:11.5px;color:${th.sub};margin-top:2px;">${walkups.length} walk-up game${walkups.length === 1 ? '' : 's'} you can jump into — tap to see when</div>
+          </div>
+          <span style="flex-shrink:0;transition:transform .15s;transform:rotate(${S.walkupOpen ? '90deg' : '0deg'});">${chevR(T.A)}</span>
+        </button>
+        ${S.walkupOpen ? `
+        <div style="padding:0 15px 8px;">
+          ${walkups.length ? walkups.map(w => `
+          <div style="display:flex;align-items:flex-start;gap:11px;padding:11px 0;border-top:1px solid rgba(255,255,255,0.07);">
+            <span style="width:8px;height:8px;border-radius:50%;background:${T.A};margin-top:5px;flex-shrink:0;"></span>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(w.name)}</div>
+              <div style="font-size:11.5px;color:${T.A};font-weight:600;margin-top:2px;">${esc(w.openLabel)}${w.venue ? ` · ${esc(w.venue)}` : ''}</div>
+            </div>
+          </div>`).join('') : `<div style="padding:12px 0 14px;border-top:1px solid rgba(255,255,255,0.07);font-size:12.5px;color:${th.sub};">No walk-up games right now.</div>`}
+        </div>` : ''}
+      </div>
     </div>` : `
     <div style="padding:18px 18px 0;">
       <button data-act="go" data-to="games" style="width:100%;background:${T.A};color:${T.on};border-radius:11px;padding:16px;display:flex;align-items:center;gap:13px;box-shadow:0 8px 22px ${T.glow};">
         ${clipSvg(T.on)}
         <div style="flex:1;text-align:left;">
           <div style="font-size:15px;font-weight:800;">Sign up for games</div>
-          <div style="font-size:11.5px;opacity:0.82;">${signupCount} of 2 picked · pick your events</div>
+          <div style="font-size:11.5px;opacity:0.82;">${signupCount} of ${signupMax()} picked · pick your events</div>
         </div>
         ${chevR(T.on, 9, 15, 2.4)}
       </button>
@@ -814,7 +847,8 @@ function gamesScreen() {
         <div style="display:flex;gap:10px;margin-top:7px;flex-wrap:wrap;align-items:center;">
           <span style="font-size:11.5px;color:${T.A};font-weight:700;">${esc(g.runtimeLabel || '')}</span>
           ${g.venue ? `<span style="font-size:11.5px;color:${th.sub};">${esc(g.venue)}</span>` : ''}
-          ${gm.hasSlots ? `<span style="font-size:11.5px;color:${th.sub};">${g.slots.length} slots${gm.openPlay ? ' · then walk-up' : ''}</span>` : ''}
+          ${gm.hasSlots ? `<span style="font-size:11.5px;color:${th.sub};">${g.slots.length} slots</span>` : ''}
+          ${BRACKETS[g.id] ? `<span style="font-size:10px;font-weight:800;letter-spacing:0.03em;text-transform:uppercase;color:#F5C518;border:1px solid rgba(245,197,24,0.5);border-radius:5px;padding:2px 6px;">🏆 Bracket</span>` : ''}
         </div>
       </div>
       <div style="flex-shrink:0;">${status}</div>
@@ -894,6 +928,69 @@ function slotRowHtml(g, slot) {
   </div>`;
 }
 
+// Bracket games run tribe-vs-tribe qualifiers, then each tribe's winner meets
+// in a cross-tribe championship. This config drives the "Bracket path" panel so
+// anyone who signs up can see the later round times in case they keep winning.
+// Times are fixed per the event plan — edit here to adjust.
+const BRACKETS = {
+  cornhole: {
+    intro: 'Cornhole is bracket play — you keep facing your own tribe until the title game. If you win, here\'s where you head next:',
+    rounds: [
+      { time: '1:30 – 2:00 PM', name: 'Qualifiers', detail: 'Buffalo vs Buffalo · Texas Roadhouse vs Texas Roadhouse', team: 'both' },
+      { time: '2:30 PM', name: 'Semifinals', detail: 'Still within your own tribe', team: 'both' },
+      { time: '3:00 PM', name: 'Championship', detail: 'Buffalo winner vs Texas Roadhouse winner', team: 'final' },
+    ],
+  },
+  'ping-pong': {
+    intro: 'Ping Pong is bracket play — each tribe runs its own bracket, then the two winners meet for the title:',
+    rounds: [
+      { time: '1:30 – 2:30 PM', name: 'Qualifiers', detail: 'Buffalo vs Buffalo · Texas Roadhouse vs Texas Roadhouse', team: 'both' },
+      { time: '2:50 PM', name: 'Texas Roadhouse Semifinals', detail: 'Texas Roadhouse bracket', team: 'roadhouse' },
+      { time: '3:10 PM', name: 'Buffalo Semifinals', detail: 'Buffalo bracket', team: 'buffalo' },
+      { time: '3:30 PM', name: 'Championship', detail: 'Buffalo winner vs Texas Roadhouse winner', team: 'final' },
+    ],
+  },
+};
+function bracketPanel(g) {
+  const T = theme();
+  const th = T.th;
+  const br = BRACKETS[g.id];
+  if (!br) return '';
+  const accentFor = (team) => team === 'final' ? '#F5C518'
+    : team === 'buffalo' ? '#FF5F00'
+    : team === 'roadhouse' ? '#E0322E'
+    : T.A;
+  const rounds = br.rounds.map((r, i) => {
+    const last = i === br.rounds.length - 1;
+    const accent = accentFor(r.team);
+    return `
+    <div style="display:flex;gap:12px;">
+      <div style="width:84px;flex-shrink:0;text-align:right;padding-top:12px;">
+        <div style="font-family:'BN Kragen';font-size:13.5px;color:${accent};line-height:1.1;">${esc(r.time)}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;">
+        <span style="width:12px;height:12px;border-radius:50%;background:${accent};margin-top:14px;"></span>
+        ${last ? '' : '<span style="flex:1;width:2px;background:rgba(255,255,255,0.12);"></span>'}
+      </div>
+      <div style="flex:1;padding:8px 0 ${last ? '0' : '16px'};">
+        <div style="background:rgba(255,255,255,0.04);border:1px solid ${r.team === 'final' ? accent : th.line};border-radius:9px;padding:11px 13px;">
+          <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+            <span style="font-family:'BN Kragen';font-size:15px;color:${th.text};text-transform:uppercase;line-height:1;">${esc(r.name)}</span>
+            ${r.team === 'final' ? '<span style="font-size:13px;">🏆</span>' : ''}
+          </div>
+          <div style="font-size:11.5px;color:${th.sub};margin-top:4px;line-height:1.45;">${esc(r.detail)}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+  <div style="padding:20px 18px 0;">
+    <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:8px;">🏆 Bracket path</div>
+    <div style="font-size:11.5px;color:${th.sub};line-height:1.5;margin-bottom:14px;">${esc(br.intro)}</div>
+    ${rounds}
+  </div>`;
+}
+
 function gameDetailScreen() {
   const T = theme();
   const th = T.th;
@@ -936,9 +1033,10 @@ function gameDetailScreen() {
       </div>
     </div>
     <div style="padding:14px 18px 0;">
-      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:10px;">${g.openPlay ? 'Sign-up slots · then walk-up' : 'Time slots'}</div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:10px;">${g.openPlay ? 'Sign-up slots' : 'Time slots'}</div>
       <div style="display:flex;flex-direction:column;gap:9px;">${slots}</div>
     </div>
+    ${bracketPanel(g)}
     ${g.needsRef ? `<div style="padding:16px 18px 0;"><div style="display:flex;align-items:center;gap:10px;background:${th.dim};border:1px solid ${T.A};border-radius:9px;padding:13px 15px;">${shieldSvg(T.A)}<span style="font-size:13.5px;font-weight:700;color:${th.text};">SUP ref required at this station</span></div></div>` : ''}
   </div>`;
 }
@@ -971,26 +1069,47 @@ function scheduleScreen() {
   const T = theme();
   const th = T.th;
   const steel = '#8AA7B9';
-  const rows = (S.boot.schedule || []).map(e => {
+  // Fixed, everyone-sees-them blocks the admin set (ceremonies, lunch, reveals)…
+  const fixed = (S.boot.schedule || []).map(e => ({
+    isGame: false, kind: e.kind, timeLabel: e.timeLabel, ampm: e.ampm,
+    title: e.title, place: e.place, min: parseTimeLabel(`${e.timeLabel} ${e.ampm}`),
+  }));
+  // …woven together with THIS player's own game slots.
+  const gameById = {};
+  for (const g of (S.boot.games || [])) gameById[g.id] = g;
+  const games = (S.boot.mySignups || []).map(m => {
+    const g = gameById[m.gameId];
+    return { isGame: true, kind: 'game', timeLabel: m.label, ampm: '', title: m.game, place: g ? g.venue : '', min: m.startMin };
+  });
+  const all = [...fixed, ...games];
+  all.forEach((it, i) => { it._i = i; });
+  all.sort((a, b) => ((a.min == null ? Infinity : a.min) - (b.min == null ? Infinity : b.min)) || (a._i - b._i));
+
+  const rows = all.map(e => {
     const live = e.kind === 'live';
     const done = e.kind === 'done';
+    const game = e.isGame;
+    const dot = game ? T.A : (live ? T.A : (done ? steel : '#011220'));
+    const cardBg = game ? T.dim : (live ? th.panel : 'rgba(255,255,255,0.04)');
+    const cardBorder = game ? T.A : (live ? T.A : 'rgba(255,255,255,0.08)');
     return `
     <div style="display:flex;gap:14px;">
       <div style="width:62px;flex-shrink:0;text-align:right;padding-top:14px;">
-        <div style="font-family:'BN Kragen';font-size:15px;color:${live ? T.A : (done ? steel : th.text)};line-height:1;">${esc(e.timeLabel)}</div>
-        <div style="font-size:10px;color:${steel};">${esc(e.ampm)}</div>
+        <div style="font-family:'BN Kragen';font-size:15px;color:${game ? T.A : (live ? T.A : (done ? steel : th.text))};line-height:1;">${esc(e.timeLabel)}</div>
+        ${e.ampm ? `<div style="font-size:10px;color:${steel};">${esc(e.ampm)}</div>` : ''}
       </div>
       <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;">
-        <span style="width:13px;height:13px;border-radius:50%;background:${live ? T.A : (done ? steel : '#011220')};border:2px solid ${live ? T.A : steel};margin-top:15px;"></span>
+        <span style="width:13px;height:13px;border-radius:50%;background:${dot};border:2px solid ${game || live ? T.A : steel};margin-top:15px;"></span>
         <span style="flex:1;width:2px;background:rgba(255,255,255,0.10);"></span>
       </div>
       <div style="flex:1;padding:10px 0 18px;">
-        <div style="background:${live ? th.panel : 'rgba(255,255,255,0.04)'};border:1px solid ${live ? T.A : 'rgba(255,255,255,0.08)'};border-radius:9px;padding:13px 14px;">
-          <div style="display:flex;align-items:center;gap:8px;">
+        <div style="background:${cardBg};border:1px solid ${cardBorder};border-radius:9px;padding:13px 14px;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <span style="font-family:'BN Kragen';font-size:17px;color:${th.text};text-transform:uppercase;line-height:1;">${esc(e.title)}</span>
+            ${game ? `<span style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:${T.on};background:${T.A};border-radius:4px;padding:2px 6px;">YOUR GAME</span>` : ''}
             ${live ? `<span style="font-size:9px;font-weight:800;letter-spacing:0.08em;color:${T.on};background:${T.A};border-radius:4px;padding:2px 6px;">LIVE</span>` : ''}
           </div>
-          <div style="font-size:12px;color:${steel};margin-top:5px;">${esc(e.place)}</div>
+          ${e.place ? `<div style="font-size:12px;color:${steel};margin-top:5px;">${esc(e.place)}</div>` : ''}
         </div>
       </div>
     </div>`;
@@ -1000,8 +1119,9 @@ function scheduleScreen() {
     <div style="padding:0 18px 8px;">
       <span style="font-size:11px;font-weight:600;color:${T.A2};letter-spacing:0.04em;">Thursday · August 14 · Support Center</span>
       <h2 style="font-family:'BN Kragen';font-size:36px;color:${th.text};text-transform:uppercase;margin:6px 0 0;line-height:0.92;">The Day</h2>
+      <p style="font-size:12.5px;color:${th.sub};margin:8px 0 0;">Event moments everyone shares, plus the games you signed up for — woven together in time order.</p>
     </div>
-    <div style="padding:18px;">${rows}</div>
+    <div style="padding:18px;">${rows || `<div style="font-size:13px;color:${th.sub};font-style:italic;">Nothing scheduled yet.</div>`}</div>
   </div>`;
 }
 
@@ -1009,22 +1129,23 @@ function scheduleScreen() {
 function tribesScreen() {
   const T = theme();
   const th = T.th;
-  const orange = '#FF5F00', bone = '#F3F7F5', navy = '#00253D';
+  // Team colours: Buffalo = navy/orange, Texas Roadhouse = red/yellow.
+  const orange = '#FF5F00', navy = '#00253D', red = '#E0322E', yellow = '#F5C518';
   const isBuf = S.tribeTab === 'buffalo';
   const roster = ((S.boot.tribes || {})[S.tribeTab] || []).map(m => ({ ...m, initials: initials(m.name) }));
-  const capt = roster.find(m => m.role === 'Captain');
+  const rolePillFg = isBuf ? '#FF7F2E' : yellow;
+  const rolePillBorder = isBuf ? 'rgba(255,95,0,0.4)' : 'rgba(245,197,24,0.5)';
   const tribe = {
     name: isBuf ? 'Buffalo' : 'Texas Roadhouse',
-    captain: capt ? capt.name : '—',
     count: roster.length,
     mono: isBuf ? 'B' : 'TR',
-    crestBg: isBuf ? orange : bone,
-    crestFg: isBuf ? '#011220' : navy,
-    crestSub: isBuf ? '#00253D' : '#5C7B91',
-    chipBg: isBuf ? '#011220' : navy,
-    chipFg: isBuf ? orange : bone,
+    crestBg: isBuf ? orange : red,
+    crestFg: isBuf ? '#011220' : yellow,
+    crestSub: isBuf ? '#00253D' : 'rgba(255,255,255,0.82)',
+    chipBg: isBuf ? '#011220' : yellow,
+    chipFg: isBuf ? orange : red,
     bBg: isBuf ? orange : 'transparent', bFg: isBuf ? navy : '#C7D3DB', bBorder: isBuf ? orange : 'rgba(255,255,255,0.14)',
-    rBg: !isBuf ? bone : 'transparent', rFg: !isBuf ? navy : '#C7D3DB', rBorder: !isBuf ? bone : 'rgba(255,255,255,0.14)',
+    rBg: !isBuf ? red : 'transparent', rFg: !isBuf ? yellow : '#C7D3DB', rBorder: !isBuf ? red : 'rgba(255,255,255,0.14)',
   };
   return `
   <div style="padding:18px 0 24px;">
@@ -1041,7 +1162,6 @@ function tribesScreen() {
         <div>
           <div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${tribe.crestSub};">${tribe.count} teammates</div>
           <div style="font-family:'BN Kragen';font-size:32px;color:${tribe.crestFg};text-transform:uppercase;line-height:0.95;margin-top:4px;">${tribe.name}</div>
-          <div style="font-size:12.5px;color:${tribe.crestSub};margin-top:6px;">Captain · ${esc(tribe.captain)}</div>
         </div>
         <div style="width:58px;height:58px;border-radius:50%;border:2px solid ${tribe.crestFg};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
           <span style="font-family:'BN Kragen';font-size:21px;color:${tribe.crestFg};">${tribe.mono}</span>
@@ -1055,7 +1175,7 @@ function tribesScreen() {
         <div style="display:flex;align-items:center;gap:12px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);border-radius:9px;padding:10px 13px;">
           <span style="width:36px;height:36px;border-radius:8px;background:${tribe.chipBg};color:${tribe.chipFg};display:flex;align-items:center;justify-content:center;font-family:'BN Kragen';font-size:14px;flex-shrink:0;">${esc(m.initials)}</span>
           <span style="flex:1;font-size:14px;font-weight:600;color:${th.text};">${esc(m.name)}</span>
-          ${m.role ? `<span style="font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#FF7F2E;border:1px solid rgba(255,95,0,0.4);border-radius:5px;padding:3px 7px;">${esc(m.role)}</span>` : ''}
+          ${m.role ? `<span style="font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${rolePillFg};border:1px solid ${rolePillBorder};border-radius:5px;padding:3px 7px;">${esc(m.role)}</span>` : ''}
         </div>`).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No one on this roster yet.</div>`}
       </div>
     </div>
@@ -1130,33 +1250,45 @@ function scoreScreen() {
   </div>`;
 }
 
-/* ════════════════════ immunity (static clues) ════════════════════ */
-const CLUES = [
-  { n: '1', title: 'Where the herd refuels', hint: 'Claimed — idol secured', status: 'found' },
-  { n: '2', title: 'Beneath the bleachers', hint: 'Claimed — idol secured', status: 'found' },
-  { n: '3', title: 'Where deliveries arrive', hint: 'Claimed — idol secured', status: 'found' },
-  { n: '4', title: 'The quietest corner of the Cafe', hint: 'Active — solve to claim', status: 'open' },
-  { n: '5', title: 'Higher than everyone looks', hint: 'Active — solve to claim', status: 'open' },
-  { n: '6', title: 'Clue unlocks at noon', hint: 'Locked until 12:00 PM', status: 'locked' },
-  { n: '7', title: 'Clue unlocks at 1:30', hint: 'Locked until 1:30 PM', status: 'locked' },
-];
+/* ════════════════════ immunity (admin-managed idol clues) ════════════════════ */
+// Clues are HIDDEN by default. A clue reveals once its release time passes on
+// the viewer's own clock, or once an admin marks it found. Status is derived:
+//   found  → claimed (clue shown, "Found" badge)
+//   locked → release time not reached (or none set) → clue text hidden
+//   open   → released → clue text shown
+function idolStatus(idol, nowMin) {
+  if (idol.found) return 'found';
+  if (idol.releaseMin != null && nowMin >= idol.releaseMin) return 'open';
+  return 'locked';
+}
 function immunityScreen() {
   const T = theme();
   const th = T.th;
   const steel = '#8AA7B9', muted = '#5C7B91', bone = th.text;
-  const clues = CLUES.map(c => {
-    const found = c.status === 'found', open = c.status === 'open';
+  const now = new Date();
+  const nowMin = now.getHours() * 60 + now.getMinutes();
+  const idols = (S.boot.idols || []).map((idol, i) => {
+    const st = idolStatus(idol, nowMin);
+    const found = st === 'found', open = st === 'open', locked = st === 'locked';
+    const hint = found ? 'Claimed — idol secured'
+      : open ? (idol.clue || 'Active — solve to claim')
+      : (idol.releaseMin != null ? `Unlocks at ${minToLabel(idol.releaseMin)}` : 'Hidden — not yet released');
     return {
-      ...c,
+      num: i + 1,
+      title: found || open ? (idol.clue || idol.title || `Clue ${i + 1}`) : (idol.title || `Clue ${i + 1}`),
+      hint,
+      showClueAsTitle: found || open,
       bg: open ? th.dim : 'rgba(255,255,255,0.04)',
       border: open ? T.A : 'rgba(255,255,255,0.08)',
       iconBg: found ? T.A : (open ? th.dim : 'rgba(255,255,255,0.08)'),
       numColor: found ? T.on : (open ? T.A : steel),
-      titleColor: c.status === 'locked' ? steel : bone,
+      titleColor: locked ? steel : bone,
       tag: found ? 'Found' : (open ? 'Open' : 'Locked'),
       tagColor: found ? T.A2 : (open ? T.A : muted),
     };
   });
+  const total = idols.length;
+  const foundCount = (S.boot.idols || []).filter(x => x.found).length;
   return `
   <div style="padding:0 0 28px;">
     <div style="position:relative;padding:26px 18px 24px;background:${th.hero};overflow:hidden;">
@@ -1165,12 +1297,12 @@ function immunityScreen() {
         <svg width="40" height="44" viewBox="0 0 24 24" fill="none" style="margin-bottom:8px;"><path d="M12 2l8 3.5v6C20 17 16.5 21 12 22.5 7.5 21 4 17 4 11.5v-6L12 2z" stroke="${T.A}" stroke-width="1.8" stroke-linejoin="round"/><path d="M9.2 11.8l2 2 3.6-4" stroke="${T.A}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
         <span style="display:block;font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};">Hidden immunity</span>
         <h2 style="font-family:'BN Kragen';font-size:34px;color:${th.text};text-transform:uppercase;margin:7px 0 0;line-height:0.92;">Find the Idols</h2>
-        <p style="font-size:13.5px;line-height:1.55;color:#C7D3DB;max-width:290px;margin:12px auto 0;">Ten clues are hidden across the Support Center. Crack them to claim an idol — each one is worth immunity and bonus points for your tribe.</p>
+        <p style="font-size:13.5px;line-height:1.55;color:#C7D3DB;max-width:290px;margin:12px auto 0;">Clues are hidden across the Support Center and unlock through the day. Crack one to claim an idol — each is worth immunity and bonus points for your tribe.</p>
       </div>
     </div>
     <div style="padding:18px;">
       <div style="background:rgba(255,95,0,0.10);border:1px solid rgba(255,95,0,0.4);border-radius:10px;padding:15px;display:flex;align-items:center;gap:14px;">
-        <div style="font-family:'BN Kragen';font-size:38px;color:#FF5F00;line-height:0.9;">3<span style="font-size:19px;color:#8AA7B9;">/10</span></div>
+        <div style="font-family:'BN Kragen';font-size:38px;color:#FF5F00;line-height:0.9;">${foundCount}<span style="font-size:19px;color:#8AA7B9;">/${total}</span></div>
         <div>
           <div style="font-size:13px;font-weight:700;color:${th.text};">Idols claimed so far</div>
           <div style="font-size:11.5px;color:#8AA7B9;margin-top:2px;">Who's holding them stays secret until Tribal Council</div>
@@ -1180,15 +1312,15 @@ function immunityScreen() {
     <div style="padding:0 18px;">
       <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#8AA7B9;margin-bottom:11px;">The clues</div>
       <div style="display:flex;flex-direction:column;gap:9px;">
-        ${clues.map(cl => `
+        ${total ? idols.map(cl => `
         <div style="display:flex;align-items:center;gap:13px;background:${cl.bg};border:1px solid ${cl.border};border-radius:9px;padding:13px;">
-          <span style="width:30px;height:30px;border-radius:50%;background:${cl.iconBg};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'BN Kragen';font-size:13px;color:${cl.numColor};">${cl.n}</span>
-          <div style="flex:1;">
+          <span style="width:30px;height:30px;border-radius:50%;background:${cl.iconBg};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'BN Kragen';font-size:13px;color:${cl.numColor};">${cl.num}</span>
+          <div style="flex:1;min-width:0;">
             <div style="font-size:13.5px;font-weight:700;color:${cl.titleColor};">${esc(cl.title)}</div>
             <div style="font-size:11.5px;color:#8AA7B9;margin-top:2px;">${esc(cl.hint)}</div>
           </div>
-          <span style="font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${cl.tagColor};">${cl.tag}</span>
-        </div>`).join('')}
+          <span style="font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${cl.tagColor};flex-shrink:0;">${cl.tag}</span>
+        </div>`).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;padding:6px 2px;">No clues released yet — check back through the day.</div>`}
       </div>
     </div>
     <div style="margin:20px 18px 0;background:${T.A};border-radius:10px;padding:15px;text-align:center;box-shadow:0 0 28px ${T.glow};">
@@ -1397,7 +1529,7 @@ function deskGamesScreen() {
     const rowBorder = signed ? dA : '#E4EAE8';
     let status;
     if (signed) status = `<div style="text-align:center;background:${dDim};border:1px solid ${dA};color:${dA};font-weight:800;font-size:12px;padding:9px;border-radius:8px;display:flex;align-items:center;justify-content:center;gap:6px;">${checkSvg(dA, 14, 2.6)}You're in · ${esc(gm.mineLabel)}</div>`;
-    else if (gm.hasSlots && gm.open > 0) status = `<div style="text-align:center;background:#fff;border:1px solid ${dA};color:${dA};font-weight:800;font-size:12px;padding:9px;border-radius:8px;">${gm.open} spots open · pick a slot${gm.openPlay ? ' · then walk-up' : ''}</div>`;
+    else if (gm.hasSlots && gm.open > 0) status = `<div style="text-align:center;background:#fff;border:1px solid ${dA};color:${dA};font-weight:800;font-size:12px;padding:9px;border-radius:8px;">${gm.open} spots open · pick a slot</div>`;
     else if (gm.openPlay) status = `<div style="text-align:center;background:${dDim};border:1px dashed ${dA};color:${dA};font-weight:800;font-size:11.5px;padding:9px;border-radius:8px;">Walk up anytime</div>`;
     else status = `<div style="text-align:center;background:#EEF2F1;color:#6D7C83;font-weight:700;font-size:11.5px;padding:9px;border-radius:8px;">Full</div>`;
     return `
@@ -1407,13 +1539,27 @@ function deskGamesScreen() {
           <div style="font-size:15.5px;font-weight:800;color:#00253D;line-height:1.2;">${esc(g.name)}</div>
           <div style="font-size:12px;color:#6D7C83;margin-top:3px;">${esc(g.runtimeLabel || '')}${g.venue ? ' · ' + esc(g.venue) : ''}${gm.hasSlots ? ' · ' + g.slots.length + ' slots' : ''}</div>
         </div>
-        ${g.needsRef ? `<span style="flex-shrink:0;font-size:9.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:${dA};border:1px solid ${dA};border-radius:5px;padding:2px 7px;">Ref</span>` : ''}
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+          ${BRACKETS[g.id] ? `<span style="font-size:9.5px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:#8A5A12;background:#FCEFDD;border:1px solid #F0D9BB;border-radius:5px;padding:2px 7px;">🏆 Bracket</span>` : ''}
+          ${g.needsRef ? `<span style="font-size:9.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:${dA};border:1px solid ${dA};border-radius:5px;padding:2px 7px;">Ref</span>` : ''}
+        </div>
       </div>
       <div style="margin-top:13px;">${status}</div>
     </button>`;
   };
 
-  const blocksHtml = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${(boot.games || []).map(mkCard).join('')}</div>`;
+  const dq = (S.gameSearch || '').trim().toLowerCase();
+  const deskVisible = (boot.games || []).filter(g =>
+    !dq || (g.name + ' ' + (g.runtimeLabel || '') + ' ' + (g.venue || '')).toLowerCase().includes(dq));
+  const searchBar = `
+    <div style="display:flex;align-items:center;gap:10px;margin-top:18px;max-width:420px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);border-radius:9px;padding:11px 13px;">
+      ${searchSvg('#8AA7B9')}
+      <input id="gs-desk" data-live="gameSearch" value="${esc(S.gameSearch)}" placeholder="Search games, venues…" style="flex:1;min-width:0;background:transparent;border:none;outline:none;color:#F3F7F5;font-size:14px;font-family:'Montserrat';"/>
+      ${S.gameSearch ? `<button data-act="clearSearch" style="flex-shrink:0;width:20px;height:20px;border-radius:50%;background:rgba(255,255,255,0.14);color:#C7D3DB;font-size:13px;display:flex;align-items:center;justify-content:center;">×</button>` : ''}
+    </div>`;
+  const blocksHtml = deskVisible.length
+    ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${deskVisible.map(mkCard).join('')}</div>`
+    : `<div style="padding:40px 10px;text-align:center;font-size:14px;color:#6D7C83;">No games match “${esc(S.gameSearch)}”.</div>`;
 
   const mySignups = (boot.mySignups || []).slice().sort((a, b) => a.startMin - b.startMin).map(x => {
     const g = (boot.games || []).find(gg => gg.id === x.gameId);
@@ -1428,6 +1574,7 @@ function deskGamesScreen() {
         <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${dA};">Sign up for games · August 14</div>
         <h1 style="font-family:'BN Kragen';font-size:40px;color:#F3F7F5;text-transform:uppercase;line-height:0.92;margin:9px 0 0;">The day's run of play</h1>
         <p style="font-size:14px;color:#C7D3DB;max-width:620px;line-height:1.55;margin:11px 0 0;">Browse every game by time block, see who's already in, and claim your spots. You can sign up for up to <strong style="color:#fff;">${signupMax()} games</strong> — as long as they don't overlap (walk-up games can overlap).</p>
+        ${searchBar}
         ${isGameDay ? `
         <div style="display:inline-flex;align-items:center;gap:8px;margin-top:15px;background:rgba(255,95,0,0.16);border:1px solid ${dA};border-radius:8px;padding:9px 14px;">
           <span style="width:8px;height:8px;border-radius:50%;background:${dA};"></span>
@@ -1439,7 +1586,7 @@ function deskGamesScreen() {
     <div style="width:320px;flex-shrink:0;background:#fff;border-left:1px solid #E4EAE8;display:flex;flex-direction:column;">
       <div style="padding:24px 22px 18px;border-bottom:1px solid #EEF2F1;">
         <div style="font-family:'BN Kragen';font-size:20px;color:#00253D;text-transform:uppercase;">My games</div>
-        <div style="font-size:12.5px;color:#6D7C83;margin-top:4px;">${mySignups.length} of 2 spots claimed · ${2 - mySignups.length} left</div>
+        <div style="font-size:12.5px;color:#6D7C83;margin-top:4px;">${mySignups.length} of ${signupMax()} spots claimed · ${Math.max(0, signupMax() - mySignups.length)} left</div>
       </div>
       <div class="scrl" style="flex:1;overflow-y:auto;padding:18px 22px;">
         ${mySignups.length ? `
@@ -1506,11 +1653,20 @@ function timelineData() {
   return { lanes, hours, nowLeft, legend };
 }
 
-function admTeamChip(team) {
-  if (team === 'buffalo') return '<span style="display:inline-block;margin-top:4px;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#011220;background:#FF5F00;border-radius:5px;padding:2px 7px;">Buffalo</span>';
-  if (team === 'roadhouse') return '<span style="display:inline-block;margin-top:4px;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#F3F7F5;background:#00253D;border-radius:5px;padding:2px 7px;">Texas Roadhouse</span>';
-  return '<span style="display:inline-block;margin-top:4px;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#6D7C83;background:#EEF2F1;border-radius:5px;padding:2px 7px;">No tribe</span>';
+// Canonical team colours + pill — the single source of truth for how we
+// delineate Buffalo vs Texas Roadhouse people anywhere in the app:
+//   Buffalo        → navy background, orange lettering
+//   Texas Roadhouse→ red  background, yellow lettering
+function teamColors(team) {
+  if (team === 'buffalo') return { bg: '#00253D', fg: '#FF5F00', label: 'Buffalo' };
+  if (team === 'roadhouse') return { bg: '#E0322E', fg: '#F5C518', label: 'Texas Roadhouse' };
+  return { bg: '#EEF2F1', fg: '#6D7C83', label: 'No tribe' };
 }
+function teamPill(team, extraStyle) {
+  const c = teamColors(team);
+  return `<span style="display:inline-block;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${c.fg};background:${c.bg};border-radius:5px;padding:2px 7px;${extraStyle || ''}">${c.label}</span>`;
+}
+function admTeamChip(team) { return teamPill(team, 'margin-top:4px;'); }
 
 // Small badge: shirt size (just the letter/short code, e.g. M / L / XL) and
 // which Buff Olympics this is for the person (the `years` field, e.g. "3rd").
@@ -1748,24 +1904,48 @@ function admScheduleSection(ov) {
   const isList = S.schedView !== 'timeline';
   let body = '';
   if (isList) {
-    body = `
-    <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
-      ${(ov.schedule || []).map(e => `
+    const kindBtn = (k, label) => `<button data-act="admSchedKind" data-kind="${k}" style="flex:1;padding:8px;border-radius:6px;font-size:12px;font-weight:700;background:${S.admSchedKind === k ? '#00253D' : '#fff'};color:${S.admSchedKind === k ? '#fff' : '#46545B'};border:1px solid #DCE3E2;transition:all .15s;">${label}</button>`;
+    const rowHtml = (e) => {
+      if (S.admSchedEdit === e.id) {
+        return `
+        <div style="padding:16px 18px;border-bottom:1px solid #EEF2F1;background:#FAFCFB;">
+          <div style="display:flex;gap:12px;flex-wrap:wrap;">
+            <div style="width:150px;">${admFieldLabel('Time')}${admTextInput('sch-time', 'schTime', S.f.schTime || '', 'e.g. 8:00 AM')}</div>
+            <div style="flex:1;min-width:180px;">${admFieldLabel('Title')}${admTextInput('sch-title', 'schTitle', S.f.schTitle || '', 'Opening Ceremony')}</div>
+            <div style="flex:1;min-width:180px;">${admFieldLabel('Place')}${admTextInput('sch-place', 'schPlace', S.f.schPlace || '', 'Main Lawn')}</div>
+          </div>
+          <div style="margin-top:12px;max-width:340px;">${admFieldLabel('Status')}
+            <div style="display:flex;gap:6px;">${kindBtn('up', 'Upcoming')}${kindBtn('live', 'Live now')}${kindBtn('done', 'Done')}</div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:14px;">
+            <button data-act="admSchedSave" data-id="${e.id}" style="background:#FF5F00;color:#011220;font-weight:800;font-size:13px;padding:10px 16px;border-radius:8px;">Save</button>
+            <button data-act="admSchedCancel" style="color:#6D7C83;font-weight:700;font-size:13px;padding:10px 12px;border-radius:8px;border:1px solid #DCE3E2;">Cancel</button>
+          </div>
+        </div>`;
+      }
+      return `
       <div style="display:flex;align-items:center;gap:16px;padding:13px 18px;border-bottom:1px solid #EEF2F1;">
         <span style="width:78px;flex-shrink:0;font-family:'BN Kragen';font-size:15px;color:#FF5F00;">${esc(e.timeLabel)} ${esc(e.ampm)}</span>
         <div style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:8px;">
             <span style="font-size:14px;font-weight:700;color:#00253D;">${esc(e.title)}</span>
             ${e.kind === 'live' ? '<span style="font-size:9px;font-weight:800;color:#011220;background:#FF5F00;border-radius:4px;padding:2px 6px;">LIVE</span>' : ''}
+            ${e.kind === 'done' ? '<span style="font-size:9px;font-weight:800;color:#6D7C83;background:#EEF2F1;border-radius:4px;padding:2px 6px;">DONE</span>' : ''}
           </div>
           <div style="font-size:12px;color:#6D7C83;margin-top:2px;">${esc(e.place)}</div>
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0;">
+          <button data-act="admSchedEdit" data-id="${e.id}" style="height:30px;padding:0 11px;border-radius:6px;border:1px solid #DCE3E2;color:#00253D;font-size:12px;font-weight:700;">Edit</button>
           <button data-act="admSchedMove" data-id="${e.id}" data-dir="-1" style="width:30px;height:30px;border-radius:6px;border:1px solid #DCE3E2;color:#00253D;display:flex;align-items:center;justify-content:center;font-size:13px;">↑</button>
           <button data-act="admSchedMove" data-id="${e.id}" data-dir="1" style="width:30px;height:30px;border-radius:6px;border:1px solid #DCE3E2;color:#00253D;display:flex;align-items:center;justify-content:center;font-size:13px;">↓</button>
           <button data-act="admSchedRemove" data-id="${e.id}" style="width:30px;height:30px;border-radius:6px;border:1px solid #F0CDB3;color:#C77B23;display:flex;align-items:center;justify-content:center;font-size:16px;">×</button>
         </div>
-      </div>`).join('')}
+      </div>`;
+    };
+    body = `
+    <p style="font-size:13px;color:#6D7C83;margin:0 0 12px;">These blocks show on <strong>everyone's</strong> schedule — the whole-event moments (ceremonies, lunch, reveals). Each player's own game slots fill in around them automatically.</p>
+    <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
+      ${(ov.schedule || []).map(rowHtml).join('') || '<div style="padding:20px;font-size:13px;color:#9AA7A5;font-style:italic;">No schedule blocks yet — add one below.</div>'}
     </div>`;
   } else {
     const tl = timelineData();
@@ -1817,6 +1997,57 @@ function admScheduleSection(ov) {
   ${body}`;
 }
 
+// ── Admin → Idols ───────────────────────────────────────────────────────────
+// Create/edit hidden-immunity clues, set release times, and mark one found.
+function admIdolsSection(ov) {
+  const idols = ov.idols || [];
+  const foundCount = idols.filter(x => x.found).length;
+  const rowHtml = (idol, i) => {
+    if (S.admIdolEdit === idol.id) {
+      return `
+      <div style="padding:16px 18px;border-bottom:1px solid #EEF2F1;background:#FAFCFB;">
+        <div style="display:flex;gap:12px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:180px;">${admFieldLabel('Short label')}${admTextInput('id-title', 'idTitle', S.f.idTitle || '', 'Clue ' + (i + 1))}</div>
+          <div style="width:170px;">${admFieldLabel('Release time (blank = hidden)')}${admTextInput('id-time', 'idTime', S.f.idTime || '', 'e.g. 1:30 PM')}</div>
+        </div>
+        <div style="margin-top:12px;">${admFieldLabel('Clue (hidden from players until release)')}
+          <textarea id="id-clue" data-field="idClue" placeholder="Type the clue riddle…" style="width:100%;min-height:70px;font-size:14px;color:#00253D;border:1px solid #DCE3E2;border-radius:8px;padding:11px 12px;font-family:'Montserrat';outline:none;resize:vertical;">${esc(S.f.idClue || '')}</textarea>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:14px;">
+          <button data-act="admIdolSave" data-id="${idol.id}" style="background:#FF5F00;color:#011220;font-weight:800;font-size:13px;padding:10px 16px;border-radius:8px;">Save clue</button>
+          <button data-act="admIdolCancel" style="color:#6D7C83;font-weight:700;font-size:13px;padding:10px 12px;border-radius:8px;border:1px solid #DCE3E2;">Cancel</button>
+        </div>
+      </div>`;
+    }
+    const releaseLabel = idol.releaseMin != null ? minToLabel(idol.releaseMin) : 'Hidden (no release time)';
+    return `
+    <div style="display:flex;align-items:center;gap:14px;padding:13px 18px;border-bottom:1px solid #EEF2F1;">
+      <span style="width:30px;height:30px;border-radius:50%;background:${idol.found ? '#FF5F00' : '#EEF2F1'};color:${idol.found ? '#011220' : '#6D7C83'};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'BN Kragen';font-size:13px;">${i + 1}</span>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:14px;font-weight:700;color:#00253D;">${esc(idol.title || 'Clue ' + (i + 1))}</div>
+        <div style="font-size:12px;color:#6D7C83;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${idol.clue ? esc(idol.clue) : '<span style="font-style:italic;color:#9AA7A5;">No clue text yet</span>'}</div>
+        <div style="font-size:11px;font-weight:700;color:${idol.releaseMin != null ? '#00253D' : '#9AA7A5'};margin-top:3px;">${idol.releaseMin != null ? '⏱ ' + esc(releaseLabel) : esc(releaseLabel)}</div>
+      </div>
+      <button data-act="admIdolFound" data-id="${idol.id}" style="flex-shrink:0;font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:6px;background:${idol.found ? '#1F8A5B' : 'transparent'};color:${idol.found ? '#fff' : '#6D7C83'};border:1px solid ${idol.found ? '#1F8A5B' : '#C9D3D2'};">${idol.found ? 'Found ✓' : 'Mark found'}</button>
+      <div style="display:flex;gap:6px;flex-shrink:0;">
+        <button data-act="admIdolEdit" data-id="${idol.id}" style="height:30px;padding:0 11px;border-radius:6px;border:1px solid #DCE3E2;color:#00253D;font-size:12px;font-weight:700;">Edit</button>
+        <button data-act="admIdolDelete" data-id="${idol.id}" data-title="${esc(idol.title || 'this clue')}" style="width:30px;height:30px;border-radius:6px;border:1px solid #F0CDB3;color:#C77B23;display:flex;align-items:center;justify-content:center;font-size:16px;">×</button>
+      </div>
+    </div>`;
+  };
+  return `
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap;">
+    <div>
+      <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Idols</h3>
+      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Hidden-immunity clues — all hidden by default. Type each clue, set a release time (it stays hidden until then), and mark one found when it's claimed. ${foundCount} of ${idols.length} found.</p>
+    </div>
+    <button data-act="admIdolAdd" style="flex-shrink:0;background:#FF5F00;color:#011220;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;">+ Add clue</button>
+  </div>
+  <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
+    ${idols.length ? idols.map(rowHtml).join('') : '<div style="padding:20px;font-size:13px;color:#9AA7A5;font-style:italic;">No clues yet — add one to start the idol hunt.</div>'}
+  </div>`;
+}
+
 function admDipSection(ov) {
   const dip = ov.dip || { entries: [], counts: { buffalo: 0, roadhouse: 0 }, totalVotes: 0, revealed: false };
   const maxVotes = dip.entries.length ? Math.max.apply(null, dip.entries.map(d => d.votes)) : 0;
@@ -1826,7 +2057,7 @@ function admDipSection(ov) {
     <div style="display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid #EEF2F1;background:${win ? '#FFF4EC' : '#fff'};">
       <span style="width:54px;flex-shrink:0;font-family:'BN Kragen';font-size:18px;color:#00253D;">${d.no}</span>
       <span style="flex:1;font-size:14px;font-weight:700;color:#00253D;display:flex;align-items:center;gap:8px;">${esc(d.name)}${win ? '<span style="font-size:9px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:#011220;background:#FF5F00;border-radius:4px;padding:2px 7px;">Winner</span>' : ''}</span>
-      <span style="width:150px;flex-shrink:0;"><span style="font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${d.team === 'buffalo' ? '#011220' : '#F5C518'};background:${d.team === 'buffalo' ? '#FF5F00' : '#141210'};border-radius:5px;padding:2px 8px;">${d.team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'}</span></span>
+      <span style="width:150px;flex-shrink:0;">${teamPill(d.team)}</span>
       <span style="width:70px;flex-shrink:0;text-align:right;font-family:'BN Kragen';font-size:18px;color:#00253D;">${d.votes}</span>
       <button data-act="admDipRemove" data-id="${d.id}" style="width:34px;flex-shrink:0;color:#C77B23;font-size:18px;text-align:center;">×</button>
     </div>`;
@@ -2076,7 +2307,7 @@ function adminScreen() {
   }
   const sections = [
     { id: 'people', label: 'People' }, { id: 'songs', label: 'Songs' }, { id: 'games', label: 'Games' },
-    { id: 'schedule', label: 'Schedule' },
+    { id: 'schedule', label: 'Schedule' }, { id: 'idols', label: 'Idols' },
     { id: 'dipoff', label: 'Dip Off' }, { id: 'relay', label: 'Relay Race' },
     { id: 'scores', label: 'Scores' }, { id: 'refs', label: 'Referees' }, { id: 'announce', label: 'Announcements' },
   ];
@@ -2086,6 +2317,7 @@ function adminScreen() {
   else if (S.adminSection === 'songs') body = admSongsSection(ov);
   else if (S.adminSection === 'games') body = admGamesSection(ov);
   else if (S.adminSection === 'schedule') body = admScheduleSection(ov);
+  else if (S.adminSection === 'idols') body = admIdolsSection(ov);
   else if (S.adminSection === 'dipoff') body = admDipSection(ov);
   else if (S.adminSection === 'relay') body = admRelaySection(ov);
   else if (S.adminSection === 'scores') body = admScoresSection(ov);
@@ -2485,6 +2717,7 @@ const ACTIONS = {
   // ── games ──
   setCat: (el) => { S.cat = el.dataset.cat; render(); },
   clearSearch: () => { S.gameSearch = ''; render(); },
+  toggleWalkup: () => { S.walkupOpen = !S.walkupOpen; render(); },
   joinSlot: (el) => guarded(async () => {
     const res = await api('/signups', { method: 'POST', body: { slotId: parseInt(el.dataset.slot, 10) } });
     applyBoot(res); toast("You're in!");
@@ -2585,7 +2818,7 @@ const ACTIONS = {
   }),
 
   // ── admin ──
-  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; render(); },
+  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; S.admSchedEdit = null; S.admIdolEdit = null; render(); },
   admMode: (el) => guarded(async () => {
     await api('/ac/settings', { method: 'POST', body: { eventMode: el.dataset.mode } });
     await afterAdminMutation();
@@ -2642,7 +2875,92 @@ const ACTIONS = {
   admSchedAdd: () => guarded(async () => {
     await api('/ac/schedule', { method: 'POST', body: { action: 'add' } });
     await loadOverview(true);
+    // Open the freshly-added block for editing (it sorts to the end).
+    const rows = (S.overview && S.overview.schedule) || [];
+    const last = rows[rows.length - 1];
+    if (last) {
+      S.admSchedEdit = last.id; S.admSchedKind = last.kind || 'up';
+      S.f.schTime = `${last.timeLabel} ${last.ampm}`; S.f.schTitle = last.title || ''; S.f.schPlace = last.place || '';
+    }
+    render();
   }),
+  admSchedEdit: (el) => {
+    const id = parseInt(el.dataset.id, 10);
+    const e = ((S.overview && S.overview.schedule) || []).find(x => x.id === id);
+    if (!e) return;
+    S.admSchedEdit = id; S.admSchedKind = e.kind || 'up';
+    S.f.schTime = `${e.timeLabel} ${e.ampm}`; S.f.schTitle = e.title || ''; S.f.schPlace = e.place || '';
+    render();
+  },
+  admSchedKind: (el) => { S.admSchedKind = el.dataset.kind; render(); },
+  admSchedCancel: () => { S.admSchedEdit = null; render(); },
+  admSchedSave: (el) => guarded(async () => {
+    const id = parseInt(el.dataset.id, 10);
+    const min = parseTimeLabel((S.f.schTime || '').trim());
+    if (min === null) { toast('Enter a time like 8:00 AM'); return; }
+    const full = minToLabel(min);
+    const sp = full.lastIndexOf(' ');
+    const title = (S.f.schTitle || '').trim();
+    if (!title) { toast('Give the block a title'); return; }
+    await api('/ac/schedule', { method: 'POST', body: {
+      action: 'update', id,
+      timeLabel: full.slice(0, sp), ampm: full.slice(sp + 1),
+      title, place: (S.f.schPlace || '').trim(), kind: S.admSchedKind || 'up',
+    } });
+    S.admSchedEdit = null;
+    await loadOverview(true);
+    toast('Schedule updated');
+  }),
+  admIdolAdd: () => guarded(async () => {
+    await api('/ac/idols', { method: 'POST', body: { action: 'add' } });
+    await loadOverview(true);
+    const rows = (S.overview && S.overview.idols) || [];
+    const last = rows[rows.length - 1];
+    if (last) {
+      S.admIdolEdit = last.id;
+      S.f.idTitle = last.title || ''; S.f.idClue = last.clue || '';
+      S.f.idTime = last.releaseMin != null ? minToLabel(last.releaseMin) : '';
+    }
+    render();
+  }),
+  admIdolEdit: (el) => {
+    const id = parseInt(el.dataset.id, 10);
+    const idol = ((S.overview && S.overview.idols) || []).find(x => x.id === id);
+    if (!idol) return;
+    S.admIdolEdit = id;
+    S.f.idTitle = idol.title || ''; S.f.idClue = idol.clue || '';
+    S.f.idTime = idol.releaseMin != null ? minToLabel(idol.releaseMin) : '';
+    render();
+  },
+  admIdolCancel: () => { S.admIdolEdit = null; render(); },
+  admIdolSave: (el) => guarded(async () => {
+    const id = parseInt(el.dataset.id, 10);
+    const timeStr = (S.f.idTime || '').trim();
+    let releaseMin = null;
+    if (timeStr) {
+      releaseMin = parseTimeLabel(timeStr);
+      if (releaseMin === null) { toast('Enter a time like 1:30 PM, or leave it blank'); return; }
+    }
+    await api('/ac/idols', { method: 'POST', body: {
+      action: 'update', id,
+      title: (S.f.idTitle || '').trim(), clue: (S.f.idClue || '').trim(), releaseMin,
+    } });
+    S.admIdolEdit = null;
+    await loadOverview(true);
+    toast('Clue saved');
+  }),
+  admIdolFound: (el) => guarded(async () => {
+    await api('/ac/idols', { method: 'POST', body: { action: 'toggleFound', id: parseInt(el.dataset.id, 10) } });
+    await loadOverview(true);
+  }),
+  admIdolDelete: (el) => {
+    if (!window.confirm(`Delete ${el.dataset.title}? This can't be undone.`)) return;
+    guarded(async () => {
+      await api('/ac/idols', { method: 'POST', body: { action: 'remove', id: parseInt(el.dataset.id, 10) } });
+      await loadOverview(true);
+      toast('Clue deleted');
+    });
+  },
   admSchedMove: (el) => guarded(async () => {
     await api('/ac/schedule', { method: 'POST', body: { action: 'move', id: parseInt(el.dataset.id, 10), dir: parseInt(el.dataset.dir, 10) } });
     await loadOverview(true);

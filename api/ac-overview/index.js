@@ -60,6 +60,18 @@ app.http('ac-overview', {
           ORDER BY sl.game_id, sl.sort, sl.start_min`),
       ]);
 
+      // Idols (migration 003) — query defensively so admin still loads if the
+      // table isn't there yet.
+      let idols = [];
+      try {
+        const idolsR = await pool.request().query(
+          'SELECT id, title, clue, release_min, found, sort FROM bo_idols ORDER BY sort, id');
+        idols = idolsR.recordset.map(x => ({
+          id: x.id, title: x.title || '', clue: x.clue || '',
+          releaseMin: x.release_min == null ? null : x.release_min, found: !!x.found, sort: x.sort,
+        }));
+      } catch (e) { /* table not present yet */ }
+
       const settings = settingsFromRows(settingsR.recordset);
 
       const gameById = {};
@@ -190,6 +202,7 @@ app.http('ac-overview', {
         people,
         gamesCatalog,
         schedule,
+        idols,
         dip: { entries: dipEntries, counts: dipCounts, totalVotes, revealed: settings.dipRevealed },
         relay: { legs, roster: relayRoster, total: relayR.recordset.length },
         scores: { buffalo: totals.buffalo, roadhouse: totals.roadhouse, revealed: settings.scoresRevealed },
