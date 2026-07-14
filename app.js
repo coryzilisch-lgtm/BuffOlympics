@@ -1012,10 +1012,8 @@ function tribesScreen() {
   const orange = '#FF5F00', bone = '#F3F7F5', navy = '#00253D';
   const isBuf = S.tribeTab === 'buffalo';
   const roster = ((S.boot.tribes || {})[S.tribeTab] || []).map(m => ({ ...m, initials: initials(m.name) }));
-  const capt = roster.find(m => m.role === 'Captain');
   const tribe = {
     name: isBuf ? 'Buffalo' : 'Texas Roadhouse',
-    captain: capt ? capt.name : '—',
     count: roster.length,
     mono: isBuf ? 'B' : 'TR',
     crestBg: isBuf ? orange : bone,
@@ -1041,7 +1039,6 @@ function tribesScreen() {
         <div>
           <div style="font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${tribe.crestSub};">${tribe.count} teammates</div>
           <div style="font-family:'BN Kragen';font-size:32px;color:${tribe.crestFg};text-transform:uppercase;line-height:0.95;margin-top:4px;">${tribe.name}</div>
-          <div style="font-size:12.5px;color:${tribe.crestSub};margin-top:6px;">Captain · ${esc(tribe.captain)}</div>
         </div>
         <div style="width:58px;height:58px;border-radius:50%;border:2px solid ${tribe.crestFg};display:flex;align-items:center;justify-content:center;flex-shrink:0;">
           <span style="font-family:'BN Kragen';font-size:21px;color:${tribe.crestFg};">${tribe.mono}</span>
@@ -1506,11 +1503,20 @@ function timelineData() {
   return { lanes, hours, nowLeft, legend };
 }
 
-function admTeamChip(team) {
-  if (team === 'buffalo') return '<span style="display:inline-block;margin-top:4px;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#011220;background:#FF5F00;border-radius:5px;padding:2px 7px;">Buffalo</span>';
-  if (team === 'roadhouse') return '<span style="display:inline-block;margin-top:4px;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#F3F7F5;background:#00253D;border-radius:5px;padding:2px 7px;">Texas Roadhouse</span>';
-  return '<span style="display:inline-block;margin-top:4px;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#6D7C83;background:#EEF2F1;border-radius:5px;padding:2px 7px;">No tribe</span>';
+// Canonical team colours + pill — the single source of truth for how we
+// delineate Buffalo vs Texas Roadhouse people anywhere in the app:
+//   Buffalo        → navy background, orange lettering
+//   Texas Roadhouse→ red  background, yellow lettering
+function teamColors(team) {
+  if (team === 'buffalo') return { bg: '#00253D', fg: '#FF5F00', label: 'Buffalo' };
+  if (team === 'roadhouse') return { bg: '#E0322E', fg: '#F5C518', label: 'Texas Roadhouse' };
+  return { bg: '#EEF2F1', fg: '#6D7C83', label: 'No tribe' };
 }
+function teamPill(team, extraStyle) {
+  const c = teamColors(team);
+  return `<span style="display:inline-block;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${c.fg};background:${c.bg};border-radius:5px;padding:2px 7px;${extraStyle || ''}">${c.label}</span>`;
+}
+function admTeamChip(team) { return teamPill(team, 'margin-top:4px;'); }
 
 // Small badge: shirt size (just the letter/short code, e.g. M / L / XL) and
 // which Buff Olympics this is for the person (the `years` field, e.g. "3rd").
@@ -1826,7 +1832,7 @@ function admDipSection(ov) {
     <div style="display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid #EEF2F1;background:${win ? '#FFF4EC' : '#fff'};">
       <span style="width:54px;flex-shrink:0;font-family:'BN Kragen';font-size:18px;color:#00253D;">${d.no}</span>
       <span style="flex:1;font-size:14px;font-weight:700;color:#00253D;display:flex;align-items:center;gap:8px;">${esc(d.name)}${win ? '<span style="font-size:9px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:#011220;background:#FF5F00;border-radius:4px;padding:2px 7px;">Winner</span>' : ''}</span>
-      <span style="width:150px;flex-shrink:0;"><span style="font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${d.team === 'buffalo' ? '#011220' : '#F5C518'};background:${d.team === 'buffalo' ? '#FF5F00' : '#141210'};border-radius:5px;padding:2px 8px;">${d.team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'}</span></span>
+      <span style="width:150px;flex-shrink:0;">${teamPill(d.team)}</span>
       <span style="width:70px;flex-shrink:0;text-align:right;font-family:'BN Kragen';font-size:18px;color:#00253D;">${d.votes}</span>
       <button data-act="admDipRemove" data-id="${d.id}" style="width:34px;flex-shrink:0;color:#C77B23;font-size:18px;text-align:center;">×</button>
     </div>`;

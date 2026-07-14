@@ -100,7 +100,7 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
   "mySignups": [ {"gameId":"corn","game":"Cornhole","slotLabel":"1:30 – 2:00 PM"} ],
   "schedule": [ {"id":1,"timeLabel":"8:00","ampm":"AM","title":"Check-In & Tribe Paint","place":"Main Lawn","kind":"done"} ],
   "tribes": {
-    "buffalo":   [ {"name":"Cory Z.","role":"Captain"}, {"name":"Marcus T.","role":"SUP Ref"}, {"name":"Dana W.","role":""} ],
+    "buffalo":   [ {"name":"Marcus T.","role":"SUP Ref"}, {"name":"Dana W.","role":""} ],
     "roadhouse": [ … ]
   },
   "dip": {
@@ -133,7 +133,7 @@ game (walk-up stations are shared). Admins get all `needs_ref` games as stations
 Notes:
 - `dip.entries[].name` is included **only** for entries on the viewer's own team (cooks are anonymous
   to the other tribe / voters). `no` is the stable dip number (order of entry).
-- `tribes` rosters are built from `bo_users` with a team, name-formatted; role is `'Captain'` if admin
+- `tribes` rosters are built from `bo_users` with a team, name-formatted; role is `'SUP Ref'` if ref, else `''`
   with a team, `'SUP Ref'` if ref with a team, else `''`.
 - `blocks` are constants (defined in `api/lib/blocks.js`), mirrored in the seed data:
   `b130 [810,840]`, `b200 [840,870]`, `b230 [870,900]`, `b300 [900,930]`, `open` (no slot).

@@ -211,7 +211,7 @@ async function buildBootstrap(pool, user, opts = {}) {
   for (const u of teamUsers) {
     tribes[u.team].push({
       name: formatName(u.first_name, u.last_name, u.username),
-      role: u.is_admin ? 'Captain' : u.is_ref ? 'SUP Ref' : '',
+      role: u.is_ref ? 'SUP Ref' : '',
     });
   }
 
