@@ -211,6 +211,52 @@ async function handleSchedule(pool, body) {
   return json({ error: 'action must be add, remove, move, or update' }, 400);
 }
 
+// ── POST /api/admin/idols ──────────────────────────────────────────────────
+// Idol clues are hidden by default; the admin types clues, sets release times
+// (minutes since midnight, event-local), and marks one found when claimed.
+async function handleIdols(pool, body) {
+  const action = body.action;
+
+  if (action === 'add') {
+    await pool.request().query(`
+      INSERT INTO bo_idols (title, clue, release_min, found, sort)
+      SELECT N'New clue', N'', NULL, 0, ISNULL(MAX(sort), 0) + 1 FROM bo_idols;`);
+    return json({ ok: true });
+  }
+
+  const id = parseInt(body.id, 10);
+  if (!Number.isInteger(id)) return json({ error: 'id is required' }, 400);
+
+  if (action === 'remove') {
+    await pool.request().input('id', sql.Int, id).query('DELETE FROM bo_idols WHERE id = @id');
+    return json({ ok: true });
+  }
+
+  if (action === 'toggleFound') {
+    await pool.request().input('id', sql.Int, id)
+      .query('UPDATE bo_idols SET found = CASE WHEN found = 1 THEN 0 ELSE 1 END WHERE id = @id');
+    return json({ ok: true });
+  }
+
+  if (action === 'update') {
+    const sets = [];
+    const req = pool.request().input('id', sql.Int, id);
+    if (body.title !== undefined) { sets.push('title = @title'); req.input('title', sql.NVarChar, String(body.title)); }
+    if (body.clue !== undefined) { sets.push('clue = @clue'); req.input('clue', sql.NVarChar, String(body.clue)); }
+    if (body.releaseMin !== undefined) {
+      const rm = body.releaseMin === null || body.releaseMin === '' ? null : parseInt(body.releaseMin, 10);
+      sets.push('release_min = @rm');
+      req.input('rm', sql.Int, Number.isInteger(rm) ? rm : null);
+    }
+    if (body.found !== undefined) { sets.push('found = @found'); req.input('found', sql.Bit, body.found ? 1 : 0); }
+    if (!sets.length) return json({ error: 'Nothing to update' }, 400);
+    await req.query(`UPDATE bo_idols SET ${sets.join(', ')} WHERE id = @id`);
+    return json({ ok: true });
+  }
+
+  return json({ error: 'action must be add, remove, update, or toggleFound' }, 400);
+}
+
 // ── POST /api/admin/ref-assign ─────────────────────────────────────────────
 async function handleRefAssign(pool, body) {
   const gameId = String(body.gameId || '').trim();
@@ -406,6 +452,7 @@ app.http('ac-actions', {
       else if (action === 'schedule') resp = await handleSchedule(pool, body);
       else if (action === 'ref-assign') resp = await handleRefAssign(pool, body);
       else if (action === 'games') resp = await handleGames(pool, body);
+      else if (action === 'idols') resp = await handleIdols(pool, body);
       else return json({ error: 'Unknown admin action' }, 404);
 
       // Every admin write can change the shared bootstrap block — drop the

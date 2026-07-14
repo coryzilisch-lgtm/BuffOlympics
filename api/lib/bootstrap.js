@@ -100,9 +100,17 @@ async function loadSharedBootstrap(pool, fresh) {
     pool.request().query('SELECT ISNULL(SUM(pts_buffalo), 0) AS buffalo, ISNULL(SUM(pts_roadhouse), 0) AS roadhouse FROM bo_results'),
     pool.request().query('SELECT game_id, user_id FROM bo_ref_assignments'),
   ]);
+  // Idols live in their own table (migration 003). Query defensively so the
+  // app still boots if 003 hasn't been run yet in the Fabric portal.
+  let idolsR = { recordset: [] };
+  try {
+    idolsR = await pool.request().query(
+      'SELECT id, title, clue, release_min, found, sort FROM bo_idols ORDER BY sort, id');
+  } catch (e) { /* table not present yet — treat as no idols */ }
+
   const shared = {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
-    legsR, relayR, annR, scoresR, refAssignR,
+    legsR, relayR, annR, scoresR, refAssignR, idolsR,
   };
   cache.set(SHARED_KEY, shared, SHARED_TTL_MS);
   return shared;
@@ -117,7 +125,7 @@ async function buildBootstrap(pool, user, opts = {}) {
   const shared = await loadSharedBootstrap(pool, opts.fresh);
   const {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
-    legsR, relayR, annR, scoresR, refAssignR,
+    legsR, relayR, annR, scoresR, refAssignR, idolsR,
   } = shared;
   const [myVoteR, myResultsR] = await Promise.all([
     pool.request().input('uid', sql.Int, uid)
@@ -260,6 +268,18 @@ async function buildBootstrap(pool, user, opts = {}) {
     ? { revealed: true, buffalo: totals.buffalo, roadhouse: totals.roadhouse }
     : { revealed: false };
 
+  // Idol clues. Clues are HIDDEN by default — the client reveals a clue once
+  // its release time (release_min, event-local) passes on the viewer's clock,
+  // or once an admin marks it found. We always send the fields; the UI gates
+  // the reveal so a locked clue reads as "unlocks at …".
+  const idols = (idolsR.recordset || []).map(x => ({
+    id: x.id,
+    title: x.title || '',
+    clue: x.clue || '',
+    releaseMin: x.release_min == null ? null : x.release_min,
+    found: !!x.found,
+  }));
+
   const payload = {
     user: userToJson(user),
     settings: {
@@ -276,6 +296,7 @@ async function buildBootstrap(pool, user, opts = {}) {
     tribes,
     dip: { counts: dipCounts, entries: dipEntries, myEntry, myVote },
     relay: { legs, roster: relayRoster, myLeg },
+    idols,
     announcements,
     myResults,
     scores,
