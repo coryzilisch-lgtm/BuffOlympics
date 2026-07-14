@@ -68,7 +68,7 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 |---|---|
 | `GET /api/admin/overview` | See shape below. |
 | `POST /api/admin/settings` | Any of `{eventMode:'signup'|'gameday', refJoinCode:'…', scoresRevealed:true, dipRevealed:true|false}`. `scoresRevealed:true` is one-way (can't unreveal). Returns `{settings}`. |
-| `POST /api/admin/people` | `{userId, action:'toggleAdmin'|'toggleRef'|'addGame'|'removeGame'|'removeUser', gameId?}`. addGame/removeGame manage that user's `bo_signups` rows (admin override: ignores caps/limits/mode). `removeUser` deletes the user + their sign-ups/dip/relay/ref-assignment (keeps logged `bo_results` history) — used for clearing test/bogus accounts. Returns `{ok:true}`. |
+| `POST /api/admin/people` | `{userId, action:'toggleAdmin'|'toggleRef'|'addGame'|'removeGame'|'resetPassword'|'removeUser', gameId?, password?}`. addGame/removeGame manage that user's `bo_signups` rows (admin override: ignores caps/limits/mode). `resetPassword` sets a new `password_hash` from `password` (min 4 chars) — admin-driven reset for anyone who forgets theirs (no email infra; admin tells them in person). `removeUser` deletes the user + their sign-ups/dip/relay/ref-assignment (keeps logged `bo_results` history) — used for clearing test/bogus accounts. Returns `{ok:true}`. |
 | `PATCH /api/admin/results/{id}` | `{pts}` — updates row pts (recompute team contribution toward the winner side), pushes previous value into `bo_result_history`, sets `edited_by`. Returns `{ok:true}`. |
 | `DELETE /api/admin/dip/{entryId}` | Remove a dip entry (+ its votes). `{ok:true}` |
 | `POST /api/admin/relay-legs` | `{legId, name?, capDelta?}` (cap min 1). `{ok:true}` |
@@ -146,6 +146,7 @@ Notes:
 {
   "stats": { "people": 20, "games": 26, "refs": 2, "admins": 2 },
   "people": [ { "id":1, "name":"Cory Z.", "team":"buffalo", "isAdmin":true, "isRef":false,
+                "shirtSize":"M", "years":"1st", "songRequest":"Artist — Title",
                 "games":[{"gameId":"corn","name":"Cornhole"}] } ],
   "gamesCatalog": [ { "id":"corn", "name":"Cornhole", "block":"b130", "blockLabel":"1:30 PM Rotation",
                       "players":"2 per tribe", "pointsLabel":"…", "needsRef":true, "venue":"The Lawn" } ],

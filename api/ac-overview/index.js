@@ -25,7 +25,7 @@ app.http('ac-overview', {
         legsR, relayR, scoresR, resultsR, historyR, refAssignR, annR, gameSlotsR,
       ] = await Promise.all([
         pool.request().query('SELECT [key], [value] FROM bo_settings'),
-        pool.request().query('SELECT id, first_name, last_name, username, team, is_ref, is_admin FROM bo_users ORDER BY id'),
+        pool.request().query('SELECT id, first_name, last_name, username, team, is_ref, is_admin, shirt_size, years, song_request FROM bo_users ORDER BY id'),
         pool.request().query(`
           SELECT id, name, needs_ref, venue, open_play, time_label
           FROM bo_games ORDER BY sort, id`),
@@ -83,6 +83,9 @@ app.http('ac-overview', {
         team: u.team || null,
         isAdmin: !!u.is_admin,
         isRef: !!u.is_ref,
+        shirtSize: u.shirt_size || null,
+        years: u.years || null,
+        songRequest: u.song_request || null,
         games: gamesByUser[u.id] || [],
       }));
 

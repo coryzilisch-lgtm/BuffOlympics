@@ -1,6 +1,6 @@
 const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
-const { json, requireUser, requireAdmin } = require('../lib/auth');
+const { json, requireUser, requireAdmin, hashPassword } = require('../lib/auth');
 const { getSettings, upsertSetting, bustSharedBootstrap } = require('../lib/bootstrap');
 
 // ── POST /api/admin/settings ───────────────────────────────────────────────
@@ -49,6 +49,20 @@ async function handlePeople(pool, body) {
     return json({ ok: true });
   }
 
+  if (action === 'resetPassword') {
+    // Admin-driven password reset — the event has no email/SMTP infra, so when
+    // someone forgets their password the admin sets a new one from the People
+    // tab and tells them in person. Works for players (email login) and refs
+    // (username login) alike. New password takes effect immediately.
+    const pw = String(body.password || '');
+    if (pw.length < 4) return json({ error: 'New password must be at least 4 characters' }, 400);
+    await pool.request()
+      .input('id', sql.Int, userId)
+      .input('pw', sql.NVarChar, hashPassword(pw))
+      .query('UPDATE bo_users SET password_hash = @pw WHERE id = @id');
+    return json({ ok: true });
+  }
+
   if (action === 'removeUser') {
     // Delete a user and their event participation (sign-ups, dip, relay, ref
     // assignment). Leaves logged score history (bo_results) intact. Handy for
@@ -92,7 +106,7 @@ async function handlePeople(pool, body) {
     return json({ ok: true });
   }
 
-  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, removeGame, or removeUser' }, 400);
+  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, removeGame, resetPassword, or removeUser' }, 400);
 }
 
 // ── POST /api/admin/relay-legs ─────────────────────────────────────────────

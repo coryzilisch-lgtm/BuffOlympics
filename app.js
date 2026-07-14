@@ -1512,14 +1512,28 @@ function admTeamChip(team) {
   return '<span style="display:inline-block;margin-top:4px;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#6D7C83;background:#EEF2F1;border-radius:5px;padding:2px 7px;">No tribe</span>';
 }
 
+// Small badge: shirt size (just the letter/short code, e.g. M / L / XL) and
+// which Buff Olympics this is for the person (the `years` field, e.g. "3rd").
+function admShirtBadge(size) {
+  if (!size) return '';
+  return `<span title="Shirt size" style="display:inline-flex;align-items:center;font-size:11px;font-weight:800;color:#00253D;background:#EEF2F1;border:1px solid #DCE3E2;border-radius:5px;padding:1px 6px;line-height:1.5;">${esc(size)}</span>`;
+}
+function admYearBadge(years) {
+  if (!years) return '';
+  return `<span title="Which Buff Olympics this is for them" style="display:inline-flex;align-items:center;font-size:11px;font-weight:700;color:#8A5A12;background:#FCEFDD;border:1px solid #F0D9BB;border-radius:5px;padding:1px 6px;line-height:1.5;">${esc(years)} 🏅</span>`;
+}
 function admPeopleSection(ov) {
   const rows = (ov.people || []).map(p => {
     const options = (ov.gamesCatalog || []).filter(g => !(p.games || []).some(x => x.gameId === g.id));
     return `
     <div style="display:flex;align-items:center;gap:14px;padding:13px 18px;border-bottom:1px solid #EEF2F1;">
-      <div style="width:150px;flex-shrink:0;">
+      <div style="width:172px;flex-shrink:0;">
         <div style="font-size:14px;font-weight:700;color:#00253D;">${esc(p.name)}</div>
-        ${admTeamChip(p.team)}
+        <div style="margin-top:3px;">${admTeamChip(p.team)}</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:5px;">
+          ${admShirtBadge(p.shirtSize)}
+          ${admYearBadge(p.years)}
+        </div>
       </div>
       <div style="flex:1;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
         ${(p.games || []).map(gm => `<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#00253D;background:#EEF2F1;border:1px solid #DCE3E2;border-radius:6px;padding:5px 8px;">${esc(gm.name)}<button data-act="admRemoveGame" data-uid="${p.id}" data-gid="${esc(gm.gameId)}" style="color:#C77B23;font-weight:800;font-size:14px;line-height:1;">×</button></span>`).join('')}
@@ -1533,22 +1547,58 @@ function admPeopleSection(ov) {
         <button data-act="admToggle" data-uid="${p.id}" data-flag="toggleAdmin" style="font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:6px;background:${p.isAdmin ? '#00253D' : 'transparent'};color:${p.isAdmin ? '#F3F7F5' : '#6D7C83'};border:1px solid ${p.isAdmin ? '#00253D' : '#C9D3D2'};transition:all .15s;">${p.isAdmin ? 'Admin ✓' : 'Make admin'}</button>
         <button data-act="admToggle" data-uid="${p.id}" data-flag="toggleRef" style="font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:6px;background:${p.isRef ? '#FF5F00' : 'transparent'};color:${p.isRef ? '#011220' : '#6D7C83'};border:1px solid ${p.isRef ? '#FF5F00' : '#C9D3D2'};transition:all .15s;">${p.isRef ? 'Referee ✓' : 'Make ref'}</button>
       </div>
+      <div style="width:96px;flex-shrink:0;display:flex;gap:6px;justify-content:flex-end;">
+        <button data-act="admResetPw" data-uid="${p.id}" data-name="${esc(p.name)}" title="Reset password" style="width:32px;height:32px;border-radius:7px;border:1px solid #C9D3D2;color:#00253D;font-size:15px;display:flex;align-items:center;justify-content:center;">🔑</button>
+        <button data-act="admRemoveUser" data-uid="${p.id}" data-name="${esc(p.name)}" title="Delete this person" style="width:32px;height:32px;border-radius:7px;border:1px solid #F0CDB3;color:#C77B23;font-size:15px;display:flex;align-items:center;justify-content:center;">🗑</button>
+      </div>
     </div>`;
   }).join('');
   return `
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
     <div>
       <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">People</h3>
-      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Assign anyone to any game, set referees, and grant admin access.</p>
+      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Assign anyone to any game, set referees, grant admin, reset a password, or remove an account. Shirt size &amp; which Buff Olympics it is for them show under each name.</p>
     </div>
   </div>
   <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
     <div style="display:flex;align-items:center;gap:14px;padding:11px 18px;background:#EEF2F1;border-bottom:1px solid #E0E6E5;font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">
-      <span style="width:150px;flex-shrink:0;">Name</span>
+      <span style="width:172px;flex-shrink:0;">Name · shirt · year</span>
       <span style="flex:1;">Assigned games</span>
       <span style="width:230px;flex-shrink:0;">Roles</span>
+      <span style="width:96px;flex-shrink:0;text-align:right;">Manage</span>
     </div>
     ${rows || '<div style="padding:20px;font-size:13px;color:#9AA7A5;font-style:italic;">No accounts yet.</div>'}
+  </div>`;
+}
+
+// ── Songs (DJ) ──────────────────────────────────────────────────────────────
+// Everyone's song request in one place, exportable as a CSV to hand to the DJ.
+function admSongsSection(ov) {
+  const withSongs = (ov.people || [])
+    .filter(p => p.songRequest && p.songRequest.trim())
+    .map(p => ({ name: p.name, team: p.team, song: p.songRequest.trim() }));
+  const rows = withSongs.map(p => `
+    <div style="display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid #EEF2F1;">
+      <div style="width:180px;flex-shrink:0;">
+        <div style="font-size:14px;font-weight:700;color:#00253D;">${esc(p.name)}</div>
+        ${admTeamChip(p.team)}
+      </div>
+      <div style="flex:1;font-size:14px;color:#00253D;font-weight:600;">${esc(p.song)}</div>
+    </div>`).join('');
+  return `
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap;">
+    <div>
+      <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Songs</h3>
+      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Every song request players entered at sign-up — ${withSongs.length} so far. Export the list to hand to the DJ.</p>
+    </div>
+    <button data-act="admExportSongs" ${withSongs.length ? '' : 'disabled'} style="flex-shrink:0;background:${withSongs.length ? '#FF5F00' : '#C9D3D2'};color:${withSongs.length ? '#011220' : '#fff'};font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;${withSongs.length ? '' : 'cursor:not-allowed;'}">⬇ Export CSV for DJ</button>
+  </div>
+  <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
+    <div style="display:flex;align-items:center;gap:14px;padding:11px 18px;background:#EEF2F1;border-bottom:1px solid #E0E6E5;font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">
+      <span style="width:180px;flex-shrink:0;">Requested by</span>
+      <span style="flex:1;">Song</span>
+    </div>
+    ${rows || '<div style="padding:20px;font-size:13px;color:#9AA7A5;font-style:italic;">No song requests yet.</div>'}
   </div>`;
 }
 
@@ -2025,13 +2075,15 @@ function adminScreen() {
     return `<div style="flex:1;display:flex;align-items:center;justify-content:center;background:#F3F7F5;color:#6D7C83;font-size:14px;padding:40px;">Loading the Admin Center…</div>`;
   }
   const sections = [
-    { id: 'people', label: 'People' }, { id: 'games', label: 'Games' }, { id: 'schedule', label: 'Schedule' },
+    { id: 'people', label: 'People' }, { id: 'songs', label: 'Songs' }, { id: 'games', label: 'Games' },
+    { id: 'schedule', label: 'Schedule' },
     { id: 'dipoff', label: 'Dip Off' }, { id: 'relay', label: 'Relay Race' },
     { id: 'scores', label: 'Scores' }, { id: 'refs', label: 'Referees' }, { id: 'announce', label: 'Announcements' },
   ];
   const isSignup = (ov.settings && ov.settings.eventMode) !== 'gameday';
   let body = '';
   if (S.adminSection === 'people') body = admPeopleSection(ov);
+  else if (S.adminSection === 'songs') body = admSongsSection(ov);
   else if (S.adminSection === 'games') body = admGamesSection(ov);
   else if (S.adminSection === 'schedule') body = admScheduleSection(ov);
   else if (S.adminSection === 'dipoff') body = admDipSection(ov);
@@ -2092,7 +2144,7 @@ function adminScreen() {
           ${stat(ov.stats.refs, 'Referees', '#FF5F00')}
           ${stat(ov.stats.admins, 'Admins')}
         </div>
-        <div class="scrl" style="flex:1;overflow-y:auto;padding:24px 28px 40px;">${body}</div>
+        <div class="scrl" id="bo-adm-content" style="flex:1;overflow-y:auto;padding:24px 28px 40px;">${body}</div>
       </div>
     </div>
   </div>`;
@@ -2221,10 +2273,17 @@ function render() {
   if (focusId && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
     try { selStart = active.selectionStart; selEnd = active.selectionEnd; } catch (e) { /* number inputs */ }
   }
-  // preserve scroll of the content area on same-screen re-renders
+  // preserve scroll of the content area on same-screen re-renders. The admin
+  // screen scrolls inside its own container (#bo-adm-content), not #bo-content,
+  // so track that too — otherwise every 60s poll or admin action snaps the
+  // Admin Center back to the top. The screen key includes the admin section so
+  // switching sections still resets to the top (a fresh screen).
+  const screenKey = S.route + '/' + (S.routeArg || '') + '/' + (S.route === 'admin' ? S.adminSection : '');
   const prevContent = document.getElementById('bo-content');
-  const sameScreen = lastRenderedRoute === S.route + '/' + (S.routeArg || '');
+  const prevAdm = document.getElementById('bo-adm-content');
+  const sameScreen = lastRenderedRoute === screenKey;
   const prevScroll = (sameScreen && prevContent) ? prevContent.scrollTop : 0;
+  const prevAdmScroll = (sameScreen && prevAdm) ? prevAdm.scrollTop : 0;
   const prevWin = sameScreen ? window.scrollY : 0;
 
   let html = '';
@@ -2276,11 +2335,13 @@ function render() {
   }
 
   app.innerHTML = html;
-  lastRenderedRoute = S.route + '/' + (S.routeArg || '');
+  lastRenderedRoute = screenKey;
 
   const content = document.getElementById('bo-content');
   if (content) content.scrollTop = sameScreen ? prevScroll : 0;
-  if (!content && sameScreen) window.scrollTo(0, prevWin);
+  const adm = document.getElementById('bo-adm-content');
+  if (adm) adm.scrollTop = sameScreen ? prevAdmScroll : 0;
+  if (!content && !adm && sameScreen) window.scrollTo(0, prevWin);
 
   if (focusId) {
     const el = document.getElementById(focusId);
@@ -2538,6 +2599,46 @@ const ACTIONS = {
     await api('/ac/people', { method: 'POST', body: { userId: parseInt(el.dataset.uid, 10), action: 'removeGame', gameId: el.dataset.gid } });
     await loadOverview(true);
   }),
+  admResetPw: (el) => {
+    const name = el.dataset.name || 'this person';
+    const pw = window.prompt(`Set a new password for ${name}.\nThey'll sign in with it and can keep using it. Tell them in person.`, '');
+    if (pw === null) return;                 // cancelled
+    if (pw.trim().length < 4) { toast('Password must be at least 4 characters'); return; }
+    guarded(async () => {
+      await api('/ac/people', { method: 'POST', body: { userId: parseInt(el.dataset.uid, 10), action: 'resetPassword', password: pw } });
+      toast(`Password reset for ${name}`);
+    });
+  },
+  admRemoveUser: (el) => {
+    const name = el.dataset.name || 'this person';
+    if (!window.confirm(`Delete ${name}? This removes their account and all their sign-ups, dip & relay entries. This can't be undone.`)) return;
+    guarded(async () => {
+      await api('/ac/people', { method: 'POST', body: { userId: parseInt(el.dataset.uid, 10), action: 'removeUser' } });
+      await loadOverview(true);
+      toast(`${name} removed`);
+    });
+  },
+  admExportSongs: () => {
+    const ov = S.overview;
+    if (!ov) return;
+    const teamLabel = (t) => t === 'roadhouse' ? 'Texas Roadhouse' : (t === 'buffalo' ? 'Buffalo' : '');
+    const csvCell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const lines = [['Name', 'Team', 'Song request'].map(csvCell).join(',')];
+    (ov.people || [])
+      .filter(p => p.songRequest && p.songRequest.trim())
+      .forEach(p => lines.push([p.name, teamLabel(p.team), p.songRequest.trim()].map(csvCell).join(',')));
+    if (lines.length < 2) { toast('No song requests to export yet'); return; }
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'buff-olympics-song-requests.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('Song list exported');
+  },
   admSchedAdd: () => guarded(async () => {
     await api('/ac/schedule', { method: 'POST', body: { action: 'add' } });
     await loadOverview(true);
