@@ -1096,6 +1096,7 @@ function scheduleScreen() {
   // Fixed, everyone-sees-them blocks the admin set (ceremonies, lunch, reveals)…
   const fixed = (S.boot.schedule || []).map(e => ({
     isGame: false, kind: e.kind, timeLabel: e.timeLabel, ampm: e.ampm,
+    endLabel: e.endLabel || '', endAmpm: e.endAmpm || '',
     title: e.title, place: e.place, min: parseTimeLabel(`${e.timeLabel} ${e.ampm}`),
   }));
   // …woven together with THIS player's own game slots.
@@ -1133,6 +1134,7 @@ function scheduleScreen() {
             ${game ? `<span style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:${T.on};background:${T.A};border-radius:4px;padding:2px 6px;">YOUR GAME</span>` : ''}
             ${live ? `<span style="font-size:9px;font-weight:800;letter-spacing:0.08em;color:${T.on};background:${T.A};border-radius:4px;padding:2px 6px;">LIVE</span>` : ''}
           </div>
+          ${!game && e.endLabel ? `<div style="font-size:11px;font-weight:700;color:${T.A2};margin-top:4px;">${esc(e.timeLabel)} ${esc(e.ampm)} – ${esc(e.endLabel)} ${esc(e.endAmpm)}</div>` : ''}
           ${e.place ? `<div style="font-size:12px;color:${steel};margin-top:5px;">${esc(e.place)}</div>` : ''}
         </div>
       </div>
@@ -1642,39 +1644,69 @@ function deskGamesScreen() {
 }
 
 /* ════════════════════ admin center ════════════════════ */
-// Static venue timeline — ported verbatim from the mockup's timelineData().
-function timelineData() {
-  const T0 = 480, T1 = 990, span = T1 - T0;   // 8:00 AM → 4:30 PM
-  const fmt = (m) => { let h = Math.floor(m / 60), mm = m % 60; let hh = h % 12; if (hh === 0) hh = 12; return hh + ':' + (mm < 10 ? '0' + mm : mm); };
-  const cat = {
-    bracket: { c: '#FF5F00', t: 'rgba(255,95,0,0.14)' },
-    mtwi: { c: '#C2741C', t: 'rgba(194,116,28,0.13)' },
-    field: { c: '#3E6075', t: 'rgba(62,96,117,0.13)' },
-    relay: { c: '#1F8A7A', t: 'rgba(31,138,122,0.13)' },
-    inflate: { c: '#5A57B0', t: 'rgba(90,87,176,0.13)' },
-    wild: { c: '#B0892A', t: 'rgba(176,137,42,0.15)' },
-    struct: { c: '#6B7A82', t: 'rgba(107,122,130,0.10)' },
+// Live venue timeline built from the REAL data — each game placed by its slot
+// times under its venue lane, plus the admin-set schedule blocks in their own
+// lane. No placeholder data; reflects exactly what's configured.
+function timelineData(ov) {
+  const parseE = (e) => parseTimeLabel(`${e.timeLabel || ''} ${e.ampm || ''}`);
+  const GAME_LEN = 30;                      // ~30-min bar width per game
+  const color = {
+    game: { c: '#FF5F00', t: 'rgba(255,95,0,0.14)' },
+    walk: { c: '#00253D', t: 'rgba(0,37,61,0.10)' },
+    sched: { c: '#6B7A82', t: 'rgba(107,122,130,0.12)' },
   };
-  const raw = [
-    { venue: 'Main Lawn', items: [['Check-In & Paint', 480, 540, 'struct'], ['Opening Ceremony', 540, 570, 'struct'], ['Ring Around Teammate', 570, 615, 'mtwi'], ['Back to Back Stand', 615, 645, 'mtwi'], ['Lunch & Halftime', 720, 780, 'struct'], ['Beer Pong', 780, 825, 'field'], ['Immunity Reveal', 930, 960, 'wild'], ['Crown Champion', 960, 990, 'struct']] },
-    { venue: 'The Lawn', items: [['Cornhole', 630, 720, 'bracket'], ['Island Flip', 780, 810, 'field'], ['Charades', 810, 840, 'field'], ['HORSE BB', 840, 870, 'bracket']] },
-    { venue: 'The Courts', items: [['Pickleball', 630, 720, 'bracket']] },
-    { venue: 'The Cafe', items: [['Penny Stacking', 570, 600, 'mtwi'], ['Name That Song', 600, 630, 'mtwi'], ['Ping Pong', 630, 690, 'bracket'], ['Dip Off Judging', 690, 720, 'wild'], ['Tribal Memory', 780, 810, 'field'], ['State of Affairs', 810, 840, 'mtwi']] },
-    { venue: 'Trampolines', items: [['Human Frogger', 780, 810, 'relay'], ['Tic-Tac-Toe', 810, 840, 'relay'], ['Balance the Ball', 840, 870, 'relay'], ['Relay Finals', 870, 900, 'relay']] },
-    { venue: 'Lot & Inflatables', items: [['Nerf Range', 570, 630, 'field'], ['Wipeout', 780, 825, 'inflate'], ['Big Wheels', 825, 855, 'field'], ['Skee Ball', 855, 900, 'inflate']] },
-  ];
-  const lanes = raw.map(l => ({
-    venue: l.venue,
-    items: l.items.map(([name, a, b, k]) => ({
-      name, time: fmt(a) + '–' + fmt(b), left: ((a - T0) / span * 100) + '%', width: ((b - a) / span * 100) + '%',
-      color: cat[k].c, bg: cat[k].t,
+  const events = [];                        // { lane, name, a, b, kind }
+
+  // Schedule blocks → a "Ceremonies & breaks" lane. Use the real end time when
+  // set, otherwise span to the next block (capped) or a short default.
+  const sched = (ov.schedule || []).map(e => ({
+    name: e.title, a: parseE(e),
+    endMin: parseTimeLabel(`${e.endLabel || ''} ${e.endAmpm || ''}`),
+  })).filter(x => x.a != null).sort((x, y) => x.a - y.a);
+  sched.forEach((s, i) => {
+    const next = sched[i + 1];
+    const b = (s.endMin != null && s.endMin > s.a) ? s.endMin
+      : (next ? Math.min(next.a, s.a + 45) : s.a + 30);
+    events.push({ lane: 'Ceremonies & breaks', name: s.name, a: s.a, b: Math.max(b, s.a + 15), kind: 'sched' });
+  });
+
+  // Each game → its venue lane, spanning first slot → last slot.
+  for (const g of (ov.gamesCatalog || [])) {
+    const slots = (g.slots || []).slice().sort((a, b) => a.startMin - b.startMin);
+    if (!slots.length) continue;            // walk-up-only games have no fixed time to place
+    events.push({
+      lane: g.venue || 'Unassigned', name: g.name,
+      a: slots[0].startMin, b: slots[slots.length - 1].startMin + GAME_LEN,
+      kind: g.openPlay ? 'walk' : 'game',
+    });
+  }
+
+  if (!events.length) return { lanes: [], hours: [], nowLeft: null, legend: [], empty: true };
+
+  const T0 = Math.floor(Math.min(...events.map(e => e.a)) / 60) * 60;
+  const T1 = Math.max(T0 + 60, Math.ceil(Math.max(...events.map(e => e.b)) / 60) * 60);
+  const span = T1 - T0;
+  const fmt = (m) => { let h = Math.floor(m / 60), mm = m % 60; let hh = h % 12; if (hh === 0) hh = 12; return hh + ':' + (mm < 10 ? '0' + mm : mm); };
+
+  const laneNames = [];
+  if (events.some(e => e.lane === 'Ceremonies & breaks')) laneNames.push('Ceremonies & breaks');
+  laneNames.push(...[...new Set(events.filter(e => e.lane !== 'Ceremonies & breaks').map(e => e.lane))].sort());
+
+  const lanes = laneNames.map(name => ({
+    venue: name,
+    items: events.filter(e => e.lane === name).sort((x, y) => x.a - y.a).map(e => ({
+      name: e.name, time: fmt(e.a) + '–' + fmt(e.b),
+      left: ((e.a - T0) / span * 100) + '%',
+      width: (Math.max(e.b - e.a, 15) / span * 100) + '%',
+      color: color[e.kind].c, bg: color[e.kind].t,
     })),
   }));
   const hours = [];
-  for (let m = 480; m <= 990; m += 60) { let h = Math.floor(m / 60), hh = h % 12; if (hh === 0) hh = 12; hours.push({ label: hh + (h < 12 ? ' AM' : ' PM'), left: ((m - T0) / span * 100) + '%' }); }
-  const nowLeft = ((660 - T0) / span * 100) + '%';
-  const legend = [{ label: 'Bracket', c: cat.bracket.c }, { label: 'Minute to Win It', c: cat.mtwi.c }, { label: 'Field & Yard', c: cat.field.c }, { label: 'Relay & Tramps', c: cat.relay.c }, { label: 'Inflatables', c: cat.inflate.c }, { label: 'Special', c: cat.wild.c }];
-  return { lanes, hours, nowLeft, legend };
+  for (let m = T0; m <= T1; m += 60) { let h = Math.floor(m / 60), hh = h % 12; if (hh === 0) hh = 12; hours.push({ label: hh + (h < 12 ? ' AM' : ' PM'), left: ((m - T0) / span * 100) + '%' }); }
+  const now = new Date(); const nowMin = now.getHours() * 60 + now.getMinutes();
+  const nowLeft = (nowMin >= T0 && nowMin <= T1) ? (((nowMin - T0) / span) * 100) + '%' : null;
+  const legend = [{ label: 'Games', c: color.game.c }, { label: 'Walk-up', c: color.walk.c }, { label: 'Ceremonies & breaks', c: color.sched.c }];
+  return { lanes, hours, nowLeft, legend, empty: false };
 }
 
 // Canonical team colours + pill — the single source of truth for how we
@@ -1938,9 +1970,10 @@ function admScheduleSection(ov) {
         return `
         <div style="padding:16px 18px;border-bottom:1px solid #EEF2F1;background:#FAFCFB;">
           <div style="display:flex;gap:12px;flex-wrap:wrap;">
-            <div style="width:150px;">${admFieldLabel('Time')}${admTextInput('sch-time', 'schTime', S.f.schTime || '', 'e.g. 8:00 AM')}</div>
-            <div style="flex:1;min-width:180px;">${admFieldLabel('Title')}${admTextInput('sch-title', 'schTitle', S.f.schTitle || '', 'Opening Ceremony')}</div>
-            <div style="flex:1;min-width:180px;">${admFieldLabel('Place')}${admTextInput('sch-place', 'schPlace', S.f.schPlace || '', 'Main Lawn')}</div>
+            <div style="width:135px;">${admFieldLabel('Start time')}${admTextInput('sch-time', 'schTime', S.f.schTime || '', 'e.g. 8:00 AM')}</div>
+            <div style="width:135px;">${admFieldLabel('End time (optional)')}${admTextInput('sch-end', 'schEnd', S.f.schEnd || '', 'e.g. 9:00 AM')}</div>
+            <div style="flex:1;min-width:160px;">${admFieldLabel('Title')}${admTextInput('sch-title', 'schTitle', S.f.schTitle || '', 'Opening Ceremony')}</div>
+            <div style="flex:1;min-width:160px;">${admFieldLabel('Place')}${admTextInput('sch-place', 'schPlace', S.f.schPlace || '', 'Main Lawn')}</div>
           </div>
           <div style="margin-top:12px;max-width:340px;">${admFieldLabel('Status')}
             <div style="display:flex;gap:6px;">${kindBtn('up', 'Upcoming')}${kindBtn('live', 'Live now')}${kindBtn('done', 'Done')}</div>
@@ -1953,7 +1986,7 @@ function admScheduleSection(ov) {
       }
       return `
       <div style="display:flex;align-items:center;gap:16px;padding:13px 18px;border-bottom:1px solid #EEF2F1;">
-        <span style="width:78px;flex-shrink:0;font-family:'BN Kragen';font-size:15px;color:#FF5F00;">${esc(e.timeLabel)} ${esc(e.ampm)}</span>
+        <span style="width:100px;flex-shrink:0;font-family:'BN Kragen';font-size:15px;color:#FF5F00;line-height:1.15;">${esc(e.timeLabel)} ${esc(e.ampm)}${e.endLabel ? `<span style="font-size:11px;color:#9AA7A5;"> – ${esc(e.endLabel)} ${esc(e.endAmpm)}</span>` : ''}</span>
         <div style="flex:1;min-width:0;">
           <div style="display:flex;align-items:center;gap:8px;">
             <span style="font-size:14px;font-weight:700;color:#00253D;">${esc(e.title)}</span>
@@ -1976,15 +2009,18 @@ function admScheduleSection(ov) {
       ${(ov.schedule || []).map(rowHtml).join('') || '<div style="padding:20px;font-size:13px;color:#9AA7A5;font-style:italic;">No schedule blocks yet — add one below.</div>'}
     </div>`;
   } else {
-    const tl = timelineData();
-    body = `
+    const tl = timelineData(ov);
+    body = tl.empty ? `
+    <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;padding:28px;text-align:center;font-size:13.5px;color:#6D7C83;">
+      Nothing to plot yet — the timeline fills in from your games' time slots and schedule blocks. Add a slot or a block and it shows up here.
+    </div>` : `
     <div style="display:flex;flex-wrap:wrap;gap:13px 18px;margin-bottom:14px;">
       ${tl.legend.map(lg => `<span style="display:flex;align-items:center;gap:7px;font-size:11.5px;font-weight:600;color:#46545B;"><span style="width:11px;height:11px;border-radius:3px;background:${lg.c};"></span>${lg.label}</span>`).join('')}
     </div>
     <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;display:flex;">
       <div style="width:138px;flex-shrink:0;border-right:1px solid #E0E6E5;">
         <div style="height:32px;border-bottom:1px solid #EEF2F1;"></div>
-        ${tl.lanes.map(ln => `<div style="height:60px;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid #EEF2F1;font-size:12.5px;font-weight:700;color:#00253D;line-height:1.1;">${ln.venue}</div>`).join('')}
+        ${tl.lanes.map(ln => `<div style="height:60px;display:flex;align-items:center;padding:0 14px;border-bottom:1px solid #EEF2F1;font-size:12.5px;font-weight:700;color:#00253D;line-height:1.1;">${esc(ln.venue)}</div>`).join('')}
       </div>
       <div class="scrl" style="flex:1;overflow-x:auto;">
         <div style="position:relative;min-width:760px;">
@@ -1993,17 +2029,17 @@ function admScheduleSection(ov) {
           </div>
           <div style="position:absolute;top:32px;bottom:0;left:0;right:0;pointer-events:none;">
             ${tl.hours.map(hr => `<span style="position:absolute;left:${hr.left};top:0;bottom:0;width:1px;background:#EEF2F1;"></span>`).join('')}
-            <span style="position:absolute;left:${tl.nowLeft};top:0;bottom:0;width:2px;background:#FF5F00;"></span>
+            ${tl.nowLeft ? `<span style="position:absolute;left:${tl.nowLeft};top:0;bottom:0;width:2px;background:#FF5F00;"></span>` : ''}
           </div>
           ${tl.lanes.map(ln => `
           <div style="position:relative;height:60px;border-bottom:1px solid #EEF2F1;">
             ${ln.items.map(it => `
             <div style="position:absolute;top:10px;height:40px;left:${it.left};width:${it.width};background:${it.bg};border:1px solid ${it.color};border-left:3px solid ${it.color};border-radius:6px;padding:5px 8px;overflow:hidden;">
-              <div style="font-size:11px;font-weight:700;color:#00253D;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;">${it.name}</div>
-              <div style="font-size:9px;color:#6D7C83;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${it.time}</div>
+              <div style="font-size:11px;font-weight:700;color:#00253D;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2;">${esc(it.name)}</div>
+              <div style="font-size:9px;color:#6D7C83;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(it.time)}</div>
             </div>`).join('')}
           </div>`).join('')}
-          <div style="position:absolute;left:${tl.nowLeft};top:7px;transform:translateX(-50%);"><span style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:#fff;background:#FF5F00;border-radius:4px;padding:2px 5px;">NOW</span></div>
+          ${tl.nowLeft ? `<div style="position:absolute;left:${tl.nowLeft};top:7px;transform:translateX(-50%);"><span style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:#fff;background:#FF5F00;border-radius:4px;padding:2px 5px;">NOW</span></div>` : ''}
         </div>
       </div>
     </div>`;
@@ -2917,6 +2953,7 @@ const ACTIONS = {
     if (last) {
       S.admSchedEdit = last.id; S.admSchedKind = last.kind || 'up';
       S.f.schTime = `${last.timeLabel} ${last.ampm}`; S.f.schTitle = last.title || ''; S.f.schPlace = last.place || '';
+      S.f.schEnd = last.endLabel ? `${last.endLabel} ${last.endAmpm}` : '';
     }
     render();
   }),
@@ -2926,6 +2963,7 @@ const ACTIONS = {
     if (!e) return;
     S.admSchedEdit = id; S.admSchedKind = e.kind || 'up';
     S.f.schTime = `${e.timeLabel} ${e.ampm}`; S.f.schTitle = e.title || ''; S.f.schPlace = e.place || '';
+    S.f.schEnd = e.endLabel ? `${e.endLabel} ${e.endAmpm}` : '';
     render();
   },
   admSchedKind: (el) => { S.admSchedKind = el.dataset.kind; render(); },
@@ -2938,10 +2976,20 @@ const ACTIONS = {
     const sp = full.lastIndexOf(' ');
     const title = (S.f.schTitle || '').trim();
     if (!title) { toast('Give the block a title'); return; }
+    // Optional end time.
+    let endLabel = '', endAmpm = '';
+    const endStr = (S.f.schEnd || '').trim();
+    if (endStr) {
+      const emin = parseTimeLabel(endStr);
+      if (emin === null) { toast('Enter an end time like 9:00 AM, or leave it blank'); return; }
+      const efull = minToLabel(emin), esp = efull.lastIndexOf(' ');
+      endLabel = efull.slice(0, esp); endAmpm = efull.slice(esp + 1);
+    }
     await api('/ac/schedule', { method: 'POST', body: {
       action: 'update', id,
       timeLabel: full.slice(0, sp), ampm: full.slice(sp + 1),
       title, place: (S.f.schPlace || '').trim(), kind: S.admSchedKind || 'up',
+      endLabel, endAmpm,
     } });
     S.admSchedEdit = null;
     await loadOverview(true);

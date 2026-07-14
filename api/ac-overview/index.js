@@ -79,6 +79,13 @@ app.http('ac-overview', {
         for (const r of wpR.recordset) winPointsById[r.id] = r.win_points;
       } catch (e) { /* column not present yet */ }
 
+      // Schedule end times (migration 006) — defensive so admin loads pre-006.
+      let schedEndById = {};
+      try {
+        const seR = await pool.request().query('SELECT id, end_label, end_ampm FROM bo_schedule');
+        for (const r of seR.recordset) schedEndById[r.id] = { endLabel: r.end_label || '', endAmpm: r.end_ampm || '' };
+      } catch (e) { /* columns not present yet */ }
+
       const settings = settingsFromRows(settingsR.recordset);
 
       const gameById = {};
@@ -134,6 +141,7 @@ app.http('ac-overview', {
 
       const schedule = scheduleR.recordset.map(r => ({
         id: r.id, timeLabel: r.time_label, ampm: r.ampm, title: r.title, place: r.place, kind: r.kind,
+        endLabel: (schedEndById[r.id] || {}).endLabel || '', endAmpm: (schedEndById[r.id] || {}).endAmpm || '',
       }));
 
       // ── dip (admins see all names + vote counts) ──

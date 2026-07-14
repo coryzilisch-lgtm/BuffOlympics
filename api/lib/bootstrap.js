@@ -115,9 +115,16 @@ async function loadSharedBootstrap(pool, fresh) {
     for (const r of wpR.recordset) winPointsById[r.id] = r.win_points;
   } catch (e) { /* column not present yet — default applied below */ }
 
+  // Schedule end times (migration 006). Defensive so the app boots pre-006.
+  let schedEndById = {};
+  try {
+    const seR = await pool.request().query('SELECT id, end_label, end_ampm FROM bo_schedule');
+    for (const r of seR.recordset) schedEndById[r.id] = { endLabel: r.end_label || '', endAmpm: r.end_ampm || '' };
+  } catch (e) { /* columns not present yet */ }
+
   const shared = {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
-    legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById,
+    legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, schedEndById,
   };
   cache.set(SHARED_KEY, shared, SHARED_TTL_MS);
   return shared;
@@ -132,7 +139,7 @@ async function buildBootstrap(pool, user, opts = {}) {
   const shared = await loadSharedBootstrap(pool, opts.fresh);
   const {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
-    legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById,
+    legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, schedEndById,
   } = shared;
   const [myVoteR, myResultsR] = await Promise.all([
     pool.request().input('uid', sql.Int, uid)
@@ -215,6 +222,7 @@ async function buildBootstrap(pool, user, opts = {}) {
   // ── schedule ──
   const schedule = scheduleR.recordset.map(r => ({
     id: r.id, timeLabel: r.time_label, ampm: r.ampm, title: r.title, place: r.place, kind: r.kind,
+    endLabel: (schedEndById[r.id] || {}).endLabel || '', endAmpm: (schedEndById[r.id] || {}).endAmpm || '',
   }));
 
   // ── tribes ──
