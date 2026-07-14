@@ -669,6 +669,9 @@ function refBoardScreen() {
   const stations = S.boot.refStations || [];
   const q2 = (S.walkSearch || '').trim().toLowerCase();
   const allPlayers = S.boot.allPlayers || [];
+  // Direct numeric score entry — the ref types any number for a player (walk-up
+  // / solo games are scored by whatever the player earned, no fixed value).
+  const scoreInput = (name, i) => `<input id="ref-score-${i}" data-solo="${esc(name)}" value="${S.soloScores[name] || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:72px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:9px 8px;color:${th.text};font-family:'BN Kragen';font-size:18px;outline:none;"/>`;
 
   const stationHtml = stations.map(st => {
     const open = S.refOpen === st.gameId;
@@ -741,7 +744,7 @@ function refBoardScreen() {
         <button data-act="refWinnerSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:14px;background:${canSubmit ? T.A : 'rgba(255,255,255,0.08)'};color:${canSubmit ? T.on : th.sub};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">${submitLabel}</button>`;
     } else if (open && isSolo) {
       body = `
-        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:10px;">Sign-up list · score each player</div>
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:10px;">Sign-up list · type each player's score</div>
         <div style="display:flex;flex-direction:column;gap:8px;">
           ${(st.signups || []).length ? (st.signups || []).map((p, i) => `
           <div style="display:flex;align-items:center;gap:11px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:9px;padding:9px 12px;">
@@ -749,19 +752,15 @@ function refBoardScreen() {
               <div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}</div>
               <div style="font-size:10.5px;font-weight:700;text-transform:uppercase;color:${p.team === 'buffalo' ? '#FF7F2E' : '#E0322E'};">${p.team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'}</div>
             </div>
-            <div style="display:flex;align-items:center;gap:9px;flex-shrink:0;">
-              <button data-act="soloDelta" data-i="${i}" data-d="-1" style="width:30px;height:30px;border-radius:7px;background:rgba(255,255,255,0.08);color:${th.text};font-size:19px;display:flex;align-items:center;justify-content:center;">−</button>
-              <span style="font-family:'BN Kragen';font-size:20px;color:${T.A};min-width:26px;text-align:center;">${S.soloScores[p.name] || 0}</span>
-              <button data-act="soloDelta" data-i="${i}" data-d="1" style="width:30px;height:30px;border-radius:7px;background:${T.A};color:${T.on};font-size:19px;display:flex;align-items:center;justify-content:center;">+</button>
-            </div>
+            <div style="flex-shrink:0;">${scoreInput(p.name, i)}</div>
           </div>`).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No sign-ups for this station yet.</div>`}
         </div>
-        <button data-act="soloSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:13px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Save range scores</button>`;
+        <button data-act="soloSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:13px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Save scores</button>`;
     } else if (open && isWalk) {
       const matches = q2 ? allPlayers.filter(p => p.name.toLowerCase().includes(q2)).slice(0, 4) : [];
       const roster = st.signups || [];
       const rosterHtml = roster.length ? `
-        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Signed up for this window · score each</div>
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Signed up for this window · type each score</div>
         <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px;">
           ${roster.map((p, i) => `
           <div style="display:flex;align-items:center;gap:11px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:9px;padding:9px 12px;">
@@ -769,11 +768,7 @@ function refBoardScreen() {
               <div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}${p.slot ? `<span style="font-size:10.5px;font-weight:700;color:${th.sub};"> · ${esc(p.slot)}</span>` : ''}</div>
               <div style="font-size:10.5px;font-weight:700;text-transform:uppercase;color:${p.team === 'buffalo' ? '#FF7F2E' : '#E0322E'};">${p.team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'}</div>
             </div>
-            <div style="display:flex;align-items:center;gap:9px;flex-shrink:0;">
-              <button data-act="soloDelta" data-i="${i}" data-d="-1" style="width:30px;height:30px;border-radius:7px;background:rgba(255,255,255,0.08);color:${th.text};font-size:19px;display:flex;align-items:center;justify-content:center;">−</button>
-              <span style="font-family:'BN Kragen';font-size:20px;color:${T.A};min-width:26px;text-align:center;">${S.soloScores[p.name] || 0}</span>
-              <button data-act="soloDelta" data-i="${i}" data-d="1" style="width:30px;height:30px;border-radius:7px;background:${T.A};color:${T.on};font-size:19px;display:flex;align-items:center;justify-content:center;">+</button>
-            </div>
+            <div style="flex-shrink:0;">${scoreInput(p.name, i)}</div>
           </div>`).join('')}
         </div>
         <button data-act="soloSubmit" data-game="${esc(st.gameId)}" style="width:100%;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;margin-bottom:18px;">Save signed-up scores</button>
@@ -795,11 +790,7 @@ function refBoardScreen() {
         ${S.walkPick ? `
         <div style="margin-top:11px;display:flex;align-items:center;gap:12px;background:${th.dim};border:1px solid ${th.line};border-radius:9px;padding:12px 13px;">
           <span style="flex:1;font-size:13.5px;font-weight:700;color:${th.text};">${esc(S.walkPick.name)}</span>
-          <div style="display:flex;align-items:center;gap:9px;flex-shrink:0;">
-            <button data-act="walkDelta" data-d="-1" style="width:30px;height:30px;border-radius:7px;background:rgba(255,255,255,0.08);color:${th.text};font-size:19px;display:flex;align-items:center;justify-content:center;">−</button>
-            <span style="font-family:'BN Kragen';font-size:20px;color:${T.A};min-width:26px;text-align:center;">${S.walkScore}</span>
-            <button data-act="walkDelta" data-d="1" style="width:30px;height:30px;border-radius:7px;background:${T.A};color:${T.on};font-size:19px;display:flex;align-items:center;justify-content:center;">+</button>
-          </div>
+          <div style="flex-shrink:0;"><input id="walk-score-in" data-walkscore value="${S.walkScore || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:72px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:9px 8px;color:${th.text};font-family:'BN Kragen';font-size:18px;outline:none;"/></div>
         </div>
         <button data-act="walkSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:11px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Add ${esc(S.walkPick.name)}'s score</button>` : ''}
         <div style="margin-top:14px;font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${th.sub};margin-bottom:8px;">Scored so far</div>
@@ -2853,14 +2844,6 @@ const ACTIONS = {
     toast(w.scores ? 'Winner logged & scored' : 'Winner logged');
     loadBoot(true);
   }),
-  soloDelta: (el) => {
-    const st = (S.boot.refStations || []).find(x => x.gameId === S.refOpen);
-    if (!st) return;
-    const p = (st.signups || [])[parseInt(el.dataset.i, 10)];
-    if (!p) return;
-    S.soloScores[p.name] = Math.max(0, (S.soloScores[p.name] || 0) + parseInt(el.dataset.d, 10));
-    render();
-  },
   soloSubmit: (el) => guarded(async () => {
     const st = (S.boot.refStations || []).find(x => x.gameId === el.dataset.game);
     if (!st) return;
@@ -2873,8 +2856,7 @@ const ACTIONS = {
     toast('Logged');
     loadBoot(true);
   }),
-  walkPick: (el) => { S.walkPick = { name: el.dataset.name, team: el.dataset.team }; S.walkSearch = el.dataset.name; render(); },
-  walkDelta: (el) => { S.walkScore = Math.max(0, S.walkScore + parseInt(el.dataset.d, 10)); render(); },
+  walkPick: (el) => { S.walkPick = { name: el.dataset.name, team: el.dataset.team }; S.walkSearch = el.dataset.name; S.walkScore = 0; render(); },
   walkSubmit: (el) => guarded(async () => {
     if (!S.walkPick) return;
     if (!S.walkScore) { toast('Add a score first'); return; }
@@ -3234,6 +3216,16 @@ document.addEventListener('click', (e) => {
 document.addEventListener('input', (e) => {
   const el = e.target;
   if (el.dataset && el.dataset.field) S.f[el.dataset.field] = el.value;
+  // Ref score entry — type any number for a player. No re-render (keeps the
+  // caret in the field); the value is read from state on submit.
+  if (el.dataset && el.dataset.solo !== undefined) {
+    const v = parseInt(el.value, 10);
+    S.soloScores[el.dataset.solo] = Number.isFinite(v) && v > 0 ? v : 0;
+  }
+  if (el.dataset && el.dataset.walkscore !== undefined) {
+    const v = parseInt(el.value, 10);
+    S.walkScore = Number.isFinite(v) && v > 0 ? v : 0;
+  }
   if (el.dataset && el.dataset.live === 'gameSearch') { S.gameSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'walkSearch') { S.walkSearch = el.value; S.walkPick = null; render(); }
   if (el.dataset && el.dataset.debounce === 'refCode') {
