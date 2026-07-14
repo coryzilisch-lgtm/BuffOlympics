@@ -351,6 +351,10 @@ async function handleGames(pool, body) {
     }
     if (body.needsRef !== undefined) { sets.push('needs_ref = @needs_ref'); req.input('needs_ref', sql.Bit, body.needsRef ? 1 : 0); }
     if (body.openPlay !== undefined) { sets.push('open_play = @open_play'); req.input('open_play', sql.Bit, body.openPlay ? 1 : 0); }
+    if (body.winPoints !== undefined) {
+      const wp = parseInt(body.winPoints, 10);
+      sets.push('win_points = @win_points'); req.input('win_points', sql.Int, Number.isInteger(wp) && wp >= 0 ? wp : 10);
+    }
     if (!sets.length) return json({ error: 'Nothing to update' }, 400);
     const r = await req.query(`UPDATE bo_games SET ${sets.join(', ')} WHERE id = @gid`);
     if (!r.rowsAffected[0]) return json({ error: 'Game not found' }, 404);

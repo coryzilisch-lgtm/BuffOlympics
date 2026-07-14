@@ -24,7 +24,7 @@ const S = {
   tribeTab: 'buffalo',
   videoOpen: null,       // url string
   // ref board UI
-  refOpen: null, entryB: 0, entryR: 0, soloScores: {},
+  refOpen: null, entryB: 0, entryR: 0, soloScores: {}, refWinner: null, refRound: 'round',
   walkSearch: '', walkPick: null, walkScore: 0, walkLog: [],
   // admin UI
   adminSection: 'people', schedView: 'list',
@@ -683,38 +683,62 @@ function refBoardScreen() {
 
     let body = '';
     if (open && isVs) {
+      const isBracket = !!BRACKETS[st.gameId];
+      const winPts = st.winPoints != null ? st.winPoints : 10;
+      const round = isBracket ? (S.refRound || 'round') : 'champ';
+      const sel = S.refWinner;
+      const teamColor = (t) => t === 'buffalo' ? '#FF5F00' : '#E0322E';
+      const teamLabel = (t) => t === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse';
+      // A big tribe "winner" button (used for cross-tribe / championship picks).
+      const tribeBtn = (team, names) => {
+        const picked = sel && sel.scores && sel.team === team;
+        const c = teamColor(team);
+        return `<button data-act="refPickWinner" data-team="${team}" data-name="${esc(names || teamLabel(team))}" data-scores="1" style="flex:1;text-align:left;border-radius:10px;padding:13px 12px;border:2px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};">
+          <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;color:${c};">${teamLabel(team)}</div>
+          <div style="font-size:13px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.25;">${esc(names || '—')}</div>
+          ${picked ? `<div style="margin-top:7px;font-size:10.5px;font-weight:800;color:${c};display:flex;align-items:center;gap:5px;">${checkSvg(c, 12)}Winner</div>` : ''}
+        </button>`;
+      };
+      // Round selector (bracket games only): within-tribe round vs championship.
+      const roundTabs = isBracket ? `
+        <div style="display:flex;background:rgba(255,255,255,0.05);border:1px solid ${th.line};border-radius:9px;padding:3px;gap:3px;margin-bottom:13px;">
+          <button data-act="refRound" data-round="round" style="flex:1;padding:9px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${round === 'round' ? T.A : 'transparent'};color:${round === 'round' ? T.on : th.sub};">Bracket round<br/><span style="font-size:9px;opacity:0.8;">within tribe · no points</span></button>
+          <button data-act="refRound" data-round="champ" style="flex:1;padding:9px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${round === 'champ' ? T.A : 'transparent'};color:${round === 'champ' ? T.on : th.sub};">Championship<br/><span style="font-size:9px;opacity:0.8;">+${winPts} pts</span></button>
+        </div>` : '';
+
+      let picker;
+      if (round === 'champ') {
+        // Cross-tribe: tap the winning tribe → awards win points.
+        picker = `
+          <div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Who won? Winner earns ${winPts} pts for their tribe</div>
+          <div style="display:flex;gap:11px;">${tribeBtn('buffalo', bufNames.join(' & '))}${tribeBtn('roadhouse', roadNames.join(' & '))}</div>`;
+      } else {
+        // Within-tribe bracket round: tap the winning team/person → advances, no points.
+        const players = st.signups || [];
+        picker = `
+          <div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:4px;">Within-tribe match — tap the winner</div>
+          <div style="font-size:11px;color:${th.sub};margin-bottom:10px;">Buffalo vs Buffalo &amp; TXRH vs TXRH. Advances the winner — no tribe points until the championship.</div>
+          <div style="display:flex;flex-direction:column;gap:7px;">
+            ${players.length ? players.map(p => {
+              const picked = sel && !sel.scores && sel.name === p.name && sel.team === p.team;
+              const c = teamColor(p.team);
+              return `<button data-act="refPickWinner" data-team="${esc(p.team)}" data-name="${esc(p.name)}" data-scores="0" style="display:flex;align-items:center;gap:11px;border-radius:9px;padding:11px 12px;text-align:left;border:1px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};">
+                <span style="flex:1;min-width:0;font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}${p.slot ? `<span style="font-size:10.5px;font-weight:700;color:${th.sub};"> · ${esc(p.slot)}</span>` : ''}</span>
+                <span style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};flex-shrink:0;">${teamLabel(p.team)}</span>
+                ${picked ? checkSvg(c, 14) : ''}
+              </button>`;
+            }).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No one signed up at this station yet.</div>`}
+          </div>`;
+      }
+
+      const canSubmit = !!sel;
+      const submitLabel = !sel ? 'Pick the winner first'
+        : (sel.scores ? `Log ${teamLabel(sel.team)} win · +${winPts} pts` : `Log winner — ${sel.name} advances`);
       body = `
         <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">${esc(st.timeLabel || 'Head-to-head')} · ${esc(st.venue || '')}</div>
-        <div style="display:flex;align-items:stretch;gap:9px;margin-bottom:13px;">
-          <div style="flex:1;background:rgba(255,95,0,0.10);border:1px solid rgba(255,95,0,0.4);border-radius:9px;padding:11px;">
-            <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#FF7F2E;">Buffalo</div>
-            <div style="font-size:13px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.25;">${esc(bufNames.join(' & ') || '—')}</div>
-          </div>
-          <div style="display:flex;align-items:center;font-family:'BN Kragen';font-size:14px;color:${th.sub};">VS</div>
-          <div style="flex:1;background:rgba(224,50,46,0.12);border:1px solid rgba(224,50,46,0.4);border-radius:9px;padding:11px;text-align:right;">
-            <div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#E0322E;">Texas Roadhouse</div>
-            <div style="font-size:13px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.25;">${esc(roadNames.join(' & ') || '—')}</div>
-          </div>
-        </div>
-        <div style="display:flex;gap:11px;">
-          <div style="flex:1;background:rgba(255,95,0,0.12);border:1px solid rgba(255,95,0,0.5);border-radius:9px;padding:12px;text-align:center;">
-            <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#FF7F2E;margin-bottom:9px;">Buffalo</div>
-            <div style="display:flex;align-items:center;justify-content:center;gap:12px;">
-              <button data-act="entryB" data-d="-1" style="width:34px;height:34px;border-radius:8px;background:rgba(255,255,255,0.08);color:${th.text};font-size:22px;display:flex;align-items:center;justify-content:center;">−</button>
-              <span style="font-family:'BN Kragen';font-size:30px;color:#FF5F00;min-width:30px;text-align:center;">${S.entryB}</span>
-              <button data-act="entryB" data-d="1" style="width:34px;height:34px;border-radius:8px;background:#FF5F00;color:#011220;font-size:22px;display:flex;align-items:center;justify-content:center;">+</button>
-            </div>
-          </div>
-          <div style="flex:1;background:rgba(224,50,46,0.12);border:1px solid rgba(224,50,46,0.5);border-radius:9px;padding:12px;text-align:center;">
-            <div style="font-size:11px;font-weight:700;text-transform:uppercase;color:#E0322E;margin-bottom:9px;">Texas Roadhouse</div>
-            <div style="display:flex;align-items:center;justify-content:center;gap:12px;">
-              <button data-act="entryR" data-d="-1" style="width:34px;height:34px;border-radius:8px;background:rgba(255,255,255,0.08);color:${th.text};font-size:22px;display:flex;align-items:center;justify-content:center;">−</button>
-              <span style="font-family:'BN Kragen';font-size:30px;color:${th.text};min-width:30px;text-align:center;">${S.entryR}</span>
-              <button data-act="entryR" data-d="1" style="width:34px;height:34px;border-radius:8px;background:#E0322E;color:#fff;font-size:22px;display:flex;align-items:center;justify-content:center;">+</button>
-            </div>
-          </div>
-        </div>
-        <button data-act="vsSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:13px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Log result &amp; load next match</button>`;
+        ${roundTabs}
+        ${picker}
+        <button data-act="refWinnerSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:14px;background:${canSubmit ? T.A : 'rgba(255,255,255,0.08)'};color:${canSubmit ? T.on : th.sub};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">${submitLabel}</button>`;
     } else if (open && isSolo) {
       body = `
         <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:10px;">Sign-up list · score each player</div>
@@ -1876,6 +1900,10 @@ function admGamesModals() {
       <div style="height:14px;"></div>
       ${admFieldLabel('Venue (optional)')}
       ${admTextInput('gm-venue', 'gmVenue', S.f.gmVenue || '', 'e.g. The Lawn')}
+      <div style="height:14px;"></div>
+      ${admFieldLabel('Points for a win')}
+      ${admTextInput('gm-points', 'gmPoints', S.f.gmPoints || '', 'e.g. 10')}
+      <div style="font-size:11px;color:#9AA7A5;margin-top:5px;">Awarded to the winning tribe when a ref logs a head-to-head or championship winner.</div>
       <div style="height:16px;"></div>
       <div style="display:flex;flex-direction:column;gap:12px;">
         ${admToggle('Needs a referee', ge.needsRef, 'admGameFlagRef')}
@@ -2768,17 +2796,25 @@ const ACTIONS = {
     else {
       S.refOpen = id;
       S.entryB = 0; S.entryR = 0; S.walkSearch = ''; S.walkPick = null; S.walkScore = 0;
+      S.refWinner = null; S.refRound = 'round';
     }
     render();
   },
-  entryB: (el) => { S.entryB = Math.max(0, S.entryB + parseInt(el.dataset.d, 10)); render(); },
-  entryR: (el) => { S.entryR = Math.max(0, S.entryR + parseInt(el.dataset.d, 10)); render(); },
-  vsSubmit: (el) => guarded(async () => {
-    if (!S.entryB && !S.entryR) { toast('Add a score first'); return; }
+  refRound: (el) => { S.refRound = el.dataset.round; S.refWinner = null; render(); },
+  refPickWinner: (el) => {
+    S.refWinner = { team: el.dataset.team, name: el.dataset.name, scores: el.dataset.scores === '1' };
+    render();
+  },
+  refWinnerSubmit: (el) => guarded(async () => {
+    const w = S.refWinner;
+    if (!w) { toast('Tap the winner first'); return; }
     const st = (S.boot.refStations || []).find(x => x.gameId === el.dataset.game);
-    await api('/results', { method: 'POST', body: { type: 'vs', gameName: st ? st.name : el.dataset.game, ptsBuffalo: S.entryB, ptsRoadhouse: S.entryR } });
-    S.entryB = 0; S.entryR = 0;
-    toast('Logged');
+    await api('/results', { method: 'POST', body: {
+      type: 'winner', gameName: st ? st.name : el.dataset.game,
+      winnerTeam: w.team, winnerName: w.name, scores: !!w.scores,
+    } });
+    S.refWinner = null;
+    toast(w.scores ? 'Winner logged & scored' : 'Winner logged');
     loadBoot(true);
   }),
   soloDelta: (el) => {
@@ -2973,12 +3009,13 @@ const ACTIONS = {
 
   // ── games & slots editor ──
   admNoop: () => {},
-  admGameNew: () => { S.admGameEdit = { mode: 'add', needsRef: false, openPlay: false }; S.f.gmName = ''; S.f.gmTime = ''; S.f.gmVenue = ''; render(); },
+  admGameNew: () => { S.admGameEdit = { mode: 'add', needsRef: true, openPlay: false }; S.f.gmName = ''; S.f.gmTime = ''; S.f.gmVenue = ''; S.f.gmPoints = '10'; render(); },
   admGameEdit: (el) => {
     const g = (S.overview.gamesCatalog || []).find(x => x.id === el.dataset.id);
     if (!g) return;
     S.admGameEdit = { mode: 'edit', id: g.id, needsRef: !!g.needsRef, openPlay: !!g.openPlay };
     S.f.gmName = g.name; S.f.gmTime = g.runtimeLabel || ''; S.f.gmVenue = g.venue || '';
+    S.f.gmPoints = String(g.winPoints != null ? g.winPoints : 10);
     render();
   },
   admGameFlagRef: () => { if (S.admGameEdit) { S.admGameEdit.needsRef = !S.admGameEdit.needsRef; render(); } },
@@ -2988,13 +3025,23 @@ const ACTIONS = {
     const ge = S.admGameEdit; if (!ge) return;
     const name = (S.f.gmName || '').trim();
     if (!name) { toast('Give the game a name'); return; }
+    const wp = Math.max(0, parseInt(S.f.gmPoints, 10) || 0);
     const body = {
       name, timeLabel: (S.f.gmTime || '').trim(), venue: (S.f.gmVenue || '').trim(),
-      needsRef: !!ge.needsRef, openPlay: !!ge.openPlay,
+      needsRef: !!ge.needsRef, openPlay: !!ge.openPlay, winPoints: wp,
     };
-    if (ge.mode === 'add') body.action = 'addGame';
-    else { body.action = 'updateGame'; body.gameId = ge.id; }
-    await api('/ac/games', { method: 'POST', body });
+    if (ge.mode === 'add') {
+      // addGame relies on the win_points column DEFAULT; set the chosen value
+      // in a follow-up updateGame so a fresh game still carries the ref value.
+      body.action = 'addGame';
+      const res = await api('/ac/games', { method: 'POST', body });
+      if (res && res.id && wp !== 10) {
+        await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: res.id, winPoints: wp } });
+      }
+    } else {
+      body.action = 'updateGame'; body.gameId = ge.id;
+      await api('/ac/games', { method: 'POST', body });
+    }
     S.admGameEdit = null;
     await loadOverview(true);
     toast(ge.mode === 'add' ? 'Game added' : 'Game updated');

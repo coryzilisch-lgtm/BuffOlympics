@@ -56,6 +56,8 @@ infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
   001_init.sql             — all bo_* tables + seed (games, schedule, relay legs, settings)
   002_slots.sql            — GENERATED slot migration (see "Slots" below). RESETS sign-ups.
   003_idols.sql            — bo_idols table + seed (hidden-immunity clues; Admin → Idols)
+  004_win_points.sql       — bo_games.win_points (per-game points a ref's winner pick awards)
+  005_default_ref.sql      — one-time: set needs_ref=1 on every game (refs are the default)
 scripts/
   concurrency-loadtest.js  — proves the atomic slot guard against a live deploy (Node 18+, no deps)
 .github/workflows/azure-static-web-apps.yml  — deploy on push to main

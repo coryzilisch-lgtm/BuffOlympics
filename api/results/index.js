@@ -67,6 +67,38 @@ app.http('results', {
         return json({ ok: true });
       }
 
+      // Ref picks the winner of a head-to-head / bracket match. Points come
+      // from the game's admin-set win_points (server-authoritative). `scores`
+      // is false for within-tribe bracket rounds (advancement only) — only the
+      // cross-tribe championship awards tribe points.
+      if (body.type === 'winner') {
+        const winnerTeam = body.winnerTeam;
+        if (!TEAMS.includes(winnerTeam)) return json({ error: 'winnerTeam must be buffalo or roadhouse' }, 400);
+        const winnerName = String(body.winnerName || '').trim()
+          || (winnerTeam === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse');
+        const scores = !!body.scores;
+        let pts = 0;
+        if (scores) {
+          try {
+            const pr = await pool.request().input('n', sql.NVarChar, gameName)
+              .query('SELECT TOP 1 win_points AS wp FROM bo_games WHERE name = @n');
+            pts = pr.recordset.length && pr.recordset[0].wp != null ? pr.recordset[0].wp : 10;
+          } catch (e) { pts = 10; }
+        }
+        await insertResult(pool, {
+          gameName,
+          detail: scores ? `${winnerName} won (+${pts})` : `${winnerName} won — advances`,
+          winner: winnerTeam,
+          pts: scores ? pts : 0,
+          ptsBuffalo: scores && winnerTeam === 'buffalo' ? pts : 0,
+          ptsRoadhouse: scores && winnerTeam === 'roadhouse' ? pts : 0,
+          playerName: winnerName,
+          enteredBy, enteredById,
+        });
+        bustSharedBootstrap();
+        return json({ ok: true });
+      }
+
       if (body.type === 'solo') {
         const entries = Array.isArray(body.entries) ? body.entries : [];
         const scored = entries
@@ -110,7 +142,7 @@ app.http('results', {
         return json({ ok: true });
       }
 
-      return json({ error: "type must be 'vs', 'solo', or 'walk'" }, 400);
+      return json({ error: "type must be 'winner', 'vs', 'solo', or 'walk'" }, 400);
     } catch (err) {
       context.error('results error:', err);
       return json({ error: 'Internal server error' }, 500);

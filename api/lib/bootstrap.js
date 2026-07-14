@@ -108,9 +108,16 @@ async function loadSharedBootstrap(pool, fresh) {
       'SELECT id, title, clue, release_min, found, sort FROM bo_idols ORDER BY sort, id');
   } catch (e) { /* table not present yet — treat as no idols */ }
 
+  // Per-game win points (migration 004). Defensive so the app boots pre-004.
+  let winPointsById = {};
+  try {
+    const wpR = await pool.request().query('SELECT id, win_points FROM bo_games');
+    for (const r of wpR.recordset) winPointsById[r.id] = r.win_points;
+  } catch (e) { /* column not present yet — default applied below */ }
+
   const shared = {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
-    legsR, relayR, annR, scoresR, refAssignR, idolsR,
+    legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById,
   };
   cache.set(SHARED_KEY, shared, SHARED_TTL_MS);
   return shared;
@@ -125,7 +132,7 @@ async function buildBootstrap(pool, user, opts = {}) {
   const shared = await loadSharedBootstrap(pool, opts.fresh);
   const {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
-    legsR, relayR, annR, scoresR, refAssignR, idolsR,
+    legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById,
   } = shared;
   const [myVoteR, myResultsR] = await Promise.all([
     pool.request().input('uid', sql.Int, uid)
@@ -316,6 +323,7 @@ async function buildBootstrap(pool, user, opts = {}) {
       venue: g.venue,
       timeLabel: g.time_label,
       type: stationType(g),
+      winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
       signups: signupPeopleByGame[g.id] || [],
     }));
 

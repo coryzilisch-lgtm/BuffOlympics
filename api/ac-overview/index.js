@@ -72,6 +72,13 @@ app.http('ac-overview', {
         }));
       } catch (e) { /* table not present yet */ }
 
+      // Per-game win points (migration 004) — defensive so admin loads pre-004.
+      let winPointsById = {};
+      try {
+        const wpR = await pool.request().query('SELECT id, win_points FROM bo_games');
+        for (const r of wpR.recordset) winPointsById[r.id] = r.win_points;
+      } catch (e) { /* column not present yet */ }
+
       const settings = settingsFromRows(settingsR.recordset);
 
       const gameById = {};
@@ -121,6 +128,7 @@ app.http('ac-overview', {
         openPlay: !!g.open_play,
         needsRef: !!g.needs_ref,
         venue: g.venue,
+        winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
         slots: slotsByGame[g.id] || [],
       }));
 
