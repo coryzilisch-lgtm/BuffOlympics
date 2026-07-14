@@ -1,6 +1,7 @@
 const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
 const { json, requireUser, requireRef, formatName } = require('../lib/auth');
+const { bustSharedBootstrap } = require('../lib/bootstrap');
 
 const TEAMS = ['buffalo', 'roadhouse'];
 
@@ -62,6 +63,7 @@ app.http('results', {
           playerName: null,
           enteredBy, enteredById,
         });
+        bustSharedBootstrap();
         return json({ ok: true });
       }
 
@@ -83,6 +85,7 @@ app.http('results', {
             enteredBy, enteredById,
           });
         }
+        bustSharedBootstrap();
         return json({ ok: true });
       }
 
@@ -103,6 +106,7 @@ app.http('results', {
           playerName,
           enteredBy, enteredById,
         });
+        bustSharedBootstrap();
         return json({ ok: true });
       }
 

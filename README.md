@@ -119,6 +119,41 @@ walk-up. For refs, a walk-up station shows the **signed-up roster to score** fir
   in the API (`api/lib/bootstrap.js` → `signupMaxFor`), not the schema.
 - Sign-up API: `POST /api/signups {slotId}` / `DELETE /api/signups/{slotId}`.
 
+**Editing the lineup mid-event — use the Admin Center, not the migration.** Re-running `002` wipes
+sign-ups (it drops `bo_signups` and reseeds slots with new IDs). Instead, **Admin Center → Games &
+slots** lets you add/edit/remove games and time slots from the browser. Editing a time or a cap is
+an `UPDATE` on a stable slot ID, so **everyone stays signed up**; deleting a slot or game only drops
+that item's sign-ups. It's the safe path once people have started signing up.
+
+### Concurrency is safe — and you can prove it
+
+Slot capacity is enforced **atomically in the database**: the sign-up insert runs in a transaction
+that takes an `UPDLOCK`/`HOLDLOCK` on the slot's `bo_game_slots` row, so simultaneous joins to the
+same slot serialize and re-check capacity under the lock — no overselling, even across separate SWA
+Function instances. Different slots never block each other. A player who loses the race for the last
+seat gets a clean *"that slot just filled up"* 409.
+
+To verify against the live deployment, run the included load test — it creates a throwaway game with
+one capped slot, fires N simultaneous joins at it, asserts exactly `CAP` land, then deletes the test
+game and every test player it created (leaves no residue):
+
+```
+BASE_URL="https://<your-swa-host>" ADMIN_EMAIL="you@company.com" ADMIN_PASSWORD="…" \
+  node scripts/concurrency-loadtest.js          # optional: N=20 CAP=3
+```
+
+Run it while **Event mode = Sign-Up** (it aborts on Game Day, when sign-ups are locked). Cleanup uses
+the admin `removeUser` action, which is also handy for clearing out any bogus account.
+
+### Keeping Fabric load down
+
+The event runs on the small **shared F2** Fabric capacity, so the read-heavy `GET /api/bootstrap`
+(hit on every load and re-polled every 60s by every player) splits into a **shared block cached
+in-process ~20s** (`api/lib/cache.js`) plus **2 per-user queries** that always run live. Under a
+game-day crowd this collapses the shared dozen-query cost to ~3 refills/minute instead of once per
+request. Writes (`{fresh:true}` on signup/dip/relay, `bustSharedBootstrap()` on results/admin/team)
+bust the cache so nobody sees stale data beyond their own poll.
+
 ## Gotchas hit during setup (so the next person doesn't relearn them)
 
 - **Fabric SQL database name:** use the **full `Initial Catalog`** value from the DB's connection

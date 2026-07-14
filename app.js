@@ -31,6 +31,8 @@ const S = {
   adminPeek: null, adminConfirmReveal: false,
   editingId: null, editVal: '',
   historyOpenId: null,
+  admGameEdit: null,     // { mode:'add'|'edit', id?, needsRef, openPlay } — game modal
+  admSlotEdit: null,     // { mode:'add'|'edit', gameId, slotId? } — slot modal
   busy: false,
 };
 
@@ -1550,26 +1552,146 @@ function admPeopleSection(ov) {
   </div>`;
 }
 
+// ── time helpers (admin slot editor) ──
+// Accepts '1:30 PM', '1:30pm', '13:30' → minutes since midnight, or null.
+function parseTimeLabel(str) {
+  const s = String(str || '').trim();
+  let m = s.match(/^(\d{1,2}):(\d{2})\s*([ap]m)$/i);
+  if (m) {
+    let h = parseInt(m[1], 10) % 12;
+    if (/pm/i.test(m[3])) h += 12;
+    const min = parseInt(m[2], 10);
+    if (h > 23 || min > 59) return null;
+    return h * 60 + min;
+  }
+  m = s.match(/^(\d{1,2}):(\d{2})$/);
+  if (m) {
+    const h = parseInt(m[1], 10), min = parseInt(m[2], 10);
+    if (h > 23 || min > 59) return null;
+    return h * 60 + min;
+  }
+  return null;
+}
+function minToLabel(min) {
+  const m = ((min % 1440) + 1440) % 1440;
+  let h = Math.floor(m / 60), mm = m % 60;
+  const ap = h >= 12 ? 'PM' : 'AM';
+  h = h % 12; if (h === 0) h = 12;
+  return `${h}:${String(mm).padStart(2, '0')} ${ap}`;
+}
+
 function admGamesSection(ov) {
-  const cards = (ov.gamesCatalog || []).map(g => `
-  <div style="background:#fff;border:1px solid #E0E6E5;border-left:3px solid #FF5F00;border-radius:10px;padding:14px 16px;display:flex;align-items:center;justify-content:space-between;gap:12px;">
-    <div style="min-width:0;">
-      <div style="display:flex;align-items:center;gap:8px;">
-        <span style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">${esc(g.runtimeLabel || '')}</span>
-        ${g.openPlay ? '<span style="font-size:9px;font-weight:800;color:#fff;background:#00253D;border-radius:4px;padding:2px 6px;">Walk-up</span>' : ''}
+  const games = ov.gamesCatalog || [];
+  const totalSlots = games.reduce((n, g) => n + (g.slots || []).length, 0);
+
+  const gameCard = (g) => {
+    const slots = (g.slots || []).slice().sort((a, b) => a.startMin - b.startMin);
+    const signed = slots.reduce((n, s) => n + (s.nBuffalo || 0) + (s.nRoadhouse || 0), 0);
+    const slotRows = slots.length ? slots.map(s => `
+      <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-top:1px solid #EEF2F1;">
+        <span style="width:74px;flex-shrink:0;font-family:'BN Kragen';font-size:14px;color:#00253D;">${esc(s.label)}</span>
+        <div style="flex:1;min-width:0;display:flex;gap:12px;">
+          <span style="font-size:12px;font-weight:700;color:#FF5F00;">Buffalo ${s.nBuffalo}/${s.capBuffalo}</span>
+          <span style="font-size:12px;font-weight:700;color:#E0322E;">TXRH ${s.nRoadhouse}/${s.capRoadhouse}</span>
+        </div>
+        <button data-act="admSlotEdit" data-game="${esc(g.id)}" data-slot="${s.id}" style="flex-shrink:0;font-size:11px;font-weight:700;color:#00253D;border:1px solid #DCE3E2;border-radius:6px;padding:6px 10px;">Edit</button>
+        <button data-act="admSlotDelete" data-slot="${s.id}" data-signed="${(s.nBuffalo || 0) + (s.nRoadhouse || 0)}" data-label="${esc(s.label)}" style="flex-shrink:0;width:28px;height:28px;border-radius:6px;border:1px solid #F0CDB3;color:#C77B23;font-size:15px;display:flex;align-items:center;justify-content:center;">×</button>
+      </div>`).join('') : `<div style="padding:11px 12px;border-top:1px solid #EEF2F1;font-size:12px;color:#9AA7A5;font-style:italic;">No time slots yet${g.openPlay ? ' — pure walk-up.' : '.'}</div>`;
+    return `
+    <div style="background:#fff;border:1px solid #E0E6E5;border-left:3px solid ${g.openPlay ? '#00253D' : '#FF5F00'};border-radius:10px;overflow:hidden;">
+      <div style="padding:13px 15px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
+        <div style="min-width:0;">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+            <span style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">${esc(g.runtimeLabel || 'No time set')}</span>
+            ${g.openPlay ? '<span style="font-size:9px;font-weight:800;color:#fff;background:#00253D;border-radius:4px;padding:2px 6px;">Walk-up</span>' : ''}
+            ${g.needsRef ? '<span style="font-size:9px;font-weight:800;color:#fff;background:#FF5F00;border-radius:4px;padding:2px 6px;">Ref</span>' : ''}
+          </div>
+          <div style="font-family:'BN Kragen';font-size:18px;color:#00253D;text-transform:uppercase;line-height:1;margin-top:5px;">${esc(g.name)}</div>
+          <div style="font-size:11.5px;color:#6D7C83;margin-top:5px;">${slots.length} slot${slots.length === 1 ? '' : 's'} · ${signed} signed up${g.venue ? ' · ' + esc(g.venue) : ''}</div>
+        </div>
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+          <button data-act="admGameEdit" data-id="${esc(g.id)}" style="font-size:11.5px;font-weight:700;color:#00253D;border:1px solid #DCE3E2;border-radius:6px;padding:7px 11px;">Edit</button>
+          <button data-act="admGameDelete" data-id="${esc(g.id)}" data-name="${esc(g.name)}" data-signed="${signed}" style="width:30px;height:30px;border-radius:6px;border:1px solid #F0CDB3;color:#C77B23;font-size:16px;display:flex;align-items:center;justify-content:center;">×</button>
+        </div>
       </div>
-      <div style="font-family:'BN Kragen';font-size:18px;color:#00253D;text-transform:uppercase;line-height:1;margin-top:5px;">${esc(g.name)}</div>
-      <div style="font-size:12px;color:#6D7C83;margin-top:6px;"><span style="color:${g.needsRef ? '#FF5F00' : '#9AA7A5'};font-weight:700;">${g.needsRef ? 'Ref needed' : 'No ref'}</span>${g.venue ? ' · ' + esc(g.venue) : ''}</div>
-    </div>
-  </div>`).join('');
+      ${slotRows}
+      <button data-act="admSlotNew" data-game="${esc(g.id)}" style="width:100%;padding:9px;border-top:1px solid #EEF2F1;font-size:12px;font-weight:700;color:#FF5F00;background:#FCFBF7;">+ Add time slot</button>
+    </div>`;
+  };
+
   return `
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;gap:12px;flex-wrap:wrap;">
     <div>
-      <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Games</h3>
-      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">The full lineup — ${(ov.gamesCatalog || []).length} games seeded from the run of play.</p>
+      <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Games &amp; slots</h3>
+      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">${games.length} games · ${totalSlots} slots. Edit times or caps freely — sign-ups are preserved. Deleting a slot or game only drops that item's sign-ups.</p>
     </div>
+    <button data-act="admGameNew" style="background:#FF5F00;color:#011220;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;flex-shrink:0;">+ Add game</button>
   </div>
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${cards}</div>`;
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start;">${games.map(gameCard).join('')}</div>`;
+}
+
+// ── admin game/slot modals ──
+function admModalShell(title, inner, saveAct, cancelAct) {
+  return `
+  <div data-act="${cancelAct}" style="position:fixed;inset:0;background:rgba(1,18,31,0.55);z-index:1400;display:flex;align-items:center;justify-content:center;padding:20px;">
+    <div data-act="admNoop" style="background:#fff;border-radius:14px;width:100%;max-width:420px;overflow:hidden;box-shadow:0 30px 70px rgba(0,0,0,0.4);">
+      <div style="padding:16px 18px;border-bottom:1px solid #EEF2F1;display:flex;align-items:center;justify-content:space-between;">
+        <span style="font-family:'BN Kragen';font-size:19px;color:#00253D;text-transform:uppercase;">${esc(title)}</span>
+        <button data-act="${cancelAct}" style="width:28px;height:28px;border-radius:7px;background:#EEF2F1;color:#46545B;font-size:15px;">×</button>
+      </div>
+      <div style="padding:18px;">${inner}</div>
+      <div style="padding:14px 18px;border-top:1px solid #EEF2F1;display:flex;gap:10px;justify-content:flex-end;">
+        <button data-act="${cancelAct}" style="font-size:13px;font-weight:700;color:#46545B;padding:11px 16px;border-radius:8px;border:1px solid #DCE3E2;">Cancel</button>
+        <button data-act="${saveAct}" style="background:#FF5F00;color:#011220;font-weight:800;font-size:13px;padding:11px 20px;border-radius:8px;">Save</button>
+      </div>
+    </div>
+  </div>`;
+}
+function admFieldLabel(t) {
+  return `<div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#6D7C83;margin-bottom:6px;">${t}</div>`;
+}
+function admTextInput(id, field, val, ph) {
+  return `<input id="${id}" data-field="${field}" value="${esc(val)}" placeholder="${esc(ph || '')}" style="width:100%;font-size:14px;color:#00253D;border:1px solid #DCE3E2;border-radius:8px;padding:11px 12px;font-family:'Montserrat';outline:none;"/>`;
+}
+function admToggle(label, on, act) {
+  return `<button data-act="${act}" style="display:flex;align-items:center;gap:9px;font-size:13px;font-weight:600;color:#00253D;">
+    <span style="width:40px;height:23px;border-radius:12px;background:${on ? '#FF5F00' : '#D6DEDC'};position:relative;transition:background .15s;flex-shrink:0;"><span style="position:absolute;top:2px;left:${on ? '19px' : '2px'};width:19px;height:19px;border-radius:50%;background:#fff;transition:left .15s;box-shadow:0 1px 3px rgba(0,0,0,0.2);"></span></span>${label}</button>`;
+}
+function admGamesModals() {
+  let html = '';
+  const ge = S.admGameEdit;
+  if (ge) {
+    const inner = `
+      ${admFieldLabel('Game name')}
+      ${admTextInput('gm-name', 'gmName', S.f.gmName || '', 'e.g. Tug of War')}
+      <div style="height:14px;"></div>
+      ${admFieldLabel('Time window (label only)')}
+      ${admTextInput('gm-time', 'gmTime', S.f.gmTime || '', 'e.g. 2:00 PM – 2:30 PM')}
+      <div style="height:14px;"></div>
+      ${admFieldLabel('Venue (optional)')}
+      ${admTextInput('gm-venue', 'gmVenue', S.f.gmVenue || '', 'e.g. The Lawn')}
+      <div style="height:16px;"></div>
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        ${admToggle('Needs a referee', ge.needsRef, 'admGameFlagRef')}
+        ${admToggle('Walk-up game (open after its window)', ge.openPlay, 'admGameFlagWalk')}
+      </div>`;
+    html += admModalShell(ge.mode === 'add' ? 'Add game' : 'Edit game', inner, 'admGameSave', 'admGameCancel');
+  }
+  const se = S.admSlotEdit;
+  if (se) {
+    const inner = `
+      ${admFieldLabel('Time')}
+      ${admTextInput('sl-time', 'slTime', S.f.slTime || '', 'e.g. 1:30 PM')}
+      <div style="font-size:11px;color:#9AA7A5;margin-top:5px;">Type it like “1:30 PM”. This sets both the label and the sort order.</div>
+      <div style="height:14px;"></div>
+      <div style="display:flex;gap:12px;">
+        <div style="flex:1;">${admFieldLabel('Buffalo cap')}${admTextInput('sl-cb', 'slCapB', S.f.slCapB || '', '0')}</div>
+        <div style="flex:1;">${admFieldLabel('TXRH cap')}${admTextInput('sl-cr', 'slCapR', S.f.slCapR || '', '0')}</div>
+      </div>
+      <div style="font-size:11px;color:#9AA7A5;margin-top:8px;">0 for a tribe means that tribe isn't in this slot.</div>`;
+    html += admModalShell(se.mode === 'add' ? 'Add time slot' : 'Edit time slot', inner, 'admSlotSave', 'admSlotCancel');
+  }
+  return html;
 }
 
 function admScheduleSection(ov) {
@@ -2120,7 +2242,8 @@ function render() {
     <div style="height:100vh;height:100dvh;display:flex;flex-direction:column;">
       ${deskNav()}
       ${adminScreen()}
-    </div>`;
+    </div>
+    ${admGamesModals()}`;
   } else if (S.isDesk && S.route !== 'game' && (S.route === 'games')) {
     html = `
     <div style="height:100vh;height:100dvh;display:flex;flex-direction:column;">
@@ -2428,6 +2551,86 @@ const ACTIONS = {
     await loadOverview(true);
   }),
   admSchedView: (el) => { S.schedView = el.dataset.view; render(); },
+
+  // ── games & slots editor ──
+  admNoop: () => {},
+  admGameNew: () => { S.admGameEdit = { mode: 'add', needsRef: false, openPlay: false }; S.f.gmName = ''; S.f.gmTime = ''; S.f.gmVenue = ''; render(); },
+  admGameEdit: (el) => {
+    const g = (S.overview.gamesCatalog || []).find(x => x.id === el.dataset.id);
+    if (!g) return;
+    S.admGameEdit = { mode: 'edit', id: g.id, needsRef: !!g.needsRef, openPlay: !!g.openPlay };
+    S.f.gmName = g.name; S.f.gmTime = g.runtimeLabel || ''; S.f.gmVenue = g.venue || '';
+    render();
+  },
+  admGameFlagRef: () => { if (S.admGameEdit) { S.admGameEdit.needsRef = !S.admGameEdit.needsRef; render(); } },
+  admGameFlagWalk: () => { if (S.admGameEdit) { S.admGameEdit.openPlay = !S.admGameEdit.openPlay; render(); } },
+  admGameCancel: () => { S.admGameEdit = null; render(); },
+  admGameSave: () => guarded(async () => {
+    const ge = S.admGameEdit; if (!ge) return;
+    const name = (S.f.gmName || '').trim();
+    if (!name) { toast('Give the game a name'); return; }
+    const body = {
+      name, timeLabel: (S.f.gmTime || '').trim(), venue: (S.f.gmVenue || '').trim(),
+      needsRef: !!ge.needsRef, openPlay: !!ge.openPlay,
+    };
+    if (ge.mode === 'add') body.action = 'addGame';
+    else { body.action = 'updateGame'; body.gameId = ge.id; }
+    await api('/ac/games', { method: 'POST', body });
+    S.admGameEdit = null;
+    await loadOverview(true);
+    toast(ge.mode === 'add' ? 'Game added' : 'Game updated');
+  }),
+  admGameDelete: (el) => {
+    const signed = parseInt(el.dataset.signed, 10) || 0;
+    const msg = signed > 0
+      ? `Delete “${el.dataset.name}”? ${signed} sign-up${signed === 1 ? '' : 's'} will be removed.`
+      : `Delete “${el.dataset.name}”?`;
+    if (!window.confirm(msg)) return;
+    guarded(async () => {
+      await api('/ac/games', { method: 'POST', body: { action: 'removeGame', gameId: el.dataset.id } });
+      await loadOverview(true);
+      toast('Game deleted');
+    });
+  },
+  admSlotNew: (el) => { S.admSlotEdit = { mode: 'add', gameId: el.dataset.game }; S.f.slTime = ''; S.f.slCapB = '1'; S.f.slCapR = '1'; render(); },
+  admSlotEdit: (el) => {
+    const g = (S.overview.gamesCatalog || []).find(x => x.id === el.dataset.game);
+    const s = g && (g.slots || []).find(z => String(z.id) === el.dataset.slot);
+    if (!s) return;
+    S.admSlotEdit = { mode: 'edit', gameId: el.dataset.game, slotId: s.id };
+    S.f.slTime = s.label; S.f.slCapB = String(s.capBuffalo); S.f.slCapR = String(s.capRoadhouse);
+    render();
+  },
+  admSlotCancel: () => { S.admSlotEdit = null; render(); },
+  admSlotSave: () => guarded(async () => {
+    const se = S.admSlotEdit; if (!se) return;
+    const startMin = parseTimeLabel(S.f.slTime || '');
+    if (startMin === null) { toast('Enter a time like 1:30 PM'); return; }
+    const body = {
+      startMin, label: minToLabel(startMin),
+      capBuffalo: Math.max(0, parseInt(S.f.slCapB, 10) || 0),
+      capRoadhouse: Math.max(0, parseInt(S.f.slCapR, 10) || 0),
+    };
+    if (se.mode === 'add') { body.action = 'addSlot'; body.gameId = se.gameId; }
+    else { body.action = 'updateSlot'; body.slotId = se.slotId; }
+    await api('/ac/games', { method: 'POST', body });
+    S.admSlotEdit = null;
+    await loadOverview(true);
+    toast(se.mode === 'add' ? 'Slot added' : 'Slot updated');
+  }),
+  admSlotDelete: (el) => {
+    const signed = parseInt(el.dataset.signed, 10) || 0;
+    const msg = signed > 0
+      ? `Delete the ${el.dataset.label} slot? ${signed} sign-up${signed === 1 ? '' : 's'} will be removed.`
+      : `Delete the ${el.dataset.label} slot?`;
+    if (!window.confirm(msg)) return;
+    guarded(async () => {
+      await api('/ac/games', { method: 'POST', body: { action: 'removeSlot', slotId: parseInt(el.dataset.slot, 10) } });
+      await loadOverview(true);
+      toast('Slot deleted');
+    });
+  },
+
   admDipReveal: () => guarded(async () => {
     const cur = !!(S.overview && S.overview.dip && S.overview.dip.revealed);
     await api('/ac/settings', { method: 'POST', body: { dipRevealed: !cur } });

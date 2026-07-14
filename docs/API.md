@@ -68,13 +68,18 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 |---|---|
 | `GET /api/admin/overview` | See shape below. |
 | `POST /api/admin/settings` | Any of `{eventMode:'signup'|'gameday', refJoinCode:'…', scoresRevealed:true, dipRevealed:true|false}`. `scoresRevealed:true` is one-way (can't unreveal). Returns `{settings}`. |
-| `POST /api/admin/people` | `{userId, action:'toggleAdmin'|'toggleRef'|'addGame'|'removeGame', gameId?}`. addGame/removeGame manage that user's `bo_signups` rows (admin override: ignores caps/limits/mode). Returns `{ok:true}`. |
+| `POST /api/admin/people` | `{userId, action:'toggleAdmin'|'toggleRef'|'addGame'|'removeGame'|'removeUser', gameId?}`. addGame/removeGame manage that user's `bo_signups` rows (admin override: ignores caps/limits/mode). `removeUser` deletes the user + their sign-ups/dip/relay/ref-assignment (keeps logged `bo_results` history) — used for clearing test/bogus accounts. Returns `{ok:true}`. |
 | `PATCH /api/admin/results/{id}` | `{pts}` — updates row pts (recompute team contribution toward the winner side), pushes previous value into `bo_result_history`, sets `edited_by`. Returns `{ok:true}`. |
 | `DELETE /api/admin/dip/{entryId}` | Remove a dip entry (+ its votes). `{ok:true}` |
 | `POST /api/admin/relay-legs` | `{legId, name?, capDelta?}` (cap min 1). `{ok:true}` |
 | `POST /api/admin/announcements` | `{title, body}` → `{ok:true}` |
 | `POST /api/admin/schedule` | `{action:'add'}` (appends "New Block" 5:00 PM), `{action:'remove', id}`, `{action:'move', id, dir:-1|1}`, `{action:'update', id, timeLabel?, ampm?, title?, place?, kind?}`. `{ok:true}` |
 | `POST /api/admin/ref-assign` | `{gameId, userId}` (userId null/'' = unassign). `{ok:true}` |
+| `POST /api/ac/games` | Games + slots CRUD, **safe mid-event** (edits never touch sign-ups; deletes drop only that item's sign-ups). Actions:<br>`{action:'addGame', name, timeLabel?, venue?, needsRef?, openPlay?}` → `{ok, id}` (id derived from name).<br>`{action:'updateGame', gameId, name?, timeLabel?, venue?, needsRef?, openPlay?}`.<br>`{action:'removeGame', gameId}` (deletes its slots + sign-ups + ref assignment).<br>`{action:'addSlot', gameId, startMin, label, capBuffalo, capRoadhouse}`.<br>`{action:'updateSlot', slotId, startMin?, label?, capBuffalo?, capRoadhouse?}` (slot id is stable, so sign-ups survive an edit).<br>`{action:'removeSlot', slotId}` (drops that slot's sign-ups). Returns `{ok:true}`. `ac-overview.gamesCatalog[].slots[]` carries `{id,startMin,label,capBuffalo,capRoadhouse,nBuffalo,nRoadhouse}` for the editor. |
+
+**Note on real routes:** the admin functions live under the **`ac`** prefix (`/api/ac-overview`, `/api/ac/{action}`) because Azure Functions reserves `admin`. The `/api/admin/*` paths above are the logical contract names; the client calls the `ac` forms.
+
+**Server caching (Fabric load):** the shared half of the bootstrap payload (games, slots, rosters, tribes, schedule, dip, relay, scores, announcements — 12 queries) is cached in-process for ~20s (`api/lib/cache.js`). Only the 2 per-user queries run every call. Mutations pass `{fresh:true}` or call `bustSharedBootstrap()` so the writer sees their change immediately and others pick it up on the next 60s poll.
 
 ## `GET /api/bootstrap` response shape
 

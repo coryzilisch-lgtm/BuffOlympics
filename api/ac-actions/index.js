@@ -1,7 +1,7 @@
 const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
 const { json, requireUser, requireAdmin } = require('../lib/auth');
-const { getSettings, upsertSetting } = require('../lib/bootstrap');
+const { getSettings, upsertSetting, bustSharedBootstrap } = require('../lib/bootstrap');
 
 // ── POST /api/admin/settings ───────────────────────────────────────────────
 async function handleSettings(pool, body) {
@@ -49,6 +49,19 @@ async function handlePeople(pool, body) {
     return json({ ok: true });
   }
 
+  if (action === 'removeUser') {
+    // Delete a user and their event participation (sign-ups, dip, relay, ref
+    // assignment). Leaves logged score history (bo_results) intact. Handy for
+    // clearing out test/bogus accounts — e.g. after a concurrency load test.
+    await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_signups WHERE user_id = @id');
+    await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_dip_votes WHERE user_id = @id');
+    await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_dip_entries WHERE user_id = @id');
+    await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_relay_signups WHERE user_id = @id');
+    await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_ref_assignments WHERE user_id = @id');
+    await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_users WHERE id = @id');
+    return json({ ok: true });
+  }
+
   if (action === 'addGame' || action === 'removeGame') {
     const gameId = String(body.gameId || '').trim();
     if (!gameId) return json({ error: 'gameId is required' }, 400);
@@ -79,7 +92,7 @@ async function handlePeople(pool, body) {
     return json({ ok: true });
   }
 
-  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, or removeGame' }, 400);
+  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, removeGame, or removeUser' }, 400);
 }
 
 // ── POST /api/admin/relay-legs ─────────────────────────────────────────────
@@ -219,6 +232,144 @@ async function handleRefAssign(pool, body) {
   return json({ ok: true });
 }
 
+// ── POST /api/ac/games ─────────────────────────────────────────────────────
+// Games + slots CRUD. Designed to be SAFE to run mid-event: editing or adding
+// never touches bo_signups, and removing a slot/game deletes only that thing's
+// sign-ups (slot IDs are IDENTITY and stable, so an UPDATE keeps everyone in).
+function slugify(s) {
+  return String(s || '').toLowerCase().trim()
+    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 20) || 'game';
+}
+function toInt(v, dflt) {
+  const n = parseInt(v, 10);
+  return Number.isInteger(n) ? n : dflt;
+}
+
+async function handleGames(pool, body) {
+  const action = body.action;
+
+  // ── games ──
+  if (action === 'addGame') {
+    const name = String(body.name || '').trim();
+    if (!name) return json({ error: 'Game name is required' }, 400);
+    // Derive a unique id from the name (append -2, -3, … on collision).
+    const base = slugify(name);
+    const existR = await pool.request().query('SELECT id FROM bo_games');
+    const taken = new Set(existR.recordset.map(r => r.id));
+    let id = base, n = 2;
+    while (taken.has(id)) id = `${base}-${n++}`.slice(0, 20);
+    const sortR = await pool.request().query('SELECT ISNULL(MAX(sort), 0) + 1 AS next FROM bo_games');
+    await pool.request()
+      .input('id', sql.NVarChar, id)
+      .input('name', sql.NVarChar, name)
+      .input('time_label', sql.NVarChar, String(body.timeLabel || '').trim() || null)
+      .input('needs_ref', sql.Bit, body.needsRef ? 1 : 0)
+      .input('venue', sql.NVarChar, String(body.venue || '').trim() || null)
+      .input('open_play', sql.Bit, body.openPlay ? 1 : 0)
+      .input('sort', sql.Int, sortR.recordset[0].next)
+      .query(`
+        INSERT INTO bo_games (id, name, block, cap, players, time_label, points_label,
+                              needs_ref, venue, descr, inventory, video_url, open_play, sort)
+        VALUES (@id, @name, NULL, 0, NULL, @time_label, NULL,
+                @needs_ref, @venue, NULL, NULL, NULL, @open_play, @sort)`);
+    return json({ ok: true, id });
+  }
+
+  if (action === 'updateGame') {
+    const gameId = String(body.gameId || '').trim();
+    if (!gameId) return json({ error: 'gameId is required' }, 400);
+    const map = { name: 'name', timeLabel: 'time_label', venue: 'venue' };
+    const sets = [];
+    const req = pool.request().input('gid', sql.NVarChar, gameId);
+    for (const [k, col] of Object.entries(map)) {
+      if (body[k] !== undefined) {
+        const v = String(body[k]).trim();
+        if (col === 'name' && !v) return json({ error: 'Game name cannot be empty' }, 400);
+        sets.push(`${col} = @${col}`);
+        req.input(col, sql.NVarChar, v || null);
+      }
+    }
+    if (body.needsRef !== undefined) { sets.push('needs_ref = @needs_ref'); req.input('needs_ref', sql.Bit, body.needsRef ? 1 : 0); }
+    if (body.openPlay !== undefined) { sets.push('open_play = @open_play'); req.input('open_play', sql.Bit, body.openPlay ? 1 : 0); }
+    if (!sets.length) return json({ error: 'Nothing to update' }, 400);
+    const r = await req.query(`UPDATE bo_games SET ${sets.join(', ')} WHERE id = @gid`);
+    if (!r.rowsAffected[0]) return json({ error: 'Game not found' }, 404);
+    return json({ ok: true });
+  }
+
+  if (action === 'removeGame') {
+    const gameId = String(body.gameId || '').trim();
+    if (!gameId) return json({ error: 'gameId is required' }, 400);
+    // Only this game's sign-ups are affected.
+    await pool.request().input('gid', sql.NVarChar, gameId)
+      .query('DELETE FROM bo_signups WHERE slot_id IN (SELECT id FROM bo_game_slots WHERE game_id = @gid)');
+    await pool.request().input('gid', sql.NVarChar, gameId)
+      .query('DELETE FROM bo_game_slots WHERE game_id = @gid');
+    await pool.request().input('gid', sql.NVarChar, gameId)
+      .query('DELETE FROM bo_ref_assignments WHERE game_id = @gid');
+    await pool.request().input('gid', sql.NVarChar, gameId)
+      .query('DELETE FROM bo_games WHERE id = @gid');
+    return json({ ok: true });
+  }
+
+  // ── slots ──
+  if (action === 'addSlot') {
+    const gameId = String(body.gameId || '').trim();
+    if (!gameId) return json({ error: 'gameId is required' }, 400);
+    const gR = await pool.request().input('gid', sql.NVarChar, gameId)
+      .query('SELECT id FROM bo_games WHERE id = @gid');
+    if (!gR.recordset.length) return json({ error: 'Game not found' }, 404);
+    const startMin = toInt(body.startMin, null);
+    const label = String(body.label || '').trim();
+    if (startMin === null) return json({ error: 'startMin is required' }, 400);
+    if (!label) return json({ error: 'A time label is required' }, 400);
+    const sortR = await pool.request().input('gid', sql.NVarChar, gameId)
+      .query('SELECT ISNULL(MAX(sort), -1) + 1 AS next FROM bo_game_slots WHERE game_id = @gid');
+    await pool.request()
+      .input('gid', sql.NVarChar, gameId)
+      .input('start_min', sql.Int, startMin)
+      .input('label', sql.NVarChar, label)
+      .input('cb', sql.Int, Math.max(0, toInt(body.capBuffalo, 0)))
+      .input('cr', sql.Int, Math.max(0, toInt(body.capRoadhouse, 0)))
+      .input('sort', sql.Int, sortR.recordset[0].next)
+      .query(`
+        INSERT INTO bo_game_slots (game_id, start_min, label, cap_buffalo, cap_roadhouse, sort)
+        VALUES (@gid, @start_min, @label, @cb, @cr, @sort)`);
+    return json({ ok: true });
+  }
+
+  if (action === 'updateSlot') {
+    const slotId = toInt(body.slotId, null);
+    if (slotId === null) return json({ error: 'slotId is required' }, 400);
+    const sets = [];
+    const req = pool.request().input('sid', sql.Int, slotId);
+    if (body.startMin !== undefined) { sets.push('start_min = @start_min'); req.input('start_min', sql.Int, toInt(body.startMin, 0)); }
+    if (body.label !== undefined) {
+      const label = String(body.label).trim();
+      if (!label) return json({ error: 'A time label is required' }, 400);
+      sets.push('label = @label'); req.input('label', sql.NVarChar, label);
+    }
+    if (body.capBuffalo !== undefined) { sets.push('cap_buffalo = @cb'); req.input('cb', sql.Int, Math.max(0, toInt(body.capBuffalo, 0))); }
+    if (body.capRoadhouse !== undefined) { sets.push('cap_roadhouse = @cr'); req.input('cr', sql.Int, Math.max(0, toInt(body.capRoadhouse, 0))); }
+    if (!sets.length) return json({ error: 'Nothing to update' }, 400);
+    const r = await req.query(`UPDATE bo_game_slots SET ${sets.join(', ')} WHERE id = @sid`);
+    if (!r.rowsAffected[0]) return json({ error: 'Slot not found' }, 404);
+    return json({ ok: true });
+  }
+
+  if (action === 'removeSlot') {
+    const slotId = toInt(body.slotId, null);
+    if (slotId === null) return json({ error: 'slotId is required' }, 400);
+    await pool.request().input('sid', sql.Int, slotId)
+      .query('DELETE FROM bo_signups WHERE slot_id = @sid');
+    await pool.request().input('sid', sql.Int, slotId)
+      .query('DELETE FROM bo_game_slots WHERE id = @sid');
+    return json({ ok: true });
+  }
+
+  return json({ error: 'action must be addGame, updateGame, removeGame, addSlot, updateSlot, or removeSlot' }, 400);
+}
+
 app.http('ac-actions', {
   methods: ['POST'],
   authLevel: 'anonymous',
@@ -233,13 +384,20 @@ app.http('ac-actions', {
       const body = await request.json().catch(() => ({}));
       const pool = await getPool();
 
-      if (action === 'settings') return await handleSettings(pool, body);
-      if (action === 'people') return await handlePeople(pool, body);
-      if (action === 'relay-legs') return await handleRelayLegs(pool, body);
-      if (action === 'announcements') return await handleAnnouncements(pool, body);
-      if (action === 'schedule') return await handleSchedule(pool, body);
-      if (action === 'ref-assign') return await handleRefAssign(pool, body);
-      return json({ error: 'Unknown admin action' }, 404);
+      let resp;
+      if (action === 'settings') resp = await handleSettings(pool, body);
+      else if (action === 'people') resp = await handlePeople(pool, body);
+      else if (action === 'relay-legs') resp = await handleRelayLegs(pool, body);
+      else if (action === 'announcements') resp = await handleAnnouncements(pool, body);
+      else if (action === 'schedule') resp = await handleSchedule(pool, body);
+      else if (action === 'ref-assign') resp = await handleRefAssign(pool, body);
+      else if (action === 'games') resp = await handleGames(pool, body);
+      else return json({ error: 'Unknown admin action' }, 404);
+
+      // Every admin write can change the shared bootstrap block — drop the
+      // cached copy so players pick up the change on their next poll.
+      bustSharedBootstrap();
+      return resp;
     } catch (err) {
       context.error('admin-actions error:', err);
       return json({ error: 'Internal server error' }, 500);

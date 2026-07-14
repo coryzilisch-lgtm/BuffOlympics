@@ -1,5 +1,17 @@
 const { sql } = require('./db');
 const { formatName, userToJson } = require('./auth');
+const cache = require('./cache');
+
+// The shared (identical-for-everyone) half of the bootstrap payload is cached
+// per host instance for a few seconds so a game-day crowd doesn't re-run the
+// same dozen queries against the small Fabric F2 capacity. Writes pass
+// { fresh:true } (or call bustSharedBootstrap) so the mutator sees their change
+// immediately and every other player picks it up on their next poll.
+const SHARED_KEY = 'bootstrap:shared';
+// Players poll every 60s and writers bypass the cache (fresh:true), so a ~20s
+// TTL is invisible to any single user while cutting crowd DB refills to ~3/min.
+const SHARED_TTL_MS = 20000;
+function bustSharedBootstrap() { cache.bust(SHARED_KEY); }
 
 // Per-tribe sign-up cap (relay + dip are separate). Texas Roadhouse brings
 // more people, so each Roadie takes fewer slots to spread them around.
@@ -54,14 +66,15 @@ function stationType(g) {
 // Used by GET /api/bootstrap AND returned (wrapped as { bootstrap }) by every
 // mutation endpoint per the contract.
 
-async function buildBootstrap(pool, user) {
-  const uid = user.id;
-  const myTeam = user.team === 'roadhouse' ? 'roadhouse' : (user.team === 'buffalo' ? 'buffalo' : null);
-  const myName = formatName(user.first_name, user.last_name, user.username);
-
+// The 12 queries whose results are identical for every player — cached.
+async function loadSharedBootstrap(pool, fresh) {
+  if (!fresh) {
+    const cached = cache.get(SHARED_KEY);
+    if (cached) return cached;
+  }
   const [
-    settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR, myVoteR,
-    legsR, relayR, annR, myResultsR, scoresR, refAssignR,
+    settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
+    legsR, relayR, annR, scoresR, refAssignR,
   ] = await Promise.all([
     pool.request().query('SELECT [key], [value] FROM bo_settings'),
     pool.request().query(`
@@ -79,17 +92,38 @@ async function buildBootstrap(pool, user) {
       SELECT d.id, d.user_id, d.team, d.created_at, u.first_name, u.last_name, u.username
       FROM bo_dip_entries d JOIN bo_users u ON u.id = d.user_id
       ORDER BY d.created_at, d.id`),
-    pool.request().input('uid', sql.Int, uid)
-      .query('SELECT dip_entry_id FROM bo_dip_votes WHERE user_id = @uid'),
     pool.request().query('SELECT id, name, cap, descr FROM bo_relay_legs ORDER BY sort, id'),
     pool.request().query(`
       SELECT r.leg_id, r.user_id, u.team, u.first_name, u.last_name, u.username
       FROM bo_relay_signups r JOIN bo_users u ON u.id = r.user_id`),
     pool.request().query('SELECT TOP 20 id, title, body, created_at FROM bo_announcements ORDER BY created_at DESC, id DESC'),
-    pool.request().input('pname', sql.NVarChar, myName)
-      .query('SELECT game_name, detail, pts FROM bo_results WHERE player_name = @pname ORDER BY created_at DESC, id DESC'),
     pool.request().query('SELECT ISNULL(SUM(pts_buffalo), 0) AS buffalo, ISNULL(SUM(pts_roadhouse), 0) AS roadhouse FROM bo_results'),
     pool.request().query('SELECT game_id, user_id FROM bo_ref_assignments'),
+  ]);
+  const shared = {
+    settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
+    legsR, relayR, annR, scoresR, refAssignR,
+  };
+  cache.set(SHARED_KEY, shared, SHARED_TTL_MS);
+  return shared;
+}
+
+async function buildBootstrap(pool, user, opts = {}) {
+  const uid = user.id;
+  const myTeam = user.team === 'roadhouse' ? 'roadhouse' : (user.team === 'buffalo' ? 'buffalo' : null);
+  const myName = formatName(user.first_name, user.last_name, user.username);
+
+  // Shared block (cached); the two per-user queries always run live.
+  const shared = await loadSharedBootstrap(pool, opts.fresh);
+  const {
+    settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
+    legsR, relayR, annR, scoresR, refAssignR,
+  } = shared;
+  const [myVoteR, myResultsR] = await Promise.all([
+    pool.request().input('uid', sql.Int, uid)
+      .query('SELECT dip_entry_id FROM bo_dip_votes WHERE user_id = @uid'),
+    pool.request().input('pname', sql.NVarChar, myName)
+      .query('SELECT game_name, detail, pts FROM bo_results WHERE player_name = @pname ORDER BY created_at DESC, id DESC'),
   ]);
 
   const settings = settingsFromRows(settingsR.recordset);
@@ -273,6 +307,6 @@ async function buildBootstrap(pool, user) {
 }
 
 module.exports = {
-  buildBootstrap, getSettings, upsertSetting, settingsFromRows, stationType,
-  slotsOverlap, signupMaxFor, SIGNUP_MAX_BUFFALO, SIGNUP_MAX_ROADHOUSE, SLOT_MINUTES,
+  buildBootstrap, bustSharedBootstrap, getSettings, upsertSetting, settingsFromRows,
+  stationType, slotsOverlap, signupMaxFor, SIGNUP_MAX_BUFFALO, SIGNUP_MAX_ROADHOUSE, SLOT_MINUTES,
 };
