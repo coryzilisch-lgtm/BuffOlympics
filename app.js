@@ -847,6 +847,7 @@ function gamesScreen() {
           <span style="font-size:11.5px;color:${T.A};font-weight:700;">${esc(g.runtimeLabel || '')}</span>
           ${g.venue ? `<span style="font-size:11.5px;color:${th.sub};">${esc(g.venue)}</span>` : ''}
           ${gm.hasSlots ? `<span style="font-size:11.5px;color:${th.sub};">${g.slots.length} slots</span>` : ''}
+          ${BRACKETS[g.id] ? `<span style="font-size:10px;font-weight:800;letter-spacing:0.03em;text-transform:uppercase;color:#F5C518;border:1px solid rgba(245,197,24,0.5);border-radius:5px;padding:2px 6px;">🏆 Bracket</span>` : ''}
         </div>
       </div>
       <div style="flex-shrink:0;">${status}</div>
@@ -926,6 +927,69 @@ function slotRowHtml(g, slot) {
   </div>`;
 }
 
+// Bracket games run tribe-vs-tribe qualifiers, then each tribe's winner meets
+// in a cross-tribe championship. This config drives the "Bracket path" panel so
+// anyone who signs up can see the later round times in case they keep winning.
+// Times are fixed per the event plan — edit here to adjust.
+const BRACKETS = {
+  cornhole: {
+    intro: 'Cornhole is bracket play — you keep facing your own tribe until the title game. If you win, here\'s where you head next:',
+    rounds: [
+      { time: '1:30 – 2:00 PM', name: 'Qualifiers', detail: 'Buffalo vs Buffalo · Texas Roadhouse vs Texas Roadhouse', team: 'both' },
+      { time: '2:30 PM', name: 'Semifinals', detail: 'Still within your own tribe', team: 'both' },
+      { time: '3:00 PM', name: 'Championship', detail: 'Buffalo winner vs Texas Roadhouse winner', team: 'final' },
+    ],
+  },
+  'ping-pong': {
+    intro: 'Ping Pong is bracket play — each tribe runs its own bracket, then the two winners meet for the title:',
+    rounds: [
+      { time: '1:30 – 2:30 PM', name: 'Qualifiers', detail: 'Buffalo vs Buffalo · Texas Roadhouse vs Texas Roadhouse', team: 'both' },
+      { time: '2:50 PM', name: 'Texas Roadhouse Semifinals', detail: 'Texas Roadhouse bracket', team: 'roadhouse' },
+      { time: '3:10 PM', name: 'Buffalo Semifinals', detail: 'Buffalo bracket', team: 'buffalo' },
+      { time: '3:30 PM', name: 'Championship', detail: 'Buffalo winner vs Texas Roadhouse winner', team: 'final' },
+    ],
+  },
+};
+function bracketPanel(g) {
+  const T = theme();
+  const th = T.th;
+  const br = BRACKETS[g.id];
+  if (!br) return '';
+  const accentFor = (team) => team === 'final' ? '#F5C518'
+    : team === 'buffalo' ? '#FF5F00'
+    : team === 'roadhouse' ? '#E0322E'
+    : T.A;
+  const rounds = br.rounds.map((r, i) => {
+    const last = i === br.rounds.length - 1;
+    const accent = accentFor(r.team);
+    return `
+    <div style="display:flex;gap:12px;">
+      <div style="width:84px;flex-shrink:0;text-align:right;padding-top:12px;">
+        <div style="font-family:'BN Kragen';font-size:13.5px;color:${accent};line-height:1.1;">${esc(r.time)}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:center;flex-shrink:0;">
+        <span style="width:12px;height:12px;border-radius:50%;background:${accent};margin-top:14px;"></span>
+        ${last ? '' : '<span style="flex:1;width:2px;background:rgba(255,255,255,0.12);"></span>'}
+      </div>
+      <div style="flex:1;padding:8px 0 ${last ? '0' : '16px'};">
+        <div style="background:rgba(255,255,255,0.04);border:1px solid ${r.team === 'final' ? accent : th.line};border-radius:9px;padding:11px 13px;">
+          <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;">
+            <span style="font-family:'BN Kragen';font-size:15px;color:${th.text};text-transform:uppercase;line-height:1;">${esc(r.name)}</span>
+            ${r.team === 'final' ? '<span style="font-size:13px;">🏆</span>' : ''}
+          </div>
+          <div style="font-size:11.5px;color:${th.sub};margin-top:4px;line-height:1.45;">${esc(r.detail)}</div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+  return `
+  <div style="padding:20px 18px 0;">
+    <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:8px;">🏆 Bracket path</div>
+    <div style="font-size:11.5px;color:${th.sub};line-height:1.5;margin-bottom:14px;">${esc(br.intro)}</div>
+    ${rounds}
+  </div>`;
+}
+
 function gameDetailScreen() {
   const T = theme();
   const th = T.th;
@@ -968,9 +1032,10 @@ function gameDetailScreen() {
       </div>
     </div>
     <div style="padding:14px 18px 0;">
-      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:10px;">${g.openPlay ? 'Sign-up slots · then walk-up' : 'Time slots'}</div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:10px;">${g.openPlay ? 'Sign-up slots' : 'Time slots'}</div>
       <div style="display:flex;flex-direction:column;gap:9px;">${slots}</div>
     </div>
+    ${bracketPanel(g)}
     ${g.needsRef ? `<div style="padding:16px 18px 0;"><div style="display:flex;align-items:center;gap:10px;background:${th.dim};border:1px solid ${T.A};border-radius:9px;padding:13px 15px;">${shieldSvg(T.A)}<span style="font-size:13.5px;font-weight:700;color:${th.text};">SUP ref required at this station</span></div></div>` : ''}
   </div>`;
 }
@@ -1461,7 +1526,10 @@ function deskGamesScreen() {
           <div style="font-size:15.5px;font-weight:800;color:#00253D;line-height:1.2;">${esc(g.name)}</div>
           <div style="font-size:12px;color:#6D7C83;margin-top:3px;">${esc(g.runtimeLabel || '')}${g.venue ? ' · ' + esc(g.venue) : ''}${gm.hasSlots ? ' · ' + g.slots.length + ' slots' : ''}</div>
         </div>
-        ${g.needsRef ? `<span style="flex-shrink:0;font-size:9.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:${dA};border:1px solid ${dA};border-radius:5px;padding:2px 7px;">Ref</span>` : ''}
+        <div style="display:flex;gap:6px;flex-shrink:0;">
+          ${BRACKETS[g.id] ? `<span style="font-size:9.5px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:#8A5A12;background:#FCEFDD;border:1px solid #F0D9BB;border-radius:5px;padding:2px 7px;">🏆 Bracket</span>` : ''}
+          ${g.needsRef ? `<span style="font-size:9.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:${dA};border:1px solid ${dA};border-radius:5px;padding:2px 7px;">Ref</span>` : ''}
+        </div>
       </div>
       <div style="margin-top:13px;">${status}</div>
     </button>`;
