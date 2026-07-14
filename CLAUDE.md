@@ -172,10 +172,14 @@ on stable ids (sign-ups preserved); removing drops only that item's sign-ups.
 ## Full admin action list (`POST /api/ac/{action}`, admin-only)
 
 `settings` (eventMode/refJoinCode/scoresRevealed[one-way]/dipRevealed) · `people`
-(toggleAdmin/toggleRef/addGame/removeGame/**removeUser**) · `relay-legs` · `announcements` ·
+(toggleAdmin/toggleRef/addGame/removeGame/**resetPassword**/**removeUser**) · `relay-legs` · `announcements` ·
 `schedule` (add/remove/move/update) · `ref-assign` · `games` (see above). Every `ac` action busts the
 shared bootstrap cache. `removeUser` deletes a user + their sign-ups/dip/relay/ref-assignment (keeps
-`bo_results`) — for clearing test/bogus accounts.
+`bo_results`) — for clearing test/bogus accounts. `resetPassword` sets a new `password_hash` (admin-
+driven reset — no email infra, so the admin sets it and tells the person). The Admin Center → People
+tab surfaces each account's shirt size + which Buff Olympics it is for them, has a 🔑 reset-password
+and 🗑 delete button per person, and a **Songs** tab lists every song request with a CSV export for
+the DJ.
 
 ---
 
