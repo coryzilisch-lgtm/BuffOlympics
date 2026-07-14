@@ -1,5 +1,5 @@
 /* Buff Olympics service worker — precache the app shell, network-first for API. */
-const CACHE = 'buffolympics-v4';
+const CACHE = 'buffolympics-v5';
 const SHELL = [
   '/',
   '/index.html',
