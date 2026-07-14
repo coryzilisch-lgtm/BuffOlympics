@@ -125,6 +125,26 @@ slots** lets you add/edit/remove games and time slots from the browser. Editing 
 an `UPDATE` on a stable slot ID, so **everyone stays signed up**; deleting a slot or game only drops
 that item's sign-ups. It's the safe path once people have started signing up.
 
+### Concurrency is safe — and you can prove it
+
+Slot capacity is enforced **atomically in the database**: the sign-up insert runs in a transaction
+that takes an `UPDLOCK`/`HOLDLOCK` on the slot's `bo_game_slots` row, so simultaneous joins to the
+same slot serialize and re-check capacity under the lock — no overselling, even across separate SWA
+Function instances. Different slots never block each other. A player who loses the race for the last
+seat gets a clean *"that slot just filled up"* 409.
+
+To verify against the live deployment, run the included load test — it creates a throwaway game with
+one capped slot, fires N simultaneous joins at it, asserts exactly `CAP` land, then deletes the test
+game and every test player it created (leaves no residue):
+
+```
+BASE_URL="https://<your-swa-host>" ADMIN_EMAIL="you@company.com" ADMIN_PASSWORD="…" \
+  node scripts/concurrency-loadtest.js          # optional: N=20 CAP=3
+```
+
+Run it while **Event mode = Sign-Up** (it aborts on Game Day, when sign-ups are locked). Cleanup uses
+the admin `removeUser` action, which is also handy for clearing out any bogus account.
+
 ### Keeping Fabric load down
 
 The event runs on the small **shared F2** Fabric capacity, so the read-heavy `GET /api/bootstrap`

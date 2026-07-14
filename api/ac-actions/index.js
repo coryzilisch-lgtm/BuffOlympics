@@ -49,6 +49,19 @@ async function handlePeople(pool, body) {
     return json({ ok: true });
   }
 
+  if (action === 'removeUser') {
+    // Delete a user and their event participation (sign-ups, dip, relay, ref
+    // assignment). Leaves logged score history (bo_results) intact. Handy for
+    // clearing out test/bogus accounts — e.g. after a concurrency load test.
+    await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_signups WHERE user_id = @id');
+    await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_dip_votes WHERE user_id = @id');
+    await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_dip_entries WHERE user_id = @id');
+    await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_relay_signups WHERE user_id = @id');
+    await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_ref_assignments WHERE user_id = @id');
+    await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_users WHERE id = @id');
+    return json({ ok: true });
+  }
+
   if (action === 'addGame' || action === 'removeGame') {
     const gameId = String(body.gameId || '').trim();
     if (!gameId) return json({ error: 'gameId is required' }, 400);
@@ -79,7 +92,7 @@ async function handlePeople(pool, body) {
     return json({ ok: true });
   }
 
-  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, or removeGame' }, 400);
+  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, removeGame, or removeUser' }, 400);
 }
 
 // ── POST /api/admin/relay-legs ─────────────────────────────────────────────

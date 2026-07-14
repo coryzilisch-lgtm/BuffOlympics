@@ -68,7 +68,7 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 |---|---|
 | `GET /api/admin/overview` | See shape below. |
 | `POST /api/admin/settings` | Any of `{eventMode:'signup'|'gameday', refJoinCode:'…', scoresRevealed:true, dipRevealed:true|false}`. `scoresRevealed:true` is one-way (can't unreveal). Returns `{settings}`. |
-| `POST /api/admin/people` | `{userId, action:'toggleAdmin'|'toggleRef'|'addGame'|'removeGame', gameId?}`. addGame/removeGame manage that user's `bo_signups` rows (admin override: ignores caps/limits/mode). Returns `{ok:true}`. |
+| `POST /api/admin/people` | `{userId, action:'toggleAdmin'|'toggleRef'|'addGame'|'removeGame'|'removeUser', gameId?}`. addGame/removeGame manage that user's `bo_signups` rows (admin override: ignores caps/limits/mode). `removeUser` deletes the user + their sign-ups/dip/relay/ref-assignment (keeps logged `bo_results` history) — used for clearing test/bogus accounts. Returns `{ok:true}`. |
 | `PATCH /api/admin/results/{id}` | `{pts}` — updates row pts (recompute team contribution toward the winner side), pushes previous value into `bo_result_history`, sets `edited_by`. Returns `{ok:true}`. |
 | `DELETE /api/admin/dip/{entryId}` | Remove a dip entry (+ its votes). `{ok:true}` |
 | `POST /api/admin/relay-legs` | `{legId, name?, capDelta?}` (cap min 1). `{ok:true}` |
