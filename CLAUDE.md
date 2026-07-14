@@ -45,7 +45,8 @@ api/                       — Azure Functions v4 (Node 20, app.http model, mssq
   dip/, dip-vote/          — Dip Off enter/leave + vote
   relay/                   — relay leg join/leave
   scores/                  — GET /api/scores (sealed unless revealed; ?peek=1 for admin)
-  results/                 — POST /api/results (ref logs vs/solo/walk)
+  results/                 — POST /api/results (ref logs winner/vs/solo/walk)
+  ref-claim/               — POST /api/ref-claim (ref self-assigns/releases a game)
   ac-overview/             — GET /api/ac-overview (admin dashboard payload; includes game slots)
   ac-actions/              — POST /api/ac/{action} (admin mutations; see list below)
   ac-results/, ac-dip/     — PATCH result / DELETE dip entry (admin)

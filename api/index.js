@@ -12,6 +12,7 @@ require('./dip-vote/index');
 require('./relay/index');
 require('./scores/index');
 require('./results/index');
+require('./ref-claim/index');
 require('./ac-overview/index');
 require('./ac-actions/index');
 require('./ac-results/index');
