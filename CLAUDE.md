@@ -17,8 +17,8 @@ Because TXRH teammates are outside the Buffalo Entra tenant, the app uses its **
 accounts** (PBKDF2 + HMAC session tokens) — **not** Entra SSO. Refs create accounts with a **join
 code** the admin controls.
 
-**Deployment branch:** `claude/zip-app-azure-deploy-91df1l` (feature branch; squash-merge PRs to
-`main`). GitHub repo: `coryzilisch-lgtm/BuffOlympics`.
+**Workflow:** work on a per-task feature branch → open a draft PR → **squash-merge to `main`** (that's
+what deploys). GitHub repo: `coryzilisch-lgtm/BuffOlympics`.
 
 ---
 
@@ -89,7 +89,9 @@ Single IIFE, vanilla JS, hash routing (`#/home`, `#/games`, `#/game/{id}`, `#/ad
 - Mobile-first; PWA installable.
 
 Key UI areas: player games list/detail (`gamesScreen`, `gameDetailScreen`, `slotRowHtml`), ref board
-(`refBoardScreen`), Admin Center (`adminScreen` + `adm*Section` + `admGamesModals`).
+(`refBoardScreen`) + ref self-assign tab (`refGamesScreen`), Admin Center (`adminScreen` +
+`adm*Section` incl. `admIdolsSection`/`admSongsSection` + `admGamesModals`). Bracket games render a
+"Bracket path" panel from the frontend `BRACKETS` config (keyed by game id — Cornhole, Ping Pong).
 
 ---
 
@@ -170,7 +172,10 @@ carries `slots[]` with live `nBuffalo`/`nRoadhouse` signed counts.
 
 Backend: **`POST /api/ac/games`** (in `ac-actions/index.js`, `handleGames`):
 `addGame` / `updateGame` / `removeGame` / `addSlot` / `updateSlot` / `removeSlot`. Editing = `UPDATE`
-on stable ids (sign-ups preserved); removing drops only that item's sign-ups.
+on stable ids (sign-ups preserved); removing drops only that item's sign-ups. The game editor also
+sets **"Points for a win"** (`bo_games.win_points`, migration 004) — the points a ref's winner pick
+awards to the winning tribe — and **"Needs a referee"** (defaults ON; migration 005 set `needs_ref=1`
+on every existing game).
 
 ---
 
@@ -186,6 +191,33 @@ driven reset — no email infra, so the admin sets it and tells the person). The
 tab surfaces each account's shirt size + which Buff Olympics it is for them, has a 🔑 reset-password
 and 🗑 delete button per person, and a **Songs** tab lists every song request with a CSV export for
 the DJ.
+
+---
+
+## Referee experience (`refBoardScreen`, `refGamesScreen`, `ref-claim/`, `results/`)
+
+Refs have **no tribe**, so they skip the pick-your-tribe gate (`render()` guards the gate with
+`!isRefUser()`). Their world:
+
+- **Home (`refBoardScreen`) = only the games they're assigned to.** Walk-up games are NOT auto-shown
+  to every ref anymore — they're assigned like any other game (bootstrap `refStations` filters to
+  `assignments[g.id] === uid`). Each station carries its `slots[]` (per-tribe rosters).
+- **Games tab (`refGamesScreen`) = self-assign.** Every game with its assignment status + an "I'll ref
+  it"/"Release" button → `POST /api/ref-claim {gameId, claim}` (`bo_ref_assignments` is one-ref-per-
+  game, so claiming takes it over — lets refs move coverage without an admin). Powered by
+  `payload.refGames`.
+- **Scoring: click a game → pick the timeslot → log it.** Games run out of order, so the ref selects
+  which slot they're scoring (`S.refSlot[gameId]`), sees that slot's players, and logs via
+  `POST /api/results`:
+  - **Head-to-head / bracket** → **winner-picker** (`type:'winner'`, `{winnerTeam, winnerName,
+    scores}`). Points come from the game's `win_points` (server-authoritative). Bracket games
+    (in `BRACKETS`) get a **round toggle**: "Bracket round" = within-tribe, logs advancement with
+    `scores:false` (no points); "Championship" = cross-tribe, `scores:true` (awards points). So **only
+    the cross-tribe championship scores**.
+  - **Walk-up** → the ref **types any number** per player (`type:'solo'`), plus a walk-on search to
+    score anyone not on the slot list (`type:'walk'`). No fixed value — whatever they earned.
+
+Admin still assigns refs in **Admin → Referees** (`ref-assign`); both paths write `bo_ref_assignments`.
 
 ---
 
@@ -210,19 +242,23 @@ header. `api/lib/auth.js`: `requireUser` (verifies token → user row), `require
 1. **Sign-Up phase** (default): players create accounts, pick a tribe, claim slots (Buffalo 4 / TXRH
    2), join Dip Off (5 cooks/tribe), claim one relay leg.
 2. Admin flips **Event mode → Game Day**: sign-ups lock, dip **voting** opens (one vote each).
-3. Refs log results all day (assign refs to games in Admin → Referees). Totals stay sealed; admin can
-   **peek** privately.
+3. Refs log results all day: assign refs in Admin → Referees (or refs self-assign from their Games
+   tab), then each ref taps their game → picks the timeslot → logs the winner (head-to-head/bracket)
+   or types scores (walk-up). Totals stay sealed; admin can **peek** privately. Idol clues release on
+   their times / get marked found in Admin → Idols.
 4. Closing: Admin → Scores → **Reveal** (one-way), Admin → Dip Off → **Reveal winner**.
 
 ---
 
 ## Database tables (`bo_*`, Fabric SQL)
 
-`bo_users` (id, first/last, username, email, pw_hash, team, is_ref, is_admin, …) ·
-`bo_games` (id NVARCHAR PK, name, time_label, needs_ref, venue, **open_play**, sort, + legacy cols) ·
-`bo_game_slots` (id IDENTITY, game_id, start_min, label, cap_buffalo, cap_roadhouse, sort) ·
-`bo_signups` (user_id, slot_id) PK · `bo_schedule` · `bo_relay_legs` / `bo_relay_signups` ·
-`bo_dip_entries` / `bo_dip_votes` · `bo_results` / `bo_result_history` · `bo_ref_assignments` ·
+`bo_users` (id, first/last, username, email, pw_hash, team, is_ref, is_admin, shirt_size, years,
+song_request, …) · `bo_games` (id NVARCHAR PK, name, time_label, needs_ref, venue, **open_play**,
+**win_points** [004], sort, + legacy cols) · `bo_game_slots` (id IDENTITY, game_id, start_min, label,
+cap_buffalo, cap_roadhouse, sort) · `bo_signups` (user_id, slot_id) PK ·
+`bo_schedule` (…, **end_label/end_ampm** [006]) · `bo_relay_legs` / `bo_relay_signups` ·
+`bo_dip_entries` / `bo_dip_votes` · `bo_results` / `bo_result_history` · `bo_ref_assignments`
+(game_id PK — one ref per game) · `bo_idols` (title, clue, release_min, found, sort — 003) ·
 `bo_announcements` · `bo_settings` (key/value: event_mode, ref_join_code, scores_revealed,
 dip_revealed).
 
@@ -238,7 +274,10 @@ SWA app settings: `FABRIC_SQL_SERVER`, `FABRIC_SQL_DATABASE`, `AZURE_TENANT_ID` 
 `AZURE_CLIENT_SECRET` (SP; Secret **Value** not ID), `SESSION_SECRET`, `ADMIN_EMAILS`.
 
 Migrations run **by hand** in the Fabric portal SQL editor: `001_init.sql` then `002_slots.sql`
-(002 resets sign-ups — pre-event only).
+(002 resets sign-ups — pre-event only), then `003`–`006` (idols / win_points / default-ref /
+schedule-end; each idempotent, run once). Backend reads the 003–006 columns/tables **defensively**
+(try/catch → default), so the app still boots if a migration hasn't been run yet — the feature just
+stays dormant until it is.
 
 ---
 
@@ -267,23 +306,41 @@ Migrations run **by hand** in the Fabric portal SQL editor: `001_init.sql` then 
 
 ## Verifying changes (no live Fabric in the dev sandbox)
 
-There's a Playwright stub harness for the SPA under a scratchpad (`fe-test/serve2.js` + `test2.js`):
-it fakes the API and drives the real `app.js` in headless Chromium (`/opt/pw-browsers/chromium`) to
-catch runtime/console errors across the signup, walk-up, ref, and admin-editor flows. The stub can't
-reproduce DB concurrency — that's what `scripts/concurrency-loadtest.js` is for (run against a real
-deploy). Always `node --check` edited JS files.
+Build a Playwright stub harness in the scratchpad: a tiny static+stub-API server (`serve.js`) that
+fakes `/api/bootstrap` + `/api/ac-overview` (and route-intercepts `/api/*` for ref/results payloads)
+and drives the real `app.js` in headless Chromium. Use the **headless_shell** binary
+(`/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell` — the plain `chromium`
+old-headless build is removed) via `playwright-core`; seed `localStorage.bo_token` to boot straight
+into an authed session. Assert on rendered text/`data-act` buttons and captured POST bodies; note
+`innerText` returns CSS-uppercased text (match case-insensitively). The stub can't reproduce DB
+concurrency — that's what `scripts/concurrency-loadtest.js` is for (run against a real deploy). Always
+`node --check` edited JS files.
 
 ---
 
 ## Current status (July 2026)
 
-Live on Azure, deploy pipeline green. Done this session and on the deploy branch (not yet merged to
-`main` at time of writing — **merge to deploy**): walk-up sign-up slots + per-tribe caps (4/2) +
-What's-Lurking time shift; Admin Center Games & slots editor; shared-bootstrap cache; **atomic
-concurrency guard**; `removeUser` admin action; concurrency load-test script.
+Live on Azure, deploy pipeline green. Foundation (earlier): walk-up sign-up slots + per-tribe caps
+(4/2); Games & slots editor; shared-bootstrap cache; **atomic concurrency guard**; concurrency
+load-test.
 
-**Before real sign-ups:** re-run `002_slots.sql` once in the Fabric portal (picks up walk-up slots +
-the time shift). After that, edit the lineup only via the admin editor — never re-run 002.
+Shipped since (all merged to `main`):
+- **Admin Center:** People shows shirt size + which Buff Olympics (per person); 🔑 reset-password +
+  🗑 delete-player; **Songs** tab w/ CSV export; **Idols** tab (create clues, set release times, mark
+  found — hidden by default); **Schedule** editor (per-block start/end times) + live Timeline built
+  from real games/slots; fixed the scroll-jumping-to-top bug.
+- **Team colours:** Buffalo navy/orange, TXRH red/yellow everywhere (shared `teamPill`); "Captains"
+  removed.
+- **Player app:** games search (mobile + desktop); removed the confusing "then walk-up"; game-day
+  "earn more points" walk-up prompt; **Bracket path** panels (Cornhole/Ping Pong); Schedule weaves the
+  player's own games into the shared blocks.
+- **Referees:** winner-picker scoring w/ admin-set per-game `win_points`; refs default ON; walk-up
+  scored by typing any number; **ref experience rework** — Home shows only assigned games, self-assign
+  from the Games tab (`ref-claim`), score by picking the timeslot (games run out of order), refs skip
+  the team gate.
 
-Open ideas / not built: edit/delete company schedule entries polish, email/notifications, richer
-mobile polish. Nothing blocking.
+DB migrations **003–006 have been run** in Fabric (idols / win_points / default-ref / schedule-end).
+Edit the game lineup only via the admin editor — never re-run 002 (it wipes sign-ups).
+
+Open ideas / not built: overlap indicator on the games list (grey out games that clash with an
+existing pick — scoped but not built); email/notifications; richer mobile polish. Nothing blocking.
