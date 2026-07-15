@@ -60,6 +60,10 @@ infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
   004_win_points.sql       — bo_games.win_points (per-game points a ref's winner pick awards)
   005_default_ref.sql      — one-time: set needs_ref=1 on every game (refs are the default)
   006_schedule_end.sql     — bo_schedule.end_label/end_ampm (optional start/end range on blocks)
+  007_game_details.sql     — populates bo_games.descr/inventory/players/points_label (+ some
+                             win_points/needs_ref) from the Minute to Win It rules doc
+  008_widen_game_text.sql  — widens points_label/players to NVARCHAR(200) (007 truncated on 8
+                             games at the old NVARCHAR(50)) + re-applies those 8 points_labels
 scripts/
   concurrency-loadtest.js  — proves the atomic slot guard against a live deploy (Node 18+, no deps)
 .github/workflows/azure-static-web-apps.yml  — deploy on push to main
@@ -274,10 +278,10 @@ SWA app settings: `FABRIC_SQL_SERVER`, `FABRIC_SQL_DATABASE`, `AZURE_TENANT_ID` 
 `AZURE_CLIENT_SECRET` (SP; Secret **Value** not ID), `SESSION_SECRET`, `ADMIN_EMAILS`.
 
 Migrations run **by hand** in the Fabric portal SQL editor: `001_init.sql` then `002_slots.sql`
-(002 resets sign-ups — pre-event only), then `003`–`006` (idols / win_points / default-ref /
-schedule-end; each idempotent, run once). Backend reads the 003–006 columns/tables **defensively**
-(try/catch → default), so the app still boots if a migration hasn't been run yet — the feature just
-stays dormant until it is.
+(002 resets sign-ups — pre-event only), then `003`–`008` (idols / win_points / default-ref /
+schedule-end / game details / widen game text; each idempotent, run once). Backend reads the
+003–006 columns/tables **defensively** (try/catch → default), so the app still boots if a
+migration hasn't been run yet — the feature just stays dormant until it is.
 
 ---
 
@@ -339,8 +343,9 @@ Shipped since (all merged to `main`):
   from the Games tab (`ref-claim`), score by picking the timeslot (games run out of order), refs skip
   the team gate.
 
-DB migrations **003–006 have been run** in Fabric (idols / win_points / default-ref / schedule-end).
-Edit the game lineup only via the admin editor — never re-run 002 (it wipes sign-ups).
+DB migrations **003–008 have been run** in Fabric (idols / win_points / default-ref / schedule-end /
+game details / widen game text). Edit the game lineup only via the admin editor — never re-run 002
+(it wipes sign-ups).
 
 Open ideas / not built: overlap indicator on the games list (grey out games that clash with an
 existing pick — scoped but not built); email/notifications; richer mobile polish. Nothing blocking.
