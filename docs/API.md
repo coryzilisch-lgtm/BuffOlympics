@@ -90,13 +90,16 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
   "user": { …user object… },
   "settings": { "eventMode": "signup", "scoresRevealed": false, "dipRevealed": false },
   "serverTime": "2026-08-14T15:04:05Z",
+  // `descr`/`inventory`/`players`/`pointsLabel` come straight from bo_games (migration 007
+  // populates them from the rules doc) — empty string when not set.
   "games": [
-    { "id":"corn", "name":"Cornhole", "block":"b130", "cap":2, "players":"2 per tribe",
-      "timeLabel":"1:30 – 2:00 PM", "pointsLabel":"Qual 11 / Final 21", "needsRef":true,
-      "venue":"The Lawn", "desc":"…", "inventory":"Cornhole boards & bags", "videoUrl":null,
-      "openPlay":false,
-      "roster": { "buffalo":["Reggie H."], "roadhouse":["Kate V."] },   // display names
-      "mine": false }
+    { "id":"cornhole", "name":"Cornhole", "needsRef":true, "venue":"Main Lawn",
+      "openPlay":false, "runtimeLabel":"1:30 PM – 2:00 PM",
+      "descr":"Players alternate throws; feet may not go past the front edge of the board. …",
+      "inventory":"Cornhole boards and bags", "players":"4 teams of 2",
+      "pointsLabel":"1 point on the board, 3 in the hole — qualifying to 11, championship to 21 (tiebreak to 25)",
+      "slots": [ {"id":1,"startMin":810,"label":"1:30 PM","capBuffalo":2,"capRoadhouse":2,"nBuffalo":0,"nRoadhouse":0,"mine":false} ],
+      "mySlotId": null, "mine": false }
   ],
   "blocks": [ {"id":"b130","label":"1:30 PM Rotation","time":"1:30 – 2:00 PM","slot":[810,840],"place":"Courts · Lawn · Cafe"}, … ],
   "mySignups": [ {"gameId":"corn","game":"Cornhole","slotLabel":"1:30 – 2:00 PM"} ],

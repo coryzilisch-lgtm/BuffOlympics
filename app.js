@@ -1013,7 +1013,21 @@ function gameDetailScreen() {
       ${g.venue ? `<div style="display:flex;align-items:center;gap:8px;margin-top:12px;">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M12 2C8 2 5 5 5 9c0 5 7 13 7 13s7-8 7-13c0-4-3-7-7-7z" stroke="${T.A}" stroke-width="2"/><circle cx="12" cy="9" r="2.4" fill="${T.A}"/></svg>
         <span style="font-size:13px;color:#C7D3DB;font-weight:600;">${esc(g.venue)}</span></div>` : ''}
+      ${g.players || g.pointsLabel ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;">
+        ${g.players ? `<span style="font-size:11px;font-weight:700;background:rgba(255,255,255,0.1);color:#C7D3DB;padding:5px 10px;border-radius:20px;">${esc(g.players)}</span>` : ''}
+        ${g.pointsLabel ? `<span style="font-size:11px;font-weight:700;background:rgba(255,95,0,0.16);color:${T.A2};padding:5px 10px;border-radius:20px;">${esc(g.pointsLabel)}</span>` : ''}
+      </div>` : ''}
     </div>`;
+
+  const detailsPanel = (g.descr || g.inventory) ? `
+    <div style="padding:14px 18px 0;">
+      <div style="background:${th.dim};border:1px solid ${th.line};border-radius:10px;padding:14px 15px;">
+        ${g.descr ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:6px;">How to play</div>
+        <div style="font-size:13px;color:${th.text};line-height:1.55;">${esc(g.descr)}</div>` : ''}
+        ${g.inventory ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin:${g.descr ? '12px' : '0'} 0 6px;">What you need</div>
+        <div style="font-size:12.5px;color:${th.sub};line-height:1.5;">${esc(g.inventory)}</div>` : ''}
+      </div>
+    </div>` : '';
 
   const hasSlots = (g.slots || []).length > 0;
 
@@ -1026,6 +1040,7 @@ function gameDetailScreen() {
           <div style="font-size:13px;color:${th.sub};margin-top:8px;line-height:1.5;">No sign-up needed — just head over during the games and play. Your ref will score you on the spot.</div>
         </div>
       </div>
+      ${detailsPanel}
     </div>`;
   }
 
@@ -1044,6 +1059,7 @@ function gameDetailScreen() {
       <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:10px;">${g.openPlay ? 'Sign-up slots' : 'Time slots'}</div>
       <div style="display:flex;flex-direction:column;gap:9px;">${slots}</div>
     </div>
+    ${detailsPanel}
     ${bracketPanel(g)}
     ${g.needsRef ? `<div style="padding:16px 18px 0;"><div style="display:flex;align-items:center;gap:10px;background:${th.dim};border:1px solid ${T.A};border-radius:9px;padding:13px 15px;">${shieldSvg(T.A)}<span style="font-size:13.5px;font-weight:700;color:${th.text};">SUP ref required at this station</span></div></div>` : ''}
   </div>`;
