@@ -79,7 +79,7 @@ async function loadSharedBootstrap(pool, fresh) {
     pool.request().query('SELECT [key], [value] FROM bo_settings'),
     pool.request().query(`
       SELECT id, name, needs_ref, venue, open_play, time_label,
-             descr, inventory, players, points_label
+             descr, inventory, players, points_label, video_url
       FROM bo_games ORDER BY sort, id`),
     pool.request().query(`
       SELECT id, game_id, start_min, label, cap_buffalo, cap_roadhouse
@@ -215,10 +215,11 @@ async function buildBootstrap(pool, user, opts = {}) {
     venue: g.venue,
     openPlay: !!g.open_play,
     runtimeLabel: g.time_label || '',
-    descr: g.descr || '',
-    inventory: g.inventory || '',
     players: g.players || '',
     pointsLabel: g.points_label || '',
+    descr: g.descr || '',
+    inventory: g.inventory || '',
+    videoUrl: g.video_url || '',
     slots: slotsByGame[g.id] || [],
     mySlotId: (slotsByGame[g.id] || []).find(s => s.mine)?.id ?? null,
     mine: (slotsByGame[g.id] || []).some(s => s.mine),

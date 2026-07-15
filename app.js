@@ -1013,34 +1013,28 @@ function gameDetailScreen() {
       ${g.venue ? `<div style="display:flex;align-items:center;gap:8px;margin-top:12px;">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M12 2C8 2 5 5 5 9c0 5 7 13 7 13s7-8 7-13c0-4-3-7-7-7z" stroke="${T.A}" stroke-width="2"/><circle cx="12" cy="9" r="2.4" fill="${T.A}"/></svg>
         <span style="font-size:13px;color:#C7D3DB;font-weight:600;">${esc(g.venue)}</span></div>` : ''}
-      ${g.players || g.pointsLabel ? `<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;">
-        ${g.players ? `<span style="font-size:11px;font-weight:700;background:rgba(255,255,255,0.1);color:#C7D3DB;padding:5px 10px;border-radius:20px;">${esc(g.players)}</span>` : ''}
-        ${g.pointsLabel ? `<span style="font-size:11px;font-weight:700;background:rgba(255,95,0,0.16);color:${T.A2};padding:5px 10px;border-radius:20px;">${esc(g.pointsLabel)}</span>` : ''}
-      </div>` : ''}
     </div>`;
-
-  const detailsPanel = (g.descr || g.inventory) ? `
-    <div style="padding:14px 18px 0;">
-      <div style="background:${th.dim};border:1px solid ${th.line};border-radius:10px;padding:14px 15px;">
-        ${g.descr ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:6px;">How to play</div>
-        <div style="font-size:13px;color:${th.text};line-height:1.55;">${esc(g.descr)}</div>` : ''}
-        ${g.inventory ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin:${g.descr ? '12px' : '0'} 0 6px;">What you need</div>
-        <div style="font-size:12.5px;color:${th.sub};line-height:1.5;">${esc(g.inventory)}</div>` : ''}
-      </div>
-    </div>` : '';
 
   const hasSlots = (g.slots || []).length > 0;
 
+  // Info block shown at the TOP of every game detail: players pill + points
+  // pill, then "How to play", then the "See how it's played" video (if set).
+  const playersPill = g.players ? `<span style="display:inline-block;font-size:12.5px;font-weight:600;color:${th.text};background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:9px;padding:8px 13px;">${esc(g.players)}</span>` : '';
+  const pointsPill = g.pointsLabel ? `<span style="display:inline-block;font-size:12.5px;font-weight:800;color:${T.A};background:rgba(255,95,0,0.12);border:1px solid rgba(255,95,0,0.4);border-radius:9px;padding:8px 13px;">${esc(g.pointsLabel)}</span>` : '';
+  const pills = (playersPill || pointsPill) ? `<div style="padding:14px 18px 0;display:flex;flex-wrap:wrap;gap:8px;">${playersPill}${pointsPill}</div>` : '';
+  const howTo = g.descr ? `<div style="padding:16px 18px 0;"><div style="background:rgba(255,95,0,0.07);border:1px solid ${th.line};border-radius:10px;padding:14px 15px;"><div style="font-size:11px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:${T.A};margin-bottom:7px;">How to play</div><div style="font-size:13.5px;color:${th.text};line-height:1.55;white-space:pre-line;">${esc(g.descr)}</div></div></div>` : '';
+  const video = g.videoUrl ? `<div style="padding:14px 18px 0;"><button data-act="openVideo" data-id="${esc(g.id)}" style="width:100%;display:flex;align-items:center;justify-content:center;gap:10px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:10px;padding:13px;color:${th.text};font-weight:800;font-size:13.5px;"><span style="width:30px;height:30px;border-radius:50%;background:${T.A};display:flex;align-items:center;justify-content:center;flex-shrink:0;"><svg width="13" height="13" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="${T.on}"/></svg></span>See how it's played</button></div>` : '';
+  const info = pills + howTo + video;
+
   // Pure walk-up game (no slots at all) — no sign-up, just show up.
   if (g.openPlay && !hasSlots) {
-    return `<div style="padding:0 0 28px;">${header}
+    return `<div style="padding:0 0 28px;">${header}${info}
       <div style="padding:18px;">
         <div style="text-align:center;background:${T.dim};border:1px dashed ${T.A};border-radius:12px;padding:22px 18px;">
           <div style="font-family:'BN Kragen';font-size:22px;color:${th.text};text-transform:uppercase;">Walk up anytime</div>
           <div style="font-size:13px;color:${th.sub};margin-top:8px;line-height:1.5;">No sign-up needed — just head over during the games and play. Your ref will score you on the spot.</div>
         </div>
       </div>
-      ${detailsPanel}
     </div>`;
   }
 
@@ -1049,6 +1043,7 @@ function gameDetailScreen() {
     ? `Grab a time slot to lock your run for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong> — or just walk up during the window. After the window closes it's open walk-up for everyone. Walk-up slots may overlap another game you're in; that's OK, just leave yourself time to finish.`
     : `Reserve a time slot below for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong>. You can arrive anytime during the game's window — after it, it's open walk-up. Up to ${signupMax()} game slots, and no overlapping times.`;
   return `<div style="padding:0 0 28px;">${header}
+    ${info}
     <div style="padding:16px 18px 0;">
       <div style="display:flex;align-items:flex-start;gap:10px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:10px;padding:12px 14px;">
         ${clipSvg(T.A, 18)}
@@ -1059,7 +1054,6 @@ function gameDetailScreen() {
       <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};margin-bottom:10px;">${g.openPlay ? 'Sign-up slots' : 'Time slots'}</div>
       <div style="display:flex;flex-direction:column;gap:9px;">${slots}</div>
     </div>
-    ${detailsPanel}
     ${bracketPanel(g)}
     ${g.needsRef ? `<div style="padding:16px 18px 0;"><div style="display:flex;align-items:center;gap:10px;background:${th.dim};border:1px solid ${T.A};border-radius:9px;padding:13px 15px;">${shieldSvg(T.A)}<span style="font-size:13.5px;font-weight:700;color:${th.text};">SUP ref required at this station</span></div></div>` : ''}
   </div>`;
@@ -1933,9 +1927,23 @@ function admGamesModals() {
       ${admFieldLabel('Venue (optional)')}
       ${admTextInput('gm-venue', 'gmVenue', S.f.gmVenue || '', 'e.g. The Lawn')}
       <div style="height:14px;"></div>
+      ${admFieldLabel('Players pill (shown on the game)')}
+      ${admTextInput('gm-players', 'gmPlayers', S.f.gmPlayers || '', 'e.g. 1 player from each team per heat, 6 total')}
+      <div style="font-size:11px;color:#9AA7A5;margin-top:5px;">Free text — make the count match the sign-up slots.</div>
+      <div style="height:14px;"></div>
+      ${admFieldLabel('Points pill (shown on the game)')}
+      ${admTextInput('gm-ptslabel', 'gmPointsLabel', S.f.gmPointsLabel || '', 'e.g. 10 points to first across the line')}
+      <div style="height:14px;"></div>
       ${admFieldLabel('Points for a win')}
       ${admTextInput('gm-points', 'gmPoints', S.f.gmPoints || '', 'e.g. 10')}
-      <div style="font-size:11px;color:#9AA7A5;margin-top:5px;">Awarded to the winning tribe when a ref logs a head-to-head or championship winner.</div>
+      <div style="font-size:11px;color:#9AA7A5;margin-top:5px;">The number awarded to the winning tribe when a ref logs a head-to-head / championship winner.</div>
+      <div style="height:14px;"></div>
+      ${admFieldLabel('How to play')}
+      <textarea id="gm-descr" data-field="gmDescr" placeholder="Explain how the game is played…" style="width:100%;min-height:84px;font-size:14px;color:#00253D;border:1px solid #DCE3E2;border-radius:8px;padding:11px 12px;font-family:'Montserrat';outline:none;resize:vertical;">${esc(S.f.gmDescr || '')}</textarea>
+      <div style="height:14px;"></div>
+      ${admFieldLabel('Video link — “See how it’s played” (optional)')}
+      ${admTextInput('gm-video', 'gmVideo', S.f.gmVideo || '', 'YouTube URL')}
+      <div style="font-size:11px;color:#9AA7A5;margin-top:5px;">Paste a YouTube link; a “See how it's played” button shows on the game.</div>
       <div style="height:16px;"></div>
       <div style="display:flex;flex-direction:column;gap:12px;">
         ${admToggle('Needs a referee', ge.needsRef, 'admGameFlagRef')}
@@ -3064,13 +3072,20 @@ const ACTIONS = {
 
   // ── games & slots editor ──
   admNoop: () => {},
-  admGameNew: () => { S.admGameEdit = { mode: 'add', needsRef: true, openPlay: false }; S.f.gmName = ''; S.f.gmTime = ''; S.f.gmVenue = ''; S.f.gmPoints = '10'; render(); },
+  admGameNew: () => {
+    S.admGameEdit = { mode: 'add', needsRef: true, openPlay: false };
+    S.f.gmName = ''; S.f.gmTime = ''; S.f.gmVenue = ''; S.f.gmPoints = '10';
+    S.f.gmPlayers = ''; S.f.gmPointsLabel = ''; S.f.gmDescr = ''; S.f.gmVideo = '';
+    render();
+  },
   admGameEdit: (el) => {
     const g = (S.overview.gamesCatalog || []).find(x => x.id === el.dataset.id);
     if (!g) return;
     S.admGameEdit = { mode: 'edit', id: g.id, needsRef: !!g.needsRef, openPlay: !!g.openPlay };
     S.f.gmName = g.name; S.f.gmTime = g.runtimeLabel || ''; S.f.gmVenue = g.venue || '';
     S.f.gmPoints = String(g.winPoints != null ? g.winPoints : 10);
+    S.f.gmPlayers = g.players || ''; S.f.gmPointsLabel = g.pointsLabel || '';
+    S.f.gmDescr = g.descr || ''; S.f.gmVideo = g.videoUrl || '';
     render();
   },
   admGameFlagRef: () => { if (S.admGameEdit) { S.admGameEdit.needsRef = !S.admGameEdit.needsRef; render(); } },
@@ -3081,21 +3096,27 @@ const ACTIONS = {
     const name = (S.f.gmName || '').trim();
     if (!name) { toast('Give the game a name'); return; }
     const wp = Math.max(0, parseInt(S.f.gmPoints, 10) || 0);
+    const details = {
+      winPoints: wp,
+      players: (S.f.gmPlayers || '').trim(),
+      pointsLabel: (S.f.gmPointsLabel || '').trim(),
+      descr: (S.f.gmDescr || '').trim(),
+      videoUrl: (S.f.gmVideo || '').trim(),
+    };
     const body = {
       name, timeLabel: (S.f.gmTime || '').trim(), venue: (S.f.gmVenue || '').trim(),
-      needsRef: !!ge.needsRef, openPlay: !!ge.openPlay, winPoints: wp,
+      needsRef: !!ge.needsRef, openPlay: !!ge.openPlay,
     };
     if (ge.mode === 'add') {
-      // addGame relies on the win_points column DEFAULT; set the chosen value
-      // in a follow-up updateGame so a fresh game still carries the ref value.
+      // addGame inserts the core row (text fields default NULL); set the pills /
+      // how-to-play / video / win-points in a follow-up updateGame.
       body.action = 'addGame';
       const res = await api('/ac/games', { method: 'POST', body });
-      if (res && res.id && wp !== 10) {
-        await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: res.id, winPoints: wp } });
+      if (res && res.id) {
+        await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: res.id, ...details } });
       }
     } else {
-      body.action = 'updateGame'; body.gameId = ge.id;
-      await api('/ac/games', { method: 'POST', body });
+      await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: ge.id, ...body, ...details } });
     }
     S.admGameEdit = null;
     await loadOverview(true);

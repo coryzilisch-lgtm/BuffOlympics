@@ -28,7 +28,7 @@ app.http('ac-overview', {
         pool.request().query('SELECT id, first_name, last_name, username, team, is_ref, is_admin, shirt_size, years, song_request FROM bo_users ORDER BY id'),
         pool.request().query(`
           SELECT id, name, needs_ref, venue, open_play, time_label,
-                 descr, inventory, players, points_label
+                 descr, inventory, players, points_label, video_url
           FROM bo_games ORDER BY sort, id`),
         pool.request().query(`
           SELECT s.user_id, sl.game_id
@@ -141,6 +141,10 @@ app.http('ac-overview', {
         players: g.players || '',
         pointsLabel: g.points_label || '',
         winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
+        players: g.players || '',
+        pointsLabel: g.points_label || '',
+        descr: g.descr || '',
+        videoUrl: g.video_url || '',
         slots: slotsByGame[g.id] || [],
       }));
 
