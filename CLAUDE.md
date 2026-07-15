@@ -186,12 +186,18 @@ on every existing game).
 ## Full admin action list (`POST /api/ac/{action}`, admin-only)
 
 `settings` (eventMode/refJoinCode/scoresRevealed[one-way]/dipRevealed) · `people`
-(toggleAdmin/toggleRef/addGame/removeGame/**resetPassword**/**removeUser**) · `relay-legs` · `announcements` ·
+(toggleAdmin/toggleRef/addGame/removeGame/**fillSlot**/**resetPassword**/**removeUser**) · `relay-legs` · `announcements` ·
 `schedule` (add/remove/move/update) · **`idols`** (add/update/remove/toggleFound — hidden-immunity clues,
-`bo_idols`, migration 003; hidden by default, reveal by release time or found) · `ref-assign` · `games` (see above). Every `ac` action busts the
+`bo_idols`, migration 003; hidden by default, reveal by release time or found) · `ref-assign` · `games` (see above) ·
+**`reset-scores`** (clears ALL logged scores). Every `ac` action busts the
 shared bootstrap cache. `removeUser` deletes a user + their sign-ups/dip/relay/ref-assignment (keeps
 `bo_results`) — for clearing test/bogus accounts. `resetPassword` sets a new `password_hash` (admin-
-driven reset — no email infra, so the admin sets it and tells the person). The Admin Center → People
+driven reset — no email infra, so the admin sets it and tells the person). `fillSlot` drops a specific
+person into a specific slot (admin override — ignores caps/overlap/mode); powers **"Fill slot"** in the
+Games editor and the time-slot picker when adding someone to a game from the People tab. **`reset-scores`**
+`{confirm:'RESET'}` deletes every `bo_result_history` + `bo_results` row and re-seals the board — for
+wiping pre-event test data; gated behind the shared password `RESET` (never shown; the Scores tab's
+danger-zone button asks for it via a browser prompt). The Admin Center → People
 tab surfaces each account's shirt size + which Buff Olympics it is for them, has a 🔑 reset-password
 and 🗑 delete button per person, and a **Songs** tab lists every song request with a CSV export for
 the DJ.

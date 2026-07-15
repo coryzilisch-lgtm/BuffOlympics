@@ -140,11 +140,8 @@ app.http('ac-overview', {
         inventory: g.inventory || '',
         players: g.players || '',
         pointsLabel: g.points_label || '',
-        winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
-        players: g.players || '',
-        pointsLabel: g.points_label || '',
-        descr: g.descr || '',
         videoUrl: g.video_url || '',
+        winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
         slots: slotsByGame[g.id] || [],
       }));
 
