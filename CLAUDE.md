@@ -66,6 +66,9 @@ infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
                              games at the old NVARCHAR(50)) + re-applies those 8 points_labels
 scripts/
   concurrency-loadtest.js  — proves the atomic slot guard against a live deploy (Node 18+, no deps)
+  loadtest-crowd.js        — realistic crowd load test: read stampede + sign-up burst + sustained
+                             mix, reports latency percentiles + throttle rate, self-cleaning (see
+                             docs/LOADTEST.md). Different question than the concurrency test.
 .github/workflows/azure-static-web-apps.yml  — deploy on push to main
 staticwebapp.config.json   — SPA fallback, node:20 apiRuntime, anonymous API routes
 ```
@@ -147,11 +150,16 @@ optional `N`/`CAP`). Creates a throwaway capped slot, fires N simultaneous joins
 land, cross-checks the DB count, then deletes the test game + all test players. Run while Event
 mode = Sign-Up. Validated to report PASS on the atomic server and FAIL on a racy one.
 
+For **capacity** (not correctness) under a realistic crowd — read stampede + sign-up burst + sustained
+mix, with latency percentiles + throttle rate — use `node scripts/loadtest-crowd.js` (also self-
+cleaning; `USERS`/`SLOTS`/`DURATION_S`/`READ_ONLY` env knobs). Full runbook + Fabric-metrics watchlist
++ tuning levers in **`docs/LOADTEST.md`**.
+
 ---
 
 ## Fabric load — shared-bootstrap cache
 
-The event runs on the small **shared Fabric F2** capacity, and `GET /api/bootstrap` (every load,
+The event runs on a **shared Fabric F4** capacity (double F2), and `GET /api/bootstrap` (every load,
 re-polled every 60s by every player) originally ran **14 queries**. Split in `api/lib/bootstrap.js`:
 
 - **12 shared queries** (games, slots, rosters, tribes, schedule, dip, relay, scores, announcements)
