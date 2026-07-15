@@ -106,7 +106,25 @@ async function handlePeople(pool, body) {
     return json({ ok: true });
   }
 
-  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, removeGame, resetPassword, or removeUser' }, 400);
+  if (action === 'fillSlot') {
+    // Admin drops a specific person into a specific time slot (ignores caps /
+    // overlap / event mode). Powers "Fill slot" in the Games editor and the
+    // slot picker when adding someone to a game from the People tab.
+    const slotId = parseInt(body.slotId, 10);
+    if (!Number.isInteger(slotId)) return json({ error: 'slotId is required' }, 400);
+    const sR = await pool.request().input('sid', sql.Int, slotId)
+      .query('SELECT id FROM bo_game_slots WHERE id = @sid');
+    if (!sR.recordset.length) return json({ error: 'That time slot no longer exists' }, 404);
+    await pool.request()
+      .input('uid', sql.Int, userId)
+      .input('sid', sql.Int, slotId)
+      .query(`
+        IF NOT EXISTS (SELECT 1 FROM bo_signups WHERE user_id = @uid AND slot_id = @sid)
+          INSERT INTO bo_signups (user_id, slot_id) VALUES (@uid, @sid);`);
+    return json({ ok: true });
+  }
+
+  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, removeGame, fillSlot, resetPassword, or removeUser' }, 400);
 }
 
 // ── POST /api/admin/relay-legs ─────────────────────────────────────────────
@@ -268,6 +286,18 @@ async function handleIdols(pool, body) {
   }
 
   return json({ error: 'action must be add, remove, update, or toggleFound' }, 400);
+}
+
+// ── POST /api/ac/reset-scores ──────────────────────────────────────────────
+// Wipes ALL logged scores (every ref result + edit history) and re-seals the
+// board — for clearing out pre-event test scores. Gated behind a shared
+// password ("RESET") the admin types; the word is never shown in the UI.
+async function handleResetScores(pool, body) {
+  if (String(body.confirm || '') !== 'RESET') return json({ error: 'Wrong reset password' }, 403);
+  await pool.request().query('DELETE FROM bo_result_history');
+  await pool.request().query('DELETE FROM bo_results');
+  await upsertSetting(pool, 'scores_revealed', '0');
+  return json({ ok: true });
 }
 
 // ── POST /api/admin/ref-assign ─────────────────────────────────────────────
@@ -473,6 +503,7 @@ app.http('ac-actions', {
       else if (action === 'ref-assign') resp = await handleRefAssign(pool, body);
       else if (action === 'games') resp = await handleGames(pool, body);
       else if (action === 'idols') resp = await handleIdols(pool, body);
+      else if (action === 'reset-scores') resp = await handleResetScores(pool, body);
       else return json({ error: 'Unknown admin action' }, 404);
 
       // Every admin write can change the shared bootstrap block — drop the

@@ -33,6 +33,8 @@ const S = {
   historyOpenId: null,
   admGameEdit: null,     // { mode:'add'|'edit', id?, needsRef, openPlay } — game modal
   admSlotEdit: null,     // { mode:'add'|'edit', gameId, slotId? } — slot modal
+  admFillSlot: null,     // { slotId, gameId } — "Fill slot" search open in Games tab
+  admAddSlot: null,      // { uid, gameId } — slot picker open in People tab
   admSchedEdit: null,    // schedule row id currently being edited inline
   admSchedKind: 'up',    // kind of the schedule row being edited: up|live|done
   admIdolEdit: null,     // idol clue id currently being edited inline
@@ -1731,6 +1733,20 @@ function admYearBadge(years) {
 function admPeopleSection(ov) {
   const rows = (ov.people || []).map(p => {
     const options = (ov.gamesCatalog || []).filter(g => !(p.games || []).some(x => x.gameId === g.id));
+    // When a game is picked for this person, offer a time-slot chooser.
+    let slotPick = '';
+    if (S.admAddSlot && S.admAddSlot.uid === p.id) {
+      const ag = (ov.gamesCatalog || []).find(x => x.id === S.admAddSlot.gameId);
+      const asl = ag ? (ag.slots || []) : [];
+      slotPick = asl.length
+        ? `<select data-change="admAddGameSlot" data-uid="${p.id}" style="font-size:12px;font-weight:700;color:#00253D;background:#fff;border:1px solid #FF5F00;border-radius:6px;padding:5px 8px;cursor:pointer;">
+             <option value="">${esc(ag.name)} — pick a time…</option>
+             ${asl.map(s => `<option value="${s.id}">${esc(s.label)} · B ${s.nBuffalo}/${s.capBuffalo} · TXRH ${s.nRoadhouse}/${s.capRoadhouse}</option>`).join('')}
+           </select>
+           <button data-act="admAddCancel" style="font-size:11.5px;font-weight:700;color:#6D7C83;border:1px solid #DCE3E2;border-radius:6px;padding:5px 9px;">Cancel</button>`
+        : `<span style="font-size:11.5px;color:#9AA7A5;font-style:italic;">${esc(ag ? ag.name : 'That game')} has no time slots.</span>
+           <button data-act="admAddCancel" style="font-size:11.5px;font-weight:700;color:#6D7C83;border:1px solid #DCE3E2;border-radius:6px;padding:5px 9px;">Cancel</button>`;
+    }
     return `
     <div style="display:flex;align-items:center;gap:14px;padding:13px 18px;border-bottom:1px solid #EEF2F1;">
       <div style="width:172px;flex-shrink:0;">
@@ -1748,6 +1764,7 @@ function admPeopleSection(ov) {
           <option value="">+ Add to game</option>
           ${options.map(o => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join('')}
         </select>
+        ${slotPick}
       </div>
       <div style="width:230px;flex-shrink:0;display:flex;gap:7px;">
         <button data-act="admToggle" data-uid="${p.id}" data-flag="toggleAdmin" style="font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:6px;background:${p.isAdmin ? '#00253D' : 'transparent'};color:${p.isAdmin ? '#F3F7F5' : '#6D7C83'};border:1px solid ${p.isAdmin ? '#00253D' : '#C9D3D2'};transition:all .15s;">${p.isAdmin ? 'Admin ✓' : 'Make admin'}</button>
@@ -1839,6 +1856,26 @@ function minToLabel(min) {
 function admGamesSection(ov) {
   const games = ov.gamesCatalog || [];
   const totalSlots = games.reduce((n, g) => n + (g.slots || []).length, 0);
+  const people = ov.people || [];
+
+  // "Fill slot" search panel — type a name, pick a match to drop into the slot.
+  const fillPanel = (s) => {
+    if (!S.admFillSlot || S.admFillSlot.slotId !== s.id) return '';
+    const q = (S.f.admFillSearch || '').trim().toLowerCase();
+    const matches = q ? people.filter(p => (p.name || '').toLowerCase().includes(q)).slice(0, 6) : [];
+    return `
+    <div style="padding:10px 12px;border-top:1px solid #EEF2F1;background:#FCFBF7;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input id="fill-search" data-live="admFill" value="${esc(S.f.admFillSearch || '')}" placeholder="Type a name to add…" style="flex:1;min-width:0;font-size:13px;color:#00253D;border:1px solid #DCE3E2;border-radius:7px;padding:8px 10px;outline:none;font-family:'Montserrat';"/>
+        <button data-act="admFillCancel" style="flex-shrink:0;font-size:12px;font-weight:700;color:#6D7C83;border:1px solid #DCE3E2;border-radius:7px;padding:8px 11px;">Cancel</button>
+      </div>
+      ${matches.length ? `<div style="display:flex;flex-direction:column;gap:5px;margin-top:8px;">${matches.map(p => `
+        <button data-act="admFillPick" data-slot="${s.id}" data-uid="${p.id}" style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:#fff;border:1px solid #E0E6E5;border-radius:7px;padding:8px 11px;text-align:left;">
+          <span style="font-size:13px;font-weight:700;color:#00253D;">${esc(p.name)}</span>
+          ${admTeamChip(p.team)}
+        </button>`).join('')}</div>` : (q ? '<div style="font-size:12px;color:#9AA7A5;margin-top:8px;font-style:italic;">No matches.</div>' : '<div style="font-size:11.5px;color:#9AA7A5;margin-top:7px;">Start typing a name…</div>')}
+    </div>`;
+  };
 
   const gameCard = (g) => {
     const slots = (g.slots || []).slice().sort((a, b) => a.startMin - b.startMin);
@@ -1850,9 +1887,10 @@ function admGamesSection(ov) {
           <span style="font-size:12px;font-weight:700;color:#FF5F00;">Buffalo ${s.nBuffalo}/${s.capBuffalo}</span>
           <span style="font-size:12px;font-weight:700;color:#E0322E;">TXRH ${s.nRoadhouse}/${s.capRoadhouse}</span>
         </div>
+        <button data-act="admFillOpen" data-slot="${s.id}" data-game="${esc(g.id)}" style="flex-shrink:0;font-size:11px;font-weight:700;color:#1F8A5B;border:1px solid #BFE3D0;border-radius:6px;padding:6px 10px;">+ Fill</button>
         <button data-act="admSlotEdit" data-game="${esc(g.id)}" data-slot="${s.id}" style="flex-shrink:0;font-size:11px;font-weight:700;color:#00253D;border:1px solid #DCE3E2;border-radius:6px;padding:6px 10px;">Edit</button>
         <button data-act="admSlotDelete" data-slot="${s.id}" data-signed="${(s.nBuffalo || 0) + (s.nRoadhouse || 0)}" data-label="${esc(s.label)}" style="flex-shrink:0;width:28px;height:28px;border-radius:6px;border:1px solid #F0CDB3;color:#C77B23;font-size:15px;display:flex;align-items:center;justify-content:center;">×</button>
-      </div>`).join('') : `<div style="padding:11px 12px;border-top:1px solid #EEF2F1;font-size:12px;color:#9AA7A5;font-style:italic;">No time slots yet${g.openPlay ? ' — pure walk-up.' : '.'}</div>`;
+      </div>${fillPanel(s)}`).join('') : `<div style="padding:11px 12px;border-top:1px solid #EEF2F1;font-size:12px;color:#9AA7A5;font-style:italic;">No time slots yet${g.openPlay ? ' — pure walk-up.' : '.'}</div>`;
     return `
     <div style="background:#fff;border:1px solid #E0E6E5;border-left:3px solid ${g.openPlay ? '#00253D' : '#FF5F00'};border-radius:10px;overflow:hidden;">
       <div style="padding:13px 15px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
@@ -2300,6 +2338,11 @@ function admScoresSection(ov) {
     <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
       ${log || '<div style="padding:20px;font-size:13px;color:#9AA7A5;font-style:italic;">No results logged yet.</div>'}
     </div>
+  </div>
+  <div style="margin-top:28px;max-width:520px;background:#FFF5F5;border:1px solid #F3C9C7;border-radius:12px;padding:20px;">
+    <div style="font-family:'BN Kragen';font-size:18px;color:#B4231F;text-transform:uppercase;line-height:1;">Danger zone</div>
+    <p style="font-size:12.5px;color:#8A5B59;margin:8px 0 15px;line-height:1.5;">Clearing scores permanently deletes <strong>every logged result and its history</strong> and re-seals the board. Use this to wipe test data before the real event — it can't be undone.</p>
+    <button data-act="admResetScores" style="background:#E0322E;color:#fff;font-weight:800;font-size:13.5px;padding:12px 18px;border-radius:8px;">Reset all scores</button>
   </div>`;
 }
 
@@ -2905,7 +2948,7 @@ const ACTIONS = {
   }),
 
   // ── admin ──
-  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; S.admSchedEdit = null; S.admIdolEdit = null; render(); },
+  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; S.admSchedEdit = null; S.admIdolEdit = null; S.admFillSlot = null; S.admAddSlot = null; render(); },
   admMode: (el) => guarded(async () => {
     await api('/ac/settings', { method: 'POST', body: { eventMode: el.dataset.mode } });
     await afterAdminMutation();
@@ -3172,6 +3215,15 @@ const ACTIONS = {
       toast('Slot deleted');
     });
   },
+  admFillOpen: (el) => { S.admFillSlot = { slotId: parseInt(el.dataset.slot, 10), gameId: el.dataset.game }; S.f.admFillSearch = ''; render(); },
+  admFillCancel: () => { S.admFillSlot = null; S.f.admFillSearch = ''; render(); },
+  admFillPick: (el) => guarded(async () => {
+    await api('/ac/people', { method: 'POST', body: { userId: parseInt(el.dataset.uid, 10), action: 'fillSlot', slotId: parseInt(el.dataset.slot, 10) } });
+    S.admFillSlot = null; S.f.admFillSearch = '';
+    await loadOverview(true);
+    toast('Added to the slot');
+  }),
+  admAddCancel: () => { S.admAddSlot = null; render(); },
 
   admDipReveal: () => guarded(async () => {
     const cur = !!(S.overview && S.overview.dip && S.overview.dip.revealed);
@@ -3200,6 +3252,17 @@ const ACTIONS = {
     await afterAdminMutation();
     toast('Scores are live on every phone');
   }),
+  admResetScores: () => {
+    if (!window.confirm('⚠️ Reset ALL scores?\n\nThis permanently deletes every logged result and its edit history, then re-seals the board. This cannot be undone.\n\nUse only to clear test data before the real event.')) return;
+    const pw = window.prompt('Enter the reset password to confirm:');
+    if (pw === null) return;
+    guarded(async () => {
+      await api('/ac/reset-scores', { method: 'POST', body: { confirm: pw } });
+      S.adminPeek = null; S.adminConfirmReveal = false;
+      await afterAdminMutation();
+      toast('All scores cleared');
+    });
+  },
   admEditStart: (el) => { S.editingId = parseInt(el.dataset.id, 10); S.editVal = el.dataset.pts; S.f.editVal = el.dataset.pts; render(); },
   admEditCancel: () => { S.editingId = null; S.editVal = ''; render(); },
   admEditSave: (el) => guarded(async () => {
@@ -3230,9 +3293,19 @@ const CHANGES = {
     if (!gid) return;
     const uid = parseInt(el.dataset.uid, 10);
     el.value = '';
+    // Open the time-slot chooser for this person + game (fill via a specific slot).
+    S.admAddSlot = { uid, gameId: gid };
+    render();
+  },
+  admAddGameSlot: (el) => {
+    const slotId = parseInt(el.value, 10);
+    if (!Number.isInteger(slotId)) return;
+    const uid = S.admAddSlot ? S.admAddSlot.uid : parseInt(el.dataset.uid, 10);
+    S.admAddSlot = null;
     guarded(async () => {
-      await api('/ac/people', { method: 'POST', body: { userId: uid, action: 'addGame', gameId: gid } });
+      await api('/ac/people', { method: 'POST', body: { userId: uid, action: 'fillSlot', slotId } });
       await loadOverview(true);
+      toast('Added to the slot');
     });
   },
   admRefAssign: (el) => {
@@ -3274,6 +3347,7 @@ document.addEventListener('input', (e) => {
   }
   if (el.dataset && el.dataset.live === 'gameSearch') { S.gameSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'walkSearch') { S.walkSearch = el.value; S.walkPick = null; render(); }
+  if (el.dataset && el.dataset.live === 'admFill') { S.f.admFillSearch = el.value; render(); }
   if (el.dataset && el.dataset.debounce === 'refCode') {
     S.f.refCodeDraft = el.value;
     const code = el.value.trim();
