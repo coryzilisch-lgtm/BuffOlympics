@@ -351,7 +351,10 @@ async function handleGames(pool, body) {
   if (action === 'updateGame') {
     const gameId = String(body.gameId || '').trim();
     if (!gameId) return json({ error: 'gameId is required' }, 400);
-    const map = { name: 'name', timeLabel: 'time_label', venue: 'venue' };
+    const map = {
+      name: 'name', timeLabel: 'time_label', venue: 'venue',
+      players: 'players', pointsLabel: 'points_label', descr: 'descr', videoUrl: 'video_url',
+    };
     const sets = [];
     const req = pool.request().input('gid', sql.NVarChar, gameId);
     for (const [k, col] of Object.entries(map)) {

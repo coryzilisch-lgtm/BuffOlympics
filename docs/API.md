@@ -77,7 +77,7 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 | `POST /api/admin/schedule` | `{action:'add'}` (appends "New Block" 5:00 PM), `{action:'remove', id}`, `{action:'move', id, dir:-1|1}`, `{action:'update', id, timeLabel?, ampm?, title?, place?, kind?, endLabel?, endAmpm?}` (`endLabel`/`endAmpm` = optional end time, migration 006; empty clears it back to no end). `{ok:true}` |
 | `POST /api/admin/ref-assign` | `{gameId, userId}` (userId null/'' = unassign). `{ok:true}` |
 | `POST /api/ac/idols` | Idol clues (hidden-immunity), table `bo_idols` (migration 003). `{action:'add'}` (appends blank "New clue"), `{action:'update', id, title?, clue?, releaseMin?}` (`releaseMin` = minutes since midnight, event-local; `null`/'' = stays hidden), `{action:'toggleFound', id}`, `{action:'remove', id}`. `{ok:true}`. Clues are HIDDEN by default; a clue reveals once its `releaseMin` passes on the viewer's clock or it's marked found. |
-| `POST /api/ac/games` | Games + slots CRUD, **safe mid-event** (edits never touch sign-ups; deletes drop only that item's sign-ups). Actions:<br>`{action:'addGame', name, timeLabel?, venue?, needsRef?, openPlay?}` → `{ok, id}` (id derived from name; `win_points` defaults to 10 via the column DEFAULT — set a custom value with a follow-up updateGame).<br>`{action:'updateGame', gameId, name?, timeLabel?, venue?, needsRef?, openPlay?, winPoints?}` (`winPoints` = points the winning tribe earns when a ref logs a winner; migration 004).<br>`{action:'removeGame', gameId}` (deletes its slots + sign-ups + ref assignment).<br>`{action:'addSlot', gameId, startMin, label, capBuffalo, capRoadhouse}`.<br>`{action:'updateSlot', slotId, startMin?, label?, capBuffalo?, capRoadhouse?}` (slot id is stable, so sign-ups survive an edit).<br>`{action:'removeSlot', slotId}` (drops that slot's sign-ups). Returns `{ok:true}`. `ac-overview.gamesCatalog[].slots[]` carries `{id,startMin,label,capBuffalo,capRoadhouse,nBuffalo,nRoadhouse}` for the editor. |
+| `POST /api/ac/games` | Games + slots CRUD, **safe mid-event** (edits never touch sign-ups; deletes drop only that item's sign-ups). Actions:<br>`{action:'addGame', name, timeLabel?, venue?, needsRef?, openPlay?}` → `{ok, id}` (id derived from name; `win_points` defaults to 10 via the column DEFAULT — set a custom value with a follow-up updateGame).<br>`{action:'updateGame', gameId, name?, timeLabel?, venue?, needsRef?, openPlay?, winPoints?, players?, pointsLabel?, descr?, videoUrl?}` (`winPoints` = points the winning tribe earns when a ref logs a winner, migration 004; `players`/`pointsLabel` = the two pills on the game detail; `descr` = "How to play"; `videoUrl` = "See how it's played" link — empty string clears any of these).<br>`{action:'removeGame', gameId}` (deletes its slots + sign-ups + ref assignment).<br>`{action:'addSlot', gameId, startMin, label, capBuffalo, capRoadhouse}`.<br>`{action:'updateSlot', slotId, startMin?, label?, capBuffalo?, capRoadhouse?}` (slot id is stable, so sign-ups survive an edit).<br>`{action:'removeSlot', slotId}` (drops that slot's sign-ups). Returns `{ok:true}`. `ac-overview.gamesCatalog[].slots[]` carries `{id,startMin,label,capBuffalo,capRoadhouse,nBuffalo,nRoadhouse}` for the editor. |
 
 **Note on real routes:** the admin functions live under the **`ac`** prefix (`/api/ac-overview`, `/api/ac/{action}`) because Azure Functions reserves `admin`. The `/api/admin/*` paths above are the logical contract names; the client calls the `ac` forms.
 
@@ -90,16 +90,21 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
   "user": { …user object… },
   "settings": { "eventMode": "signup", "scoresRevealed": false, "dipRevealed": false },
   "serverTime": "2026-08-14T15:04:05Z",
-  // `descr`/`inventory`/`players`/`pointsLabel` come straight from bo_games (migration 007
-  // populates them from the rules doc) — empty string when not set.
+  // Game-detail content comes straight from bo_games: `players`/`pointsLabel` (the two
+  // pills), `descr` ("How to play"), `videoUrl` ("See how it's played"), `inventory` (kept
+  // in the payload but no longer shown on the detail). Migration 007 populates them from the
+  // rules doc; empty string when not set.
   "games": [
-    { "id":"cornhole", "name":"Cornhole", "needsRef":true, "venue":"Main Lawn",
-      "openPlay":false, "runtimeLabel":"1:30 PM – 2:00 PM",
-      "descr":"Players alternate throws; feet may not go past the front edge of the board. …",
-      "inventory":"Cornhole boards and bags", "players":"4 teams of 2",
-      "pointsLabel":"1 point on the board, 3 in the hole — qualifying to 11, championship to 21 (tiebreak to 25)",
-      "slots": [ {"id":1,"startMin":810,"label":"1:30 PM","capBuffalo":2,"capRoadhouse":2,"nBuffalo":0,"nRoadhouse":0,"mine":false} ],
-      "mySlotId": null, "mine": false }
+    { "id":"cornhole", "name":"Cornhole", "venue":"Main Lawn", "openPlay":false, "needsRef":true,
+      "runtimeLabel":"1:30 PM – 2:00 PM",
+      "players":"4 teams of 2",                    // players pill
+      "pointsLabel":"1 on the board, 3 in the hole — qualifying to 11, championship to 21",  // points pill
+      "descr":"Players alternate throws; feet stay behind the board. …",   // "How to play"
+      "inventory":"Cornhole boards and bags",      // no longer rendered on the detail
+      "videoUrl":"https://youtu.be/…",             // "See how it's played" (or "")
+      "slots":[ {"id":1,"startMin":810,"label":"1:30 PM","capBuffalo":2,"capRoadhouse":2,
+                 "buffalo":["Reggie H."],"roadhouse":["Kate V."],"mine":false} ],
+      "mySlotId":null, "mine":false }
   ],
   "blocks": [ {"id":"b130","label":"1:30 PM Rotation","time":"1:30 – 2:00 PM","slot":[810,840],"place":"Courts · Lawn · Cafe"}, … ],
   "mySignups": [ {"gameId":"corn","game":"Cornhole","slotLabel":"1:30 – 2:00 PM"} ],
