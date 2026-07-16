@@ -3,10 +3,11 @@ const { getPool, sql } = require('../lib/db');
 const { json, requireUser, requireRef } = require('../lib/auth');
 const { buildBootstrap, bustSharedBootstrap } = require('../lib/bootstrap');
 
-// A ref self-assigns (claims) or releases a game. bo_ref_assignments is
-// one-ref-per-game (PK game_id), so claiming takes the game over from whoever
-// held it — that's how refs move coverage around. Releasing only clears it if
-// it's currently theirs.
+// A ref adds a game to their list (claims) or drops it (releases). Since
+// migration 010 the PK is (game_id, user_id): ANY number of refs can hold the
+// same game, uncapped, and claiming never bumps another ref. Releasing only
+// removes the caller's own row. Pre-010 (PK still game_id-only) a claim on a
+// game someone else holds fails the PK — surfaced as a friendly 409.
 app.http('ref-claim', {
   methods: ['POST'],
   authLevel: 'anonymous',
@@ -30,12 +31,15 @@ app.http('ref-claim', {
         await pool.request().input('gid', sql.NVarChar, gameId).input('uid', sql.Int, user.id)
           .query('DELETE FROM bo_ref_assignments WHERE game_id = @gid AND user_id = @uid');
       } else {
-        await pool.request().input('gid', sql.NVarChar, gameId).input('uid', sql.Int, user.id)
-          .query(`
-            IF EXISTS (SELECT 1 FROM bo_ref_assignments WHERE game_id = @gid)
-              UPDATE bo_ref_assignments SET user_id = @uid WHERE game_id = @gid;
-            ELSE
-              INSERT INTO bo_ref_assignments (game_id, user_id) VALUES (@gid, @uid);`);
+        try {
+          await pool.request().input('gid', sql.NVarChar, gameId).input('uid', sql.Int, user.id)
+            .query(`
+              IF NOT EXISTS (SELECT 1 FROM bo_ref_assignments WHERE game_id = @gid AND user_id = @uid)
+                INSERT INTO bo_ref_assignments (game_id, user_id) VALUES (@gid, @uid);`);
+        } catch (e) {
+          // Pre-010 the PK is game_id-only, so a second ref's insert collides.
+          return json({ error: 'Another ref already has this game (migration 010 enables multiple refs)' }, 409);
+        }
       }
 
       bustSharedBootstrap();

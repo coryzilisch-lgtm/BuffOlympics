@@ -105,20 +105,31 @@ async function loadSharedBootstrap(pool, fresh) {
     pool.request().query('SELECT ISNULL(SUM(pts_buffalo), 0) AS buffalo, ISNULL(SUM(pts_roadhouse), 0) AS roadhouse FROM bo_results'),
     pool.request().query('SELECT game_id, user_id FROM bo_ref_assignments'),
   ]);
-  // Idols live in their own table (migration 003). Query defensively so the
-  // app still boots if 003 hasn't been run yet in the Fabric portal.
+  // Idols live in their own table (migration 003; found_by/points 010). Query
+  // defensively so the app still boots if a migration hasn't been run yet.
   let idolsR = { recordset: [] };
   try {
     idolsR = await pool.request().query(
-      'SELECT id, title, clue, release_min, found, sort FROM bo_idols ORDER BY sort, id');
-  } catch (e) { /* table not present yet — treat as no idols */ }
+      'SELECT id, title, clue, release_min, found, found_by, points, sort FROM bo_idols ORDER BY sort, id');
+  } catch (e) {
+    try {
+      idolsR = await pool.request().query(
+        'SELECT id, title, clue, release_min, found, sort FROM bo_idols ORDER BY sort, id');
+    } catch (e2) { /* table not present yet — treat as no idols */ }
+  }
 
-  // Per-game win points (migration 004). Defensive so the app boots pre-004.
-  let winPointsById = {};
+  // Per-game win points (migration 004) + bracket round points (migration 010).
+  // Defensive so the app boots pre-004 / pre-010.
+  let winPointsById = {}, roundPointsById = {};
   try {
-    const wpR = await pool.request().query('SELECT id, win_points FROM bo_games');
-    for (const r of wpR.recordset) winPointsById[r.id] = r.win_points;
-  } catch (e) { /* column not present yet — default applied below */ }
+    const wpR = await pool.request().query('SELECT id, win_points, round_points FROM bo_games');
+    for (const r of wpR.recordset) { winPointsById[r.id] = r.win_points; roundPointsById[r.id] = r.round_points; }
+  } catch (e) {
+    try {
+      const wpR = await pool.request().query('SELECT id, win_points FROM bo_games');
+      for (const r of wpR.recordset) winPointsById[r.id] = r.win_points;
+    } catch (e2) { /* column not present yet — default applied below */ }
+  }
 
   // Schedule end times (migration 006). Defensive so the app boots pre-006.
   let schedEndById = {};
@@ -154,8 +165,8 @@ async function loadSharedBootstrap(pool, fresh) {
 
   const shared = {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
-    legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, schedEndById,
-    gameTypeById, bracketRoundsByGame,
+    legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, roundPointsById,
+    schedEndById, gameTypeById, bracketRoundsByGame,
   };
   cache.set(SHARED_KEY, shared, SHARED_TTL_MS);
   return shared;
@@ -170,8 +181,8 @@ async function buildBootstrap(pool, user, opts = {}) {
   const shared = await loadSharedBootstrap(pool, opts.fresh);
   const {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
-    legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, schedEndById,
-    gameTypeById, bracketRoundsByGame,
+    legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, roundPointsById,
+    schedEndById, gameTypeById, bracketRoundsByGame,
   } = shared;
   // Bracket payload for a game, or null. Undefined isBracket (pre-009) is left
   // for the frontend to resolve against its BRACKETS fallback.
@@ -346,6 +357,8 @@ async function buildBootstrap(pool, user, opts = {}) {
     clue: x.clue || '',
     releaseMin: x.release_min == null ? null : x.release_min,
     found: !!x.found,
+    foundBy: x.found_by || null,          // migration 010 — finder's name
+    points: x.points == null ? null : x.points,   // migration 010 — what it's worth
   }));
 
   const payload = {
@@ -372,14 +385,18 @@ async function buildBootstrap(pool, user, opts = {}) {
 
   // ── referees only (admins are NOT refs — they use the Admin Center) ──
   if (user.is_ref) {
-    const assignments = {};
-    for (const a of refAssignR.recordset) assignments[a.game_id] = a.user_id;
+    // Multiple refs can hold the same game (migration 010) — gameId -> [uid,…].
+    const assignedBy = {};
+    for (const a of refAssignR.recordset) {
+      if (!assignedBy[a.game_id]) assignedBy[a.game_id] = [];
+      assignedBy[a.game_id].push(a.user_id);
+    }
     const nameById = {};
     for (const u of usersR.recordset) nameById[u.id] = formatName(u.first_name, u.last_name, u.username);
 
-    // A ref only sees the games they're ASSIGNED to (walk-up games included —
-    // they're assigned like any other game, not auto-added to everyone).
-    const assignedGames = gamesR.recordset.filter(g => assignments[g.id] === uid);
+    // A ref only sees the games they've ADDED to their list (walk-up games
+    // included — they're claimed like any other game, not auto-added).
+    const assignedGames = gamesR.recordset.filter(g => (assignedBy[g.id] || []).includes(uid));
     payload.refStations = assignedGames.map(g => {
       const gt = gameTypeById[g.id] || {};
       const headToHead = gt.headToHead !== undefined ? gt.headToHead : !g.open_play;
@@ -388,26 +405,30 @@ async function buildBootstrap(pool, user, opts = {}) {
         name: g.name,
         venue: g.venue,
         timeLabel: g.time_label,
-        // 'vs' → winner-picker, 'walk' → type a number per player.
+        // 'vs' → winner-picker, 'walk' → variable score per team.
         type: headToHead ? 'vs' : 'walk',
         headToHead,
         isBracket: gt.isBracket,           // undefined pre-009 → ref board uses BRACKETS fallback
+        bracket: bracketFor(g.id),         // rounds for the ref bracket path (migration 009)
         openPlay: !!g.open_play,
         winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
+        // Points a within-tribe bracket-round win awards (migration 010).
+        // NULL pre-010 → 0 (advancement only, the old behavior).
+        roundPoints: roundPointsById[g.id] != null ? roundPointsById[g.id] : 0,
         slots: slotsByGame[g.id] || [],
         signups: signupPeopleByGame[g.id] || [],
       };
     });
 
-    // Every game, with assignment status — powers the ref Games tab where a ref
-    // can self-assign (take over) a game to move coverage around.
+    // Every game, with everyone reffing it — powers the ref Games tab where any
+    // ref adds any game to their list (uncapped, never bumps another ref).
     payload.refGames = gamesR.recordset.map(g => {
-      const rid = assignments[g.id];
+      const rids = assignedBy[g.id] || [];
       return {
         gameId: g.id, name: g.name, venue: g.venue, timeLabel: g.time_label,
         openPlay: !!g.open_play, needsRef: !!g.needs_ref,
-        refUserId: rid || null, refName: rid ? (nameById[rid] || '') : '',
-        mine: rid === uid,
+        refNames: rids.map(id => nameById[id] || '').filter(Boolean),
+        mine: rids.includes(uid),
         slotCount: (slotsByGame[g.id] || []).length,
       };
     });
@@ -415,6 +436,35 @@ async function buildBootstrap(pool, user, opts = {}) {
     payload.allPlayers = usersR.recordset
       .filter(u => u.team === 'buffalo' || u.team === 'roadhouse')
       .map(u => ({ name: formatName(u.first_name, u.last_name, u.username), team: u.team }));
+
+    // Every logged result (newest first) so refs can SEE what's been scored,
+    // mark slots/rounds "Scored", and change a result. slot_label/round_label
+    // are migration 010 — query defensively pre-010.
+    let refResultsR;
+    try {
+      refResultsR = await pool.request().query(`
+        SELECT TOP 300 id, game_name, detail, winner, pts, player_name,
+               entered_by, entered_by_id, slot_label, round_label, created_at
+        FROM bo_results ORDER BY created_at DESC, id DESC`);
+    } catch (e) {
+      refResultsR = await pool.request().query(`
+        SELECT TOP 300 id, game_name, detail, winner, pts, player_name,
+               entered_by, entered_by_id, created_at
+        FROM bo_results ORDER BY created_at DESC, id DESC`);
+    }
+    payload.refResults = refResultsR.recordset.map(r => ({
+      id: r.id,
+      game: r.game_name,
+      detail: r.detail || '',
+      winner: r.winner || null,
+      pts: r.pts,
+      playerName: r.player_name || null,
+      slotLabel: r.slot_label || null,
+      roundLabel: r.round_label || null,
+      enteredBy: r.entered_by || '',
+      mine: r.entered_by_id === uid,
+      createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
+    }));
   }
 
   return payload;

@@ -1,6 +1,6 @@
 const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
-const { json, requireUser, requireAdmin, hashPassword } = require('../lib/auth');
+const { json, requireUser, requireAdmin, hashPassword, formatName } = require('../lib/auth');
 const { getSettings, upsertSetting, bustSharedBootstrap } = require('../lib/bootstrap');
 
 // ── POST /api/admin/settings ───────────────────────────────────────────────
@@ -266,6 +266,51 @@ async function handleIdols(pool, body) {
   if (action === 'toggleFound') {
     await pool.request().input('id', sql.Int, id)
       .query('UPDATE bo_idols SET found = CASE WHEN found = 1 THEN 0 ELSE 1 END WHERE id = @id');
+    // Un-finding clears the finder name (migration 010, defensive). Note this
+    // does NOT remove an already-awarded result — edit that in Scores.
+    try {
+      await pool.request().input('id', sql.Int, id)
+        .query('UPDATE bo_idols SET found_by = NULL WHERE id = @id AND found = 0');
+    } catch (e) { /* pre-010 */ }
+    return json({ ok: true });
+  }
+
+  // Award the idol: mark it found by a specific person AND log a bo_results
+  // row giving the idol's points to their tribe (migration 010).
+  if (action === 'award') {
+    const userId = parseInt(body.userId, 10);
+    if (!Number.isInteger(userId)) return json({ error: 'userId (the finder) is required' }, 400);
+    const uR = await pool.request().input('uid', sql.Int, userId)
+      .query('SELECT id, first_name, last_name, username, team FROM bo_users WHERE id = @uid');
+    if (!uR.recordset.length) return json({ error: 'Finder not found' }, 404);
+    const u = uR.recordset[0];
+    if (u.team !== 'buffalo' && u.team !== 'roadhouse') {
+      return json({ error: 'The finder needs a tribe before points can be awarded' }, 409);
+    }
+    const iR = await pool.request().input('id', sql.Int, id)
+      .query('SELECT id, title, points FROM bo_idols WHERE id = @id');
+    if (!iR.recordset.length) return json({ error: 'Idol not found' }, 404);
+    const idol = iR.recordset[0];
+    const pts = Math.max(0, parseInt(idol.points, 10) || 0);
+    const finder = formatName(u.first_name, u.last_name, u.username);
+
+    await pool.request().input('id', sql.Int, id).query('UPDATE bo_idols SET found = 1 WHERE id = @id');
+    try {
+      await pool.request().input('id', sql.Int, id).input('fb', sql.NVarChar, finder)
+        .query('UPDATE bo_idols SET found_by = @fb WHERE id = @id');
+    } catch (e) { /* pre-010 — found flag still set */ }
+
+    await pool.request()
+      .input('game_name', sql.NVarChar, 'Hidden Idol')
+      .input('detail', sql.NVarChar, `${finder} found ${idol.title || 'an idol'}${pts ? ` (+${pts})` : ''}`)
+      .input('winner', sql.NVarChar, u.team)
+      .input('pts', sql.Int, pts)
+      .input('pb', sql.Int, u.team === 'buffalo' ? pts : 0)
+      .input('pr', sql.Int, u.team === 'roadhouse' ? pts : 0)
+      .input('player_name', sql.NVarChar, finder)
+      .query(`
+        INSERT INTO bo_results (game_name, detail, winner, pts, pts_buffalo, pts_roadhouse, player_name, entered_by)
+        VALUES (@game_name, @detail, @winner, @pts, @pb, @pr, @player_name, N'Admin')`);
     return json({ ok: true });
   }
 
@@ -280,12 +325,21 @@ async function handleIdols(pool, body) {
       req.input('rm', sql.Int, Number.isInteger(rm) ? rm : null);
     }
     if (body.found !== undefined) { sets.push('found = @found'); req.input('found', sql.Bit, body.found ? 1 : 0); }
-    if (!sets.length) return json({ error: 'Nothing to update' }, 400);
-    await req.query(`UPDATE bo_idols SET ${sets.join(', ')} WHERE id = @id`);
+    if (!sets.length && body.points === undefined) return json({ error: 'Nothing to update' }, 400);
+    if (sets.length) await req.query(`UPDATE bo_idols SET ${sets.join(', ')} WHERE id = @id`);
+    // Points column is migration 010 — separate + defensive.
+    if (body.points !== undefined) {
+      try {
+        const p = parseInt(body.points, 10);
+        await pool.request().input('id', sql.Int, id)
+          .input('p', sql.Int, Number.isInteger(p) && p >= 0 ? p : null)
+          .query('UPDATE bo_idols SET points = @p WHERE id = @id');
+      } catch (e) { /* pre-010 — points stay dormant */ }
+    }
     return json({ ok: true });
   }
 
-  return json({ error: 'action must be add, remove, update, or toggleFound' }, 400);
+  return json({ error: 'action must be add, remove, update, award, or toggleFound' }, 400);
 }
 
 // ── POST /api/ac/reset-scores ──────────────────────────────────────────────
@@ -301,6 +355,8 @@ async function handleResetScores(pool, body) {
 }
 
 // ── POST /api/admin/ref-assign ─────────────────────────────────────────────
+// Multi-ref (migration 010): {gameId, userId, op:'add'|'remove'} adds/removes
+// one ref on the game; userId null/'' clears ALL refs from the game.
 async function handleRefAssign(pool, body) {
   const gameId = String(body.gameId || '').trim();
   if (!gameId) return json({ error: 'gameId is required' }, 400);
@@ -320,18 +376,31 @@ async function handleRefAssign(pool, body) {
   }
 
   if (!Number.isInteger(userId)) return json({ error: 'userId must be a number, null, or empty' }, 400);
+
+  if (body.op === 'remove') {
+    await pool.request().input('gid', sql.NVarChar, gameId).input('uid', sql.Int, userId)
+      .query('DELETE FROM bo_ref_assignments WHERE game_id = @gid AND user_id = @uid');
+    return json({ ok: true });
+  }
+
   const userR = await pool.request().input('id', sql.Int, userId)
     .query('SELECT id FROM bo_users WHERE id = @id');
   if (!userR.recordset.length) return json({ error: 'User not found' }, 404);
 
-  await pool.request()
-    .input('gid', sql.NVarChar, gameId)
-    .input('uid', sql.Int, userId)
-    .query(`
-      IF EXISTS (SELECT 1 FROM bo_ref_assignments WHERE game_id = @gid)
-        UPDATE bo_ref_assignments SET user_id = @uid WHERE game_id = @gid;
-      ELSE
-        INSERT INTO bo_ref_assignments (game_id, user_id) VALUES (@gid, @uid);`);
+  try {
+    await pool.request()
+      .input('gid', sql.NVarChar, gameId)
+      .input('uid', sql.Int, userId)
+      .query(`
+        IF NOT EXISTS (SELECT 1 FROM bo_ref_assignments WHERE game_id = @gid AND user_id = @uid)
+          INSERT INTO bo_ref_assignments (game_id, user_id) VALUES (@gid, @uid);`);
+  } catch (e) {
+    // Pre-010 the PK is game_id-only — fall back to the old replace behavior.
+    await pool.request()
+      .input('gid', sql.NVarChar, gameId)
+      .input('uid', sql.Int, userId)
+      .query('UPDATE bo_ref_assignments SET user_id = @uid WHERE game_id = @gid');
+  }
   return json({ ok: true });
 }
 
@@ -401,15 +470,26 @@ async function handleGames(pool, body) {
       const wp = parseInt(body.winPoints, 10);
       sets.push('win_points = @win_points'); req.input('win_points', sql.Int, Number.isInteger(wp) && wp >= 0 ? wp : 10);
     }
-    // Game-type columns (migration 009) — updated separately + defensively so a
-    // pre-009 save of the core fields still works (feature just stays dormant).
+    // Game-type columns (migration 009) + round_points (010) — updated
+    // separately + defensively so a pre-migration save of the core fields
+    // still works (the feature just stays dormant).
     const typeSets = [];
     const typeReq = pool.request().input('gid', sql.NVarChar, gameId);
     if (body.headToHead !== undefined) { typeSets.push('head_to_head = @h2h'); typeReq.input('h2h', sql.Bit, body.headToHead ? 1 : 0); }
     if (body.isBracket !== undefined) { typeSets.push('is_bracket = @isbr'); typeReq.input('isbr', sql.Bit, body.isBracket ? 1 : 0); }
     if (body.bracketIntro !== undefined) { typeSets.push('bracket_intro = @bintro'); typeReq.input('bintro', sql.NVarChar, String(body.bracketIntro).trim() || null); }
+    // round_points is migration 010 — its own defensive UPDATE so a 009-only
+    // DB still saves the head-to-head/bracket fields above.
+    if (body.roundPoints !== undefined) {
+      try {
+        const rp = parseInt(body.roundPoints, 10);
+        await pool.request().input('gid', sql.NVarChar, gameId)
+          .input('rp', sql.Int, Number.isInteger(rp) && rp >= 0 ? rp : 0)
+          .query('UPDATE bo_games SET round_points = @rp WHERE id = @gid');
+      } catch (e) { /* pre-010 — round points stay dormant */ }
+    }
 
-    if (!sets.length && !typeSets.length) return json({ error: 'Nothing to update' }, 400);
+    if (!sets.length && !typeSets.length && body.roundPoints === undefined) return json({ error: 'Nothing to update' }, 400);
     if (sets.length) {
       const r = await req.query(`UPDATE bo_games SET ${sets.join(', ')} WHERE id = @gid`);
       if (!r.rowsAffected[0]) return json({ error: 'Game not found' }, 404);
