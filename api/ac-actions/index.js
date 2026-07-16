@@ -488,8 +488,18 @@ async function handleGames(pool, body) {
           .query('UPDATE bo_games SET round_points = @rp WHERE id = @gid');
       } catch (e) { /* pre-010 — round points stay dormant */ }
     }
+    // team_size is migration 011 — its own defensive UPDATE, same reasoning.
+    // 1 (or blank) = individual game; ≥2 = teams of that size.
+    if (body.teamSize !== undefined) {
+      try {
+        const ts = parseInt(body.teamSize, 10);
+        await pool.request().input('gid', sql.NVarChar, gameId)
+          .input('ts', sql.Int, Number.isInteger(ts) && ts >= 1 ? ts : 1)
+          .query('UPDATE bo_games SET team_size = @ts WHERE id = @gid');
+      } catch (e) { /* pre-011 — team size stays dormant */ }
+    }
 
-    if (!sets.length && !typeSets.length && body.roundPoints === undefined) return json({ error: 'Nothing to update' }, 400);
+    if (!sets.length && !typeSets.length && body.roundPoints === undefined && body.teamSize === undefined) return json({ error: 'Nothing to update' }, 400);
     if (sets.length) {
       const r = await req.query(`UPDATE bo_games SET ${sets.join(', ')} WHERE id = @gid`);
       if (!r.rowsAffected[0]) return json({ error: 'Game not found' }, 404);

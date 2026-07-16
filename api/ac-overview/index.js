@@ -95,6 +95,13 @@ app.http('ac-overview', {
         } catch (e2) { /* column not present yet */ }
       }
 
+      // Per-game team size (migration 011) — defensive so admin loads pre-011.
+      let teamSizeById = {};
+      try {
+        const tsR = await pool.request().query('SELECT id, team_size FROM bo_games');
+        for (const r of tsR.recordset) teamSizeById[r.id] = r.team_size;
+      } catch (e) { /* column not present yet */ }
+
       // Schedule end times (migration 006) — defensive so admin loads pre-006.
       let schedEndById = {};
       try {
@@ -180,6 +187,7 @@ app.http('ac-overview', {
           videoUrl: g.video_url || '',
           winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
           roundPoints: roundPointsById[g.id] != null ? roundPointsById[g.id] : 0,
+          teamSize: (teamSizeById[g.id] && teamSizeById[g.id] >= 1) ? teamSizeById[g.id] : 1,  // migration 011
           // Game types (migration 009). Pre-009 falls back to the old derivation.
           headToHead: gt.headToHead !== undefined ? gt.headToHead : !g.open_play,
           isBracket: !!gt.isBracket,
