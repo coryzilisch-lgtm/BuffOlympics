@@ -401,9 +401,23 @@ async function handleGames(pool, body) {
       const wp = parseInt(body.winPoints, 10);
       sets.push('win_points = @win_points'); req.input('win_points', sql.Int, Number.isInteger(wp) && wp >= 0 ? wp : 10);
     }
-    if (!sets.length) return json({ error: 'Nothing to update' }, 400);
-    const r = await req.query(`UPDATE bo_games SET ${sets.join(', ')} WHERE id = @gid`);
-    if (!r.rowsAffected[0]) return json({ error: 'Game not found' }, 404);
+    // Game-type columns (migration 009) — updated separately + defensively so a
+    // pre-009 save of the core fields still works (feature just stays dormant).
+    const typeSets = [];
+    const typeReq = pool.request().input('gid', sql.NVarChar, gameId);
+    if (body.headToHead !== undefined) { typeSets.push('head_to_head = @h2h'); typeReq.input('h2h', sql.Bit, body.headToHead ? 1 : 0); }
+    if (body.isBracket !== undefined) { typeSets.push('is_bracket = @isbr'); typeReq.input('isbr', sql.Bit, body.isBracket ? 1 : 0); }
+    if (body.bracketIntro !== undefined) { typeSets.push('bracket_intro = @bintro'); typeReq.input('bintro', sql.NVarChar, String(body.bracketIntro).trim() || null); }
+
+    if (!sets.length && !typeSets.length) return json({ error: 'Nothing to update' }, 400);
+    if (sets.length) {
+      const r = await req.query(`UPDATE bo_games SET ${sets.join(', ')} WHERE id = @gid`);
+      if (!r.rowsAffected[0]) return json({ error: 'Game not found' }, 404);
+    }
+    if (typeSets.length) {
+      try { await typeReq.query(`UPDATE bo_games SET ${typeSets.join(', ')} WHERE id = @gid`); }
+      catch (e) { /* migration 009 not run yet — head_to_head / bracket stay dormant */ }
+    }
     return json({ ok: true });
   }
 
@@ -417,6 +431,10 @@ async function handleGames(pool, body) {
       .query('DELETE FROM bo_game_slots WHERE game_id = @gid');
     await pool.request().input('gid', sql.NVarChar, gameId)
       .query('DELETE FROM bo_ref_assignments WHERE game_id = @gid');
+    try {
+      await pool.request().input('gid', sql.NVarChar, gameId)
+        .query('DELETE FROM bo_bracket_rounds WHERE game_id = @gid');
+    } catch (e) { /* table not present pre-009 */ }
     await pool.request().input('gid', sql.NVarChar, gameId)
       .query('DELETE FROM bo_games WHERE id = @gid');
     return json({ ok: true });
@@ -477,7 +495,49 @@ async function handleGames(pool, body) {
     return json({ ok: true });
   }
 
-  return json({ error: 'action must be addGame, updateGame, removeGame, addSlot, updateSlot, or removeSlot' }, 400);
+  // ── bracket rounds (migration 009) ──
+  if (action === 'addRound') {
+    const gameId = String(body.gameId || '').trim();
+    if (!gameId) return json({ error: 'gameId is required' }, 400);
+    try {
+      const sortR = await pool.request().input('gid', sql.NVarChar, gameId)
+        .query('SELECT ISNULL(MAX(sort), -1) + 1 AS next FROM bo_bracket_rounds WHERE game_id = @gid');
+      await pool.request()
+        .input('gid', sql.NVarChar, gameId)
+        .input('sort', sql.Int, sortR.recordset[0].next)
+        .query(`INSERT INTO bo_bracket_rounds (game_id, sort, time_label, name, detail, team)
+                VALUES (@gid, @sort, NULL, N'New round', NULL, 'both')`);
+      return json({ ok: true });
+    } catch (e) { return json({ error: 'Bracket rounds need migration 009' }, 409); }
+  }
+
+  if (action === 'updateRound') {
+    const roundId = toInt(body.roundId, null);
+    if (roundId === null) return json({ error: 'roundId is required' }, 400);
+    const map = { timeLabel: 'time_label', name: 'name', detail: 'detail', team: 'team' };
+    const sets = [];
+    const req = pool.request().input('rid', sql.Int, roundId);
+    for (const [k, col] of Object.entries(map)) {
+      if (body[k] !== undefined) { sets.push(`${col} = @${col}`); req.input(col, sql.NVarChar, String(body[k]).trim() || null); }
+    }
+    if (!sets.length) return json({ error: 'Nothing to update' }, 400);
+    try {
+      const r = await req.query(`UPDATE bo_bracket_rounds SET ${sets.join(', ')} WHERE id = @rid`);
+      if (!r.rowsAffected[0]) return json({ error: 'Round not found' }, 404);
+      return json({ ok: true });
+    } catch (e) { return json({ error: 'Bracket rounds need migration 009' }, 409); }
+  }
+
+  if (action === 'removeRound') {
+    const roundId = toInt(body.roundId, null);
+    if (roundId === null) return json({ error: 'roundId is required' }, 400);
+    try {
+      await pool.request().input('rid', sql.Int, roundId).query('DELETE FROM bo_bracket_rounds WHERE id = @rid');
+      return json({ ok: true });
+    } catch (e) { return json({ error: 'Bracket rounds need migration 009' }, 409); }
+  }
+
+  return json({ error: 'action must be addGame, updateGame, removeGame, addSlot, updateSlot, removeSlot, addRound, updateRound, or removeRound' }, 400);
 }
 
 app.http('ac-actions', {

@@ -64,6 +64,10 @@ infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
                              win_points/needs_ref) from the Minute to Win It rules doc
   008_widen_game_text.sql  — widens points_label/players to NVARCHAR(200) (007 truncated on 8
                              games at the old NVARCHAR(50)) + re-applies those 8 points_labels
+  009_game_types.sql       — bo_games.head_to_head (ref-scoring flag) + is_bracket/bracket_intro
+                             + bo_bracket_rounds table (editable brackets). Backfills head_to_head
+                             (non-walk-up=1) + seeds the Cornhole/Ping-Pong brackets. RUN IN TWO
+                             STEPS (Part 1 schema, then Part 2 backfill — Fabric Msg 207 gotcha).
 scripts/
   concurrency-loadtest.js  — proves the atomic slot guard against a live deploy (Node 18+, no deps)
   loadtest-crowd.js        — realistic crowd load test: read stampede + sign-up burst + sustained
@@ -98,7 +102,8 @@ Single IIFE, vanilla JS, hash routing (`#/home`, `#/games`, `#/game/{id}`, `#/ad
 Key UI areas: player games list/detail (`gamesScreen`, `gameDetailScreen`, `slotRowHtml`), ref board
 (`refBoardScreen`) + ref self-assign tab (`refGamesScreen`), Admin Center (`adminScreen` +
 `adm*Section` incl. `admIdolsSection`/`admSongsSection` + `admGamesModals`). Bracket games render a
-"Bracket path" panel from the frontend `BRACKETS` config (keyed by game id — Cornhole, Ping Pong).
+"Bracket path" panel via `bracketFor(g)` — DB-backed bracket data from the payload (migration 009),
+with the hard-coded `BRACKETS` const as a pre-009 fallback. Admin-editable in the bracket editor.
 
 ---
 
@@ -163,12 +168,13 @@ The event runs on a **shared Fabric F4** capacity (double F2), and `GET /api/boo
 re-polled every 60s by every player) originally ran **14 queries**. Split in `api/lib/bootstrap.js`:
 
 - **12 shared queries** (games, slots, rosters, tribes, schedule, dip, relay, scores, announcements)
-  → cached in-process **~20s** (`api/lib/cache.js`, `SHARED_KEY`).
+  → cached in-process **~45s** (`api/lib/cache.js`, `SHARED_KEY`; raised from 20s after the first
+  crowd load test — trims cold-fill cost when SWA scales out under a burst).
 - **2 per-user queries** (`myVote`, `myResults`) → always live.
 - Writers bypass/refresh the cache: signup/dip/relay pass `buildBootstrap(pool, user, {fresh:true})`;
   results/admin/team call `bustSharedBootstrap()`. So the writer sees their change immediately and
-  every successful signup refreshes the shared copy → headcounts stay fresh during a rush; the 20s
-  TTL is just a backstop. Net: crowd DB cost drops from once-per-request to ~3 shared-refills/min.
+  every successful signup refreshes the shared copy → headcounts stay fresh during a rush; the 45s
+  TTL is just a backstop. Net: crowd DB cost drops from once-per-request to a few shared-refills/min.
 
 The cache stores raw mssql result objects and `buildBootstrap` only READS them (the one `.sort` is on
 a filtered copy), so it's safe to share across users. Per-user `mine` flags are computed each call.
@@ -183,11 +189,24 @@ Browser UI to add/edit/remove games and slots, **safe mid-event**. `admGamesSect
 carries `slots[]` with live `nBuffalo`/`nRoadhouse` signed counts.
 
 Backend: **`POST /api/ac/games`** (in `ac-actions/index.js`, `handleGames`):
-`addGame` / `updateGame` / `removeGame` / `addSlot` / `updateSlot` / `removeSlot`. Editing = `UPDATE`
+`addGame` / `updateGame` / `removeGame` / `addSlot` / `updateSlot` / `removeSlot` /
+`addRound` / `updateRound` / `removeRound`. Editing = `UPDATE`
 on stable ids (sign-ups preserved); removing drops only that item's sign-ups. The game editor also
 sets **"Points for a win"** (`bo_games.win_points`, migration 004) — the points a ref's winner pick
 awards to the winning tribe — and **"Needs a referee"** (defaults ON; migration 005 set `needs_ref=1`
 on every existing game).
+
+**Head-to-Head + Bracket (migration 009).** The game editor has a **"Head-to-head"** toggle
+(`bo_games.head_to_head`) that drives how refs score: ON → winner-picker awarding the flat
+`win_points`; OFF → the ref types any number per player (variable). It's decoupled from `open_play`
+(walk-up scheduling); the backfill sets non-walk-up games to head_to_head=1 so pre-009 behavior is
+preserved. Refs read it via `stationType`/`refStations.type` (`'vs'` vs `'walk'`). A **"🏆 Bracket"**
+button per game opens the **bracket editor** (`admBracketModal` + `admBracket*`/`admRound*` actions):
+toggle `is_bracket`, edit the intro, and add/edit/remove rounds (`bo_bracket_rounds`: time/name/detail/
+team). Brackets USED to be a hard-coded frontend `BRACKETS` const; it's now DB-backed and editable,
+with `BRACKETS` kept only as a pre-009 fallback (`bracketFor(g)` prefers the payload). Both the
+head_to_head/is_bracket/bracket_intro writes and the round table are handled **defensively** (separate
+UPDATE in try/catch; round actions 409 pre-009) so the editor still works before 009 is run.
 
 ---
 
@@ -196,8 +215,9 @@ on every existing game).
 `settings` (eventMode/refJoinCode/scoresRevealed[one-way]/dipRevealed) · `people`
 (toggleAdmin/toggleRef/addGame/removeGame/**fillSlot**/**resetPassword**/**removeUser**) · `relay-legs` · `announcements` ·
 `schedule` (add/remove/move/update) · **`idols`** (add/update/remove/toggleFound — hidden-immunity clues,
-`bo_idols`, migration 003; hidden by default, reveal by release time or found) · `ref-assign` · `games` (see above) ·
-**`reset-scores`** (clears ALL logged scores). Every `ac` action busts the
+`bo_idols`, migration 003; hidden by default, reveal by release time or found) · `ref-assign` · `games`
+(addGame/updateGame/removeGame/addSlot/updateSlot/removeSlot + **addRound/updateRound/removeRound** —
+see above) · **`reset-scores`** (clears ALL logged scores). Every `ac` action busts the
 shared bootstrap cache. `removeUser` deletes a user + their sign-ups/dip/relay/ref-assignment (keeps
 `bo_results`) — for clearing test/bogus accounts. `resetPassword` sets a new `password_hash` (admin-
 driven reset — no email infra, so the admin sets it and tells the person). `fillSlot` drops a specific
@@ -226,14 +246,17 @@ Refs have **no tribe**, so they skip the pick-your-tribe gate (`render()` guards
   `payload.refGames`.
 - **Scoring: click a game → pick the timeslot → log it.** Games run out of order, so the ref selects
   which slot they're scoring (`S.refSlot[gameId]`), sees that slot's players, and logs via
-  `POST /api/results`:
-  - **Head-to-head / bracket** → **winner-picker** (`type:'winner'`, `{winnerTeam, winnerName,
-    scores}`). Points come from the game's `win_points` (server-authoritative). Bracket games
-    (in `BRACKETS`) get a **round toggle**: "Bracket round" = within-tribe, logs advancement with
-    `scores:false` (no points); "Championship" = cross-tribe, `scores:true` (awards points). So **only
-    the cross-tribe championship scores**.
-  - **Walk-up** → the ref **types any number** per player (`type:'solo'`), plus a walk-on search to
-    score anyone not on the slot list (`type:'walk'`). No fixed value — whatever they earned.
+  `POST /api/results`. **Which scoring UI a ref sees is driven by the game's `head_to_head` flag**
+  (migration 009), NOT `open_play` — `refStations.type` is `'vs'` when head_to_head, else `'walk'`:
+  - **Head-to-head** (`type:'vs'` station) → **winner-picker** (`type:'winner'`, `{winnerTeam,
+    winnerName, scores}`). Points come from the game's `win_points` (server-authoritative). Bracket
+    games (`refStations.isBracket`, DB-backed via migration 009 with a `BRACKETS`-const fallback pre-009)
+    get a **round toggle**: "Bracket round" = within-tribe, logs advancement with `scores:false` (no
+    points); "Championship" = cross-tribe, `scores:true` (awards points). So **only the cross-tribe
+    championship scores**.
+  - **Not head-to-head** (`type:'walk'` station) → the ref **types any number** per player
+    (`type:'solo'`), plus a walk-on search to score anyone not on the slot list (`type:'walk'`). No
+    fixed value — whatever they earned. (Any game can be this now, not just walk-up ones.)
 
 Admin still assigns refs in **Admin → Referees** (`ref-assign`); both paths write `bo_ref_assignments`.
 
@@ -272,13 +295,15 @@ header. `api/lib/auth.js`: `requireUser` (verifies token → user row), `require
 
 `bo_users` (id, first/last, username, email, pw_hash, team, is_ref, is_admin, shirt_size, years,
 song_request, …) · `bo_games` (id NVARCHAR PK, name, time_label, needs_ref, venue, **open_play**,
-**win_points** [004], sort, + legacy cols) · `bo_game_slots` (id IDENTITY, game_id, start_min, label,
+**win_points** [004], **head_to_head/is_bracket/bracket_intro** [009], sort, + legacy cols) ·
+`bo_game_slots` (id IDENTITY, game_id, start_min, label,
 cap_buffalo, cap_roadhouse, sort) · `bo_signups` (user_id, slot_id) PK ·
 `bo_schedule` (…, **end_label/end_ampm** [006]) · `bo_relay_legs` / `bo_relay_signups` ·
 `bo_dip_entries` / `bo_dip_votes` · `bo_results` / `bo_result_history` · `bo_ref_assignments`
 (game_id PK — one ref per game) · `bo_idols` (title, clue, release_min, found, sort — 003) ·
-`bo_announcements` · `bo_settings` (key/value: event_mode, ref_join_code, scores_revealed,
-dip_revealed).
+**`bo_bracket_rounds`** (id IDENTITY, game_id, sort, time_label, name, detail, team — 009; editable
+bracket rounds) · `bo_announcements` · `bo_settings` (key/value: event_mode, ref_join_code,
+scores_revealed, dip_revealed).
 
 ---
 
@@ -292,9 +317,10 @@ SWA app settings: `FABRIC_SQL_SERVER`, `FABRIC_SQL_DATABASE`, `AZURE_TENANT_ID` 
 `AZURE_CLIENT_SECRET` (SP; Secret **Value** not ID), `SESSION_SECRET`, `ADMIN_EMAILS`.
 
 Migrations run **by hand** in the Fabric portal SQL editor: `001_init.sql` then `002_slots.sql`
-(002 resets sign-ups — pre-event only), then `003`–`008` (idols / win_points / default-ref /
-schedule-end / game details / widen game text; each idempotent, run once). Backend reads the
-003–006 columns/tables **defensively** (try/catch → default), so the app still boots if a
+(002 resets sign-ups — pre-event only), then `003`–`009` (idols / win_points / default-ref /
+schedule-end / game details / widen game text / **game types + brackets**; each idempotent, run once —
+**009 runs in TWO steps**, Part 1 schema then Part 2 backfill, per the Fabric Msg 207 gotcha). Backend
+reads the 003–009 columns/tables **defensively** (try/catch → default), so the app still boots if a
 migration hasn't been run yet — the feature just stays dormant until it is.
 
 ---
@@ -358,8 +384,10 @@ Shipped since (all merged to `main`):
   the team gate.
 
 DB migrations **003–008 have been run** in Fabric (idols / win_points / default-ref / schedule-end /
-game details / widen game text). Edit the game lineup only via the admin editor — never re-run 002
-(it wipes sign-ups).
+game details / widen game text). **009 (game types + brackets) must still be run** — two steps, Part 1
+then Part 2. Until it is, the head-to-head toggle / bracket editor stay dormant (backend is defensive)
+and refs fall back to the old open_play-derived scoring + the hard-coded `BRACKETS`. Edit the game
+lineup only via the admin editor — never re-run 002 (it wipes sign-ups).
 
 Open ideas / not built: overlap indicator on the games list (grey out games that clash with an
 existing pick — scoped but not built); email/notifications; richer mobile polish. Nothing blocking.

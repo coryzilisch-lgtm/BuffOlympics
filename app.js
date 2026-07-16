@@ -31,8 +31,11 @@ const S = {
   adminPeek: null, adminConfirmReveal: false,
   editingId: null, editVal: '',
   historyOpenId: null,
-  admGameEdit: null,     // { mode:'add'|'edit', id?, needsRef, openPlay } — game modal
+  admGameEdit: null,     // { mode:'add'|'edit', id?, needsRef, openPlay, headToHead } — game modal
   admSlotEdit: null,     // { mode:'add'|'edit', gameId, slotId? } — slot modal
+  admBracketEdit: null,  // { gameId } — bracket editor modal (rounds + intro)
+  admRoundEdit: null,    // round id being edited inline in the bracket modal
+  admRoundTeam: 'both',  // selected matchup for the round being edited
   admFillSlot: null,     // { slotId, gameId } — "Fill slot" search open in Games tab
   admAddSlot: null,      // { uid, gameId } — slot picker open in People tab
   admSchedEdit: null,    // schedule row id currently being edited inline
@@ -678,9 +681,10 @@ function refBoardScreen() {
   const stationHtml = stations.map(st => {
     const open = S.refOpen === st.gameId;
     const isVs = st.type === 'vs', isWalk = st.type === 'walk';
-    const typeLabel = isVs ? 'Head-to-head' : 'Walk-up';
-    const statusLabel = isWalk ? 'Open all day' : 'On station';
-    const statusColor = isWalk ? '#3FBF87' : T.A;
+    const typeLabel = isVs ? 'Head-to-head' : 'Points per player';
+    // "Open all day" tracks walk-up scheduling (open_play), independent of scoring style.
+    const statusLabel = st.openPlay ? 'Open all day' : 'On station';
+    const statusColor = st.openPlay ? '#3FBF87' : T.A;
     const rowBg = open ? th.panel : T.dim;
     const rowBorder = T.A;
 
@@ -689,7 +693,7 @@ function refBoardScreen() {
       const slots = (st.slots || []).slice().sort((a, b) => a.startMin - b.startMin);
       const selId = S.refSlot[st.gameId];
       const selSlot = slots.find(s => String(s.id) === String(selId)) || null;
-      const isBracket = !!BRACKETS[st.gameId];
+      const isBracket = st.isBracket !== undefined ? st.isBracket : !!BRACKETS[st.gameId];
       const winPts = st.winPoints != null ? st.winPoints : 10;
       const teamColor = (t) => t === 'buffalo' ? '#FF5F00' : '#E0322E';
       const teamLabel = (t) => t === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse';
@@ -858,7 +862,7 @@ function gamesScreen() {
           <span style="font-size:11.5px;color:${T.A};font-weight:700;">${esc(g.runtimeLabel || '')}</span>
           ${g.venue ? `<span style="font-size:11.5px;color:${th.sub};">${esc(g.venue)}</span>` : ''}
           ${gm.hasSlots ? `<span style="font-size:11.5px;color:${th.sub};">${g.slots.length} slots</span>` : ''}
-          ${BRACKETS[g.id] ? `<span style="font-size:10px;font-weight:800;letter-spacing:0.03em;text-transform:uppercase;color:#F5C518;border:1px solid rgba(245,197,24,0.5);border-radius:5px;padding:2px 6px;">🏆 Bracket</span>` : ''}
+          ${bracketFor(g) ? `<span style="font-size:10px;font-weight:800;letter-spacing:0.03em;text-transform:uppercase;color:#F5C518;border:1px solid rgba(245,197,24,0.5);border-radius:5px;padding:2px 6px;">🏆 Bracket</span>` : ''}
         </div>
       </div>
       <div style="flex-shrink:0;">${status}</div>
@@ -961,10 +965,20 @@ const BRACKETS = {
     ],
   },
 };
+// Resolve a game's bracket: prefer the DB-backed config (migration 009), fall
+// back to the hard-coded BRACKETS by id when the payload predates 009 (isBracket
+// undefined). A game the admin has explicitly un-bracketed (isBracket === false)
+// resolves to null even if it has a legacy BRACKETS entry.
+function bracketFor(g) {
+  if (!g) return null;
+  if (g.isBracket === false) return null;
+  if (g.bracket && (g.bracket.rounds || []).length) return g.bracket;
+  return BRACKETS[g.id] || null;
+}
 function bracketPanel(g) {
   const T = theme();
   const th = T.th;
-  const br = BRACKETS[g.id];
+  const br = bracketFor(g);
   if (!br) return '';
   const accentFor = (team) => team === 'final' ? '#F5C518'
     : team === 'buffalo' ? '#FF5F00'
@@ -1562,7 +1576,7 @@ function deskGamesScreen() {
           <div style="font-size:12px;color:#6D7C83;margin-top:3px;">${esc(g.runtimeLabel || '')}${g.venue ? ' · ' + esc(g.venue) : ''}${gm.hasSlots ? ' · ' + g.slots.length + ' slots' : ''}</div>
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0;">
-          ${BRACKETS[g.id] ? `<span style="font-size:9.5px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:#8A5A12;background:#FCEFDD;border:1px solid #F0D9BB;border-radius:5px;padding:2px 7px;">🏆 Bracket</span>` : ''}
+          ${bracketFor(g) ? `<span style="font-size:9.5px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:#8A5A12;background:#FCEFDD;border:1px solid #F0D9BB;border-radius:5px;padding:2px 7px;">🏆 Bracket</span>` : ''}
           ${g.needsRef ? `<span style="font-size:9.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:${dA};border:1px solid ${dA};border-radius:5px;padding:2px 7px;">Ref</span>` : ''}
         </div>
       </div>
@@ -1899,11 +1913,14 @@ function admGamesSection(ov) {
             <span style="font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">${esc(g.runtimeLabel || 'No time set')}</span>
             ${g.openPlay ? '<span style="font-size:9px;font-weight:800;color:#fff;background:#00253D;border-radius:4px;padding:2px 6px;">Walk-up</span>' : ''}
             ${g.needsRef ? '<span style="font-size:9px;font-weight:800;color:#fff;background:#FF5F00;border-radius:4px;padding:2px 6px;">Ref</span>' : ''}
+            ${g.headToHead ? '<span style="font-size:9px;font-weight:800;color:#fff;background:#1F8A5B;border-radius:4px;padding:2px 6px;">Head-to-Head</span>' : ''}
+            ${g.isBracket ? '<span style="font-size:9px;font-weight:800;color:#8A5A12;background:#FCEFDD;border:1px solid #F0D9BB;border-radius:4px;padding:2px 6px;">🏆 Bracket</span>' : ''}
           </div>
           <div style="font-family:'BN Kragen';font-size:18px;color:#00253D;text-transform:uppercase;line-height:1;margin-top:5px;">${esc(g.name)}</div>
           <div style="font-size:11.5px;color:#6D7C83;margin-top:5px;">${slots.length} slot${slots.length === 1 ? '' : 's'} · ${signed} signed up${g.venue ? ' · ' + esc(g.venue) : ''}</div>
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0;">
+          <button data-act="admBracketOpen" data-id="${esc(g.id)}" style="font-size:11.5px;font-weight:700;color:#8A5A12;border:1px solid #F0D9BB;background:#FCEFDD;border-radius:6px;padding:7px 11px;">🏆 Bracket</button>
           <button data-act="admGameEdit" data-id="${esc(g.id)}" style="font-size:11.5px;font-weight:700;color:#00253D;border:1px solid #DCE3E2;border-radius:6px;padding:7px 11px;">Edit</button>
           <button data-act="admGameDelete" data-id="${esc(g.id)}" data-name="${esc(g.name)}" data-signed="${signed}" style="width:30px;height:30px;border-radius:6px;border:1px solid #F0CDB3;color:#C77B23;font-size:16px;display:flex;align-items:center;justify-content:center;">×</button>
         </div>
@@ -1928,13 +1945,13 @@ function admGamesSection(ov) {
 function admModalShell(title, inner, saveAct, cancelAct) {
   return `
   <div data-act="${cancelAct}" style="position:fixed;inset:0;background:rgba(1,18,31,0.55);z-index:1400;display:flex;align-items:center;justify-content:center;padding:20px;">
-    <div data-act="admNoop" style="background:#fff;border-radius:14px;width:100%;max-width:420px;overflow:hidden;box-shadow:0 30px 70px rgba(0,0,0,0.4);">
-      <div style="padding:16px 18px;border-bottom:1px solid #EEF2F1;display:flex;align-items:center;justify-content:space-between;">
+    <div data-act="admNoop" style="background:#fff;border-radius:14px;width:100%;max-width:420px;max-height:90vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 30px 70px rgba(0,0,0,0.4);">
+      <div style="padding:16px 18px;border-bottom:1px solid #EEF2F1;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
         <span style="font-family:'BN Kragen';font-size:19px;color:#00253D;text-transform:uppercase;">${esc(title)}</span>
         <button data-act="${cancelAct}" style="width:28px;height:28px;border-radius:7px;background:#EEF2F1;color:#46545B;font-size:15px;">×</button>
       </div>
-      <div style="padding:18px;">${inner}</div>
-      <div style="padding:14px 18px;border-top:1px solid #EEF2F1;display:flex;gap:10px;justify-content:flex-end;">
+      <div style="padding:18px;overflow-y:auto;">${inner}</div>
+      <div style="padding:14px 18px;border-top:1px solid #EEF2F1;display:flex;gap:10px;justify-content:flex-end;flex-shrink:0;">
         <button data-act="${cancelAct}" style="font-size:13px;font-weight:700;color:#46545B;padding:11px 16px;border-radius:8px;border:1px solid #DCE3E2;">Cancel</button>
         <button data-act="${saveAct}" style="background:#FF5F00;color:#011220;font-weight:800;font-size:13px;padding:11px 20px;border-radius:8px;">Save</button>
       </div>
@@ -1986,7 +2003,9 @@ function admGamesModals() {
       <div style="display:flex;flex-direction:column;gap:12px;">
         ${admToggle('Needs a referee', ge.needsRef, 'admGameFlagRef')}
         ${admToggle('Walk-up game (open after its window)', ge.openPlay, 'admGameFlagWalk')}
-      </div>`;
+        ${admToggle('Head-to-head (ref picks a winning tribe)', ge.headToHead, 'admGameFlagH2H')}
+      </div>
+      <div style="font-size:11px;color:#9AA7A5;margin-top:8px;line-height:1.5;">Head-to-head ON → the ref picks the winning tribe and it earns the flat “Points for a win”. OFF → the ref types any number of points for each player (variable scoring, no single winner).</div>`;
     html += admModalShell(ge.mode === 'add' ? 'Add game' : 'Edit game', inner, 'admGameSave', 'admGameCancel');
   }
   const se = S.admSlotEdit;
@@ -2003,7 +2022,79 @@ function admGamesModals() {
       <div style="font-size:11px;color:#9AA7A5;margin-top:8px;">0 for a tribe means that tribe isn't in this slot.</div>`;
     html += admModalShell(se.mode === 'add' ? 'Add time slot' : 'Edit time slot', inner, 'admSlotSave', 'admSlotCancel');
   }
+  if (S.admBracketEdit) html += admBracketModal();
   return html;
+}
+
+// Fully-editable bracket editor (migration 009). Toggle whether a game is a
+// bracket, edit its intro, and add / edit / remove rounds — this is also how you
+// "see the bracket" from the Admin Center.
+function admBracketModal() {
+  const be = S.admBracketEdit;
+  const g = ((S.overview || {}).gamesCatalog || []).find(x => x.id === be.gameId);
+  if (!g) return '';
+  const rounds = g.bracketRounds || [];
+  const teamOpt = [
+    { k: 'buffalo', label: 'Buffalo', c: '#FF5F00' },
+    { k: 'roadhouse', label: 'Texas Roadhouse', c: '#E0322E' },
+    { k: 'both', label: 'Both tribes', c: '#6D7C83' },
+    { k: 'final', label: 'Championship', c: '#C79A1E' },
+  ];
+  const teamBadge = (t) => {
+    const o = teamOpt.find(x => x.k === t) || teamOpt[2];
+    return `<span style="font-size:9.5px;font-weight:800;text-transform:uppercase;color:#fff;background:${o.c};border-radius:4px;padding:2px 7px;">${o.label}</span>`;
+  };
+  const roundRow = (r) => {
+    if (S.admRoundEdit === r.id) {
+      const teamBtn = (o) => `<button data-act="admRoundTeamPick" data-team="${o.k}" style="flex:1;padding:7px 4px;border-radius:6px;font-size:11px;font-weight:700;background:${S.admRoundTeam === o.k ? o.c : '#fff'};color:${S.admRoundTeam === o.k ? '#fff' : '#46545B'};border:1px solid ${S.admRoundTeam === o.k ? o.c : '#DCE3E2'};">${o.label}</button>`;
+      return `
+      <div style="padding:12px 13px;border:1px solid #FFD3B5;border-radius:9px;background:#FFF9F4;margin-bottom:8px;">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <div style="width:130px;">${admFieldLabel('Time')}${admTextInput('br-time', 'brTime', S.f.brTime || '', 'e.g. 3:00 PM')}</div>
+          <div style="flex:1;min-width:130px;">${admFieldLabel('Round name')}${admTextInput('br-name', 'brName', S.f.brName || '', 'e.g. Championship')}</div>
+        </div>
+        <div style="margin-top:10px;">${admFieldLabel('Detail')}${admTextInput('br-detail', 'brDetail', S.f.brDetail || '', 'e.g. Buffalo winner vs Texas Roadhouse winner')}</div>
+        <div style="margin-top:10px;">${admFieldLabel('Matchup')}<div style="display:flex;gap:6px;">${teamOpt.map(teamBtn).join('')}</div></div>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button data-act="admRoundSave" data-round="${r.id}" style="background:#FF5F00;color:#011220;font-weight:800;font-size:12.5px;padding:9px 15px;border-radius:8px;">Save round</button>
+          <button data-act="admRoundCancel" style="color:#6D7C83;font-weight:700;font-size:12.5px;padding:9px 12px;border-radius:8px;border:1px solid #DCE3E2;">Cancel</button>
+        </div>
+      </div>`;
+    }
+    return `
+    <div style="display:flex;align-items:center;gap:11px;padding:11px 13px;border:1px solid #E0E6E5;border-radius:9px;margin-bottom:8px;">
+      <span style="width:88px;flex-shrink:0;font-family:'BN Kragen';font-size:14px;color:#C77B23;line-height:1.1;">${esc(r.time || '—')}</span>
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap;"><span style="font-size:13.5px;font-weight:700;color:#00253D;">${esc(r.name || 'Untitled round')}</span>${teamBadge(r.team)}</div>
+        ${r.detail ? `<div style="font-size:11.5px;color:#6D7C83;margin-top:2px;">${esc(r.detail)}</div>` : ''}
+      </div>
+      <button data-act="admRoundEditStart" data-round="${r.id}" data-time="${esc(r.time || '')}" data-name="${esc(r.name || '')}" data-detail="${esc(r.detail || '')}" data-team="${esc(r.team || 'both')}" style="flex-shrink:0;font-size:11.5px;font-weight:700;color:#00253D;border:1px solid #DCE3E2;border-radius:6px;padding:6px 10px;">Edit</button>
+      <button data-act="admRoundRemove" data-round="${r.id}" style="flex-shrink:0;width:28px;height:28px;border-radius:6px;border:1px solid #F0CDB3;color:#C77B23;font-size:15px;">×</button>
+    </div>`;
+  };
+  const inner = `
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;background:#F6F8F7;border:1px solid #E6ECEA;border-radius:9px;padding:11px 13px;">
+      <span style="font-size:13px;font-weight:700;color:#00253D;">Show this game as a bracket</span>
+      ${admToggle('', g.isBracket, 'admBracketToggle')}
+    </div>
+    <div style="font-size:11px;color:#9AA7A5;margin:8px 0 16px;line-height:1.5;">When ON, players and refs see a 🏆 Bracket pill and the rounds below as the game's "Bracket path."</div>
+    ${admFieldLabel('Intro blurb (optional)')}
+    <textarea id="br-intro" data-field="brIntro" placeholder="One line explaining how the bracket works…" style="width:100%;min-height:64px;font-size:13.5px;color:#00253D;border:1px solid #DCE3E2;border-radius:8px;padding:10px 11px;font-family:'Montserrat';outline:none;resize:vertical;">${esc(S.f.brIntro !== undefined ? S.f.brIntro : (g.bracketIntro || ''))}</textarea>
+    <div style="margin-top:8px;"><button data-act="admBracketIntroSave" style="font-size:12px;font-weight:700;color:#FF5F00;border:1px solid #FFD3B5;border-radius:7px;padding:8px 13px;">Save intro</button></div>
+    <div style="height:1px;background:#EEF2F1;margin:18px 0 14px;"></div>
+    <div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#6D7C83;margin-bottom:10px;">Rounds</div>
+    ${rounds.length ? rounds.map(roundRow).join('') : '<div style="font-size:12.5px;color:#9AA7A5;font-style:italic;margin-bottom:8px;">No rounds yet.</div>'}
+    <button data-act="admRoundAdd" data-game="${esc(g.id)}" style="width:100%;padding:10px;border:1px dashed #FF5F00;border-radius:8px;font-size:12.5px;font-weight:700;color:#FF5F00;background:#FCFBF7;">+ Add round</button>`;
+  return `
+  <div data-act="admBracketClose" style="position:fixed;inset:0;background:rgba(1,18,31,0.55);z-index:1400;display:flex;align-items:center;justify-content:center;padding:20px;">
+    <div data-act="admNoop" style="background:#fff;border-radius:14px;width:100%;max-width:480px;max-height:88vh;overflow-y:auto;box-shadow:0 30px 70px rgba(0,0,0,0.4);">
+      <div style="padding:16px 18px;border-bottom:1px solid #EEF2F1;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;background:#fff;">
+        <span style="font-family:'BN Kragen';font-size:19px;color:#00253D;text-transform:uppercase;">🏆 Bracket — ${esc(g.name)}</span>
+        <button data-act="admBracketClose" style="width:28px;height:28px;border-radius:7px;background:#EEF2F1;color:#46545B;font-size:15px;">×</button>
+      </div>
+      <div style="padding:18px;">${inner}</div>
+    </div>
+  </div>`;
 }
 
 function admScheduleSection(ov) {
@@ -2948,7 +3039,7 @@ const ACTIONS = {
   }),
 
   // ── admin ──
-  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; S.admSchedEdit = null; S.admIdolEdit = null; S.admFillSlot = null; S.admAddSlot = null; render(); },
+  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; S.admSchedEdit = null; S.admIdolEdit = null; S.admFillSlot = null; S.admAddSlot = null; S.admBracketEdit = null; render(); },
   admMode: (el) => guarded(async () => {
     await api('/ac/settings', { method: 'POST', body: { eventMode: el.dataset.mode } });
     await afterAdminMutation();
@@ -3116,7 +3207,7 @@ const ACTIONS = {
   // ── games & slots editor ──
   admNoop: () => {},
   admGameNew: () => {
-    S.admGameEdit = { mode: 'add', needsRef: true, openPlay: false };
+    S.admGameEdit = { mode: 'add', needsRef: true, openPlay: false, headToHead: true };
     S.f.gmName = ''; S.f.gmTime = ''; S.f.gmVenue = ''; S.f.gmPoints = '10';
     S.f.gmPlayers = ''; S.f.gmPointsLabel = ''; S.f.gmDescr = ''; S.f.gmVideo = '';
     render();
@@ -3124,7 +3215,10 @@ const ACTIONS = {
   admGameEdit: (el) => {
     const g = (S.overview.gamesCatalog || []).find(x => x.id === el.dataset.id);
     if (!g) return;
-    S.admGameEdit = { mode: 'edit', id: g.id, needsRef: !!g.needsRef, openPlay: !!g.openPlay };
+    S.admGameEdit = {
+      mode: 'edit', id: g.id, needsRef: !!g.needsRef, openPlay: !!g.openPlay,
+      headToHead: g.headToHead !== undefined ? !!g.headToHead : !g.openPlay,
+    };
     S.f.gmName = g.name; S.f.gmTime = g.runtimeLabel || ''; S.f.gmVenue = g.venue || '';
     S.f.gmPoints = String(g.winPoints != null ? g.winPoints : 10);
     S.f.gmPlayers = g.players || ''; S.f.gmPointsLabel = g.pointsLabel || '';
@@ -3133,6 +3227,63 @@ const ACTIONS = {
   },
   admGameFlagRef: () => { if (S.admGameEdit) { S.admGameEdit.needsRef = !S.admGameEdit.needsRef; render(); } },
   admGameFlagWalk: () => { if (S.admGameEdit) { S.admGameEdit.openPlay = !S.admGameEdit.openPlay; render(); } },
+  admGameFlagH2H: () => { if (S.admGameEdit) { S.admGameEdit.headToHead = !S.admGameEdit.headToHead; render(); } },
+  // ── bracket editor ──
+  admBracketOpen: (el) => {
+    S.admBracketEdit = { gameId: el.dataset.id };
+    S.admRoundEdit = null;
+    const g = (S.overview.gamesCatalog || []).find(x => x.id === el.dataset.id);
+    S.f.brIntro = g ? (g.bracketIntro || '') : '';
+    render();
+  },
+  admBracketClose: () => { S.admBracketEdit = null; S.admRoundEdit = null; render(); },
+  admBracketToggle: () => {
+    const be = S.admBracketEdit; if (!be) return;
+    const g = (S.overview.gamesCatalog || []).find(x => x.id === be.gameId);
+    const next = !(g && g.isBracket);
+    guarded(async () => {
+      await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: be.gameId, isBracket: next } });
+      await loadOverview(true);
+      toast(next ? 'Marked as a bracket game' : 'No longer a bracket game');
+    });
+  },
+  admBracketIntroSave: () => {
+    const be = S.admBracketEdit; if (!be) return;
+    guarded(async () => {
+      await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: be.gameId, bracketIntro: (S.f.brIntro || '').trim() } });
+      await loadOverview(true);
+      toast('Intro saved');
+    });
+  },
+  admRoundAdd: (el) => guarded(async () => {
+    await api('/ac/games', { method: 'POST', body: { action: 'addRound', gameId: el.dataset.game } });
+    await loadOverview(true);
+  }),
+  admRoundEditStart: (el) => {
+    S.admRoundEdit = parseInt(el.dataset.round, 10);
+    S.f.brTime = el.dataset.time || ''; S.f.brName = el.dataset.name || '';
+    S.f.brDetail = el.dataset.detail || ''; S.admRoundTeam = el.dataset.team || 'both';
+    render();
+  },
+  admRoundTeamPick: (el) => { S.admRoundTeam = el.dataset.team; render(); },
+  admRoundCancel: () => { S.admRoundEdit = null; render(); },
+  admRoundSave: (el) => guarded(async () => {
+    await api('/ac/games', { method: 'POST', body: {
+      action: 'updateRound', roundId: parseInt(el.dataset.round, 10),
+      timeLabel: (S.f.brTime || '').trim(), name: (S.f.brName || '').trim(),
+      detail: (S.f.brDetail || '').trim(), team: S.admRoundTeam || 'both',
+    } });
+    S.admRoundEdit = null;
+    await loadOverview(true);
+    toast('Round saved');
+  }),
+  admRoundRemove: (el) => {
+    if (!window.confirm('Remove this round?')) return;
+    guarded(async () => {
+      await api('/ac/games', { method: 'POST', body: { action: 'removeRound', roundId: parseInt(el.dataset.round, 10) } });
+      await loadOverview(true);
+    });
+  },
   admGameCancel: () => { S.admGameEdit = null; render(); },
   admGameSave: () => guarded(async () => {
     const ge = S.admGameEdit; if (!ge) return;
@@ -3150,6 +3301,7 @@ const ACTIONS = {
       name, timeLabel: (S.f.gmTime || '').trim(), venue: (S.f.gmVenue || '').trim(),
       needsRef: !!ge.needsRef, openPlay: !!ge.openPlay,
     };
+    details.headToHead = !!ge.headToHead;
     if (ge.mode === 'add') {
       // addGame inserts the core row (text fields default NULL); set the pills /
       // how-to-play / video / win-points in a follow-up updateGame.
