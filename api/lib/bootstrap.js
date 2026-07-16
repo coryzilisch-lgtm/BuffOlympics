@@ -127,9 +127,35 @@ async function loadSharedBootstrap(pool, fresh) {
     for (const r of seR.recordset) schedEndById[r.id] = { endLabel: r.end_label || '', endAmpm: r.end_ampm || '' };
   } catch (e) { /* columns not present yet */ }
 
+  // Game types (migration 009): head_to_head scoring flag + bracket flag/intro.
+  // Defensive so the app boots pre-009 (frontend then falls back to its own
+  // derivation: non-walk-up = head-to-head, and the hard-coded BRACKETS config).
+  let gameTypeById = {};
+  try {
+    const gtR = await pool.request().query('SELECT id, head_to_head, is_bracket, bracket_intro FROM bo_games');
+    for (const r of gtR.recordset) gameTypeById[r.id] = {
+      headToHead: !!r.head_to_head, isBracket: !!r.is_bracket, bracketIntro: r.bracket_intro || '',
+    };
+  } catch (e) { /* columns not present yet */ }
+
+  // Bracket rounds (migration 009). Shaped to match the old frontend BRACKETS
+  // config so bracketPanel() renders unchanged.
+  let bracketRoundsByGame = {};
+  try {
+    const brR = await pool.request().query(
+      'SELECT game_id, sort, time_label, name, detail, team FROM bo_bracket_rounds ORDER BY game_id, sort, id');
+    for (const r of brR.recordset) {
+      if (!bracketRoundsByGame[r.game_id]) bracketRoundsByGame[r.game_id] = [];
+      bracketRoundsByGame[r.game_id].push({
+        time: r.time_label || '', name: r.name || '', detail: r.detail || '', team: r.team || 'both',
+      });
+    }
+  } catch (e) { /* table not present yet */ }
+
   const shared = {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
     legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, schedEndById,
+    gameTypeById, bracketRoundsByGame,
   };
   cache.set(SHARED_KEY, shared, SHARED_TTL_MS);
   return shared;
@@ -145,7 +171,16 @@ async function buildBootstrap(pool, user, opts = {}) {
   const {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
     legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, schedEndById,
+    gameTypeById, bracketRoundsByGame,
   } = shared;
+  // Bracket payload for a game, or null. Undefined isBracket (pre-009) is left
+  // for the frontend to resolve against its BRACKETS fallback.
+  const bracketFor = (id) => {
+    const rounds = bracketRoundsByGame[id] || [];
+    if (!rounds.length) return null;
+    const gt = gameTypeById[id] || {};
+    return { intro: gt.bracketIntro || '', rounds };
+  };
   const [myVoteR, myResultsR] = await Promise.all([
     pool.request().input('uid', sql.Int, uid)
       .query('SELECT dip_entry_id FROM bo_dip_votes WHERE user_id = @uid'),
@@ -212,22 +247,30 @@ async function buildBootstrap(pool, user, opts = {}) {
     } : null;
   }).filter(Boolean).sort((a, b) => a.startMin - b.startMin);
 
-  const games = gamesR.recordset.map(g => ({
-    id: g.id,
-    name: g.name,
-    needsRef: !!g.needs_ref,
-    venue: g.venue,
-    openPlay: !!g.open_play,
-    runtimeLabel: g.time_label || '',
-    players: g.players || '',
-    pointsLabel: g.points_label || '',
-    descr: g.descr || '',
-    inventory: g.inventory || '',
-    videoUrl: g.video_url || '',
-    slots: slotsByGame[g.id] || [],
-    mySlotId: (slotsByGame[g.id] || []).find(s => s.mine)?.id ?? null,
-    mine: (slotsByGame[g.id] || []).some(s => s.mine),
-  }));
+  const games = gamesR.recordset.map(g => {
+    const gt = gameTypeById[g.id] || {};
+    return {
+      id: g.id,
+      name: g.name,
+      needsRef: !!g.needs_ref,
+      venue: g.venue,
+      openPlay: !!g.open_play,
+      // head_to_head drives ref scoring (winner-picker vs type-a-number). Pre-009
+      // it falls back to the old derivation: non-walk-up games were head-to-head.
+      headToHead: gt.headToHead !== undefined ? gt.headToHead : !g.open_play,
+      isBracket: gt.isBracket,                 // undefined pre-009 → frontend uses BRACKETS fallback
+      bracket: bracketFor(g.id),
+      runtimeLabel: g.time_label || '',
+      players: g.players || '',
+      pointsLabel: g.points_label || '',
+      descr: g.descr || '',
+      inventory: g.inventory || '',
+      videoUrl: g.video_url || '',
+      slots: slotsByGame[g.id] || [],
+      mySlotId: (slotsByGame[g.id] || []).find(s => s.mine)?.id ?? null,
+      mine: (slotsByGame[g.id] || []).some(s => s.mine),
+    };
+  });
 
   // ── schedule ──
   const schedule = scheduleR.recordset.map(r => ({
@@ -337,17 +380,24 @@ async function buildBootstrap(pool, user, opts = {}) {
     // A ref only sees the games they're ASSIGNED to (walk-up games included —
     // they're assigned like any other game, not auto-added to everyone).
     const assignedGames = gamesR.recordset.filter(g => assignments[g.id] === uid);
-    payload.refStations = assignedGames.map(g => ({
-      gameId: g.id,
-      name: g.name,
-      venue: g.venue,
-      timeLabel: g.time_label,
-      type: stationType(g),
-      openPlay: !!g.open_play,
-      winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
-      slots: slotsByGame[g.id] || [],
-      signups: signupPeopleByGame[g.id] || [],
-    }));
+    payload.refStations = assignedGames.map(g => {
+      const gt = gameTypeById[g.id] || {};
+      const headToHead = gt.headToHead !== undefined ? gt.headToHead : !g.open_play;
+      return {
+        gameId: g.id,
+        name: g.name,
+        venue: g.venue,
+        timeLabel: g.time_label,
+        // 'vs' → winner-picker, 'walk' → type a number per player.
+        type: headToHead ? 'vs' : 'walk',
+        headToHead,
+        isBracket: gt.isBracket,           // undefined pre-009 → ref board uses BRACKETS fallback
+        openPlay: !!g.open_play,
+        winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
+        slots: slotsByGame[g.id] || [],
+        signups: signupPeopleByGame[g.id] || [],
+      };
+    });
 
     // Every game, with assignment status — powers the ref Games tab where a ref
     // can self-assign (take over) a game to move coverage around.

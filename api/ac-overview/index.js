@@ -87,6 +87,26 @@ app.http('ac-overview', {
         for (const r of seR.recordset) schedEndById[r.id] = { endLabel: r.end_label || '', endAmpm: r.end_ampm || '' };
       } catch (e) { /* columns not present yet */ }
 
+      // Game types + bracket rounds (migration 009) — defensive so admin loads pre-009.
+      let gameTypeById = {};
+      try {
+        const gtR = await pool.request().query('SELECT id, head_to_head, is_bracket, bracket_intro FROM bo_games');
+        for (const r of gtR.recordset) gameTypeById[r.id] = {
+          headToHead: !!r.head_to_head, isBracket: !!r.is_bracket, bracketIntro: r.bracket_intro || '',
+        };
+      } catch (e) { /* columns not present yet */ }
+      let bracketRoundsByGame = {};
+      try {
+        const brR = await pool.request().query(
+          'SELECT id, game_id, sort, time_label, name, detail, team FROM bo_bracket_rounds ORDER BY game_id, sort, id');
+        for (const r of brR.recordset) {
+          if (!bracketRoundsByGame[r.game_id]) bracketRoundsByGame[r.game_id] = [];
+          bracketRoundsByGame[r.game_id].push({
+            id: r.id, time: r.time_label || '', name: r.name || '', detail: r.detail || '', team: r.team || 'both',
+          });
+        }
+      } catch (e) { /* table not present yet */ }
+
       const settings = settingsFromRows(settingsR.recordset);
 
       const gameById = {};
@@ -129,21 +149,29 @@ app.http('ac-overview', {
           nRoadhouse: s.n_roadhouse || 0,
         });
       }
-      const gamesCatalog = gamesR.recordset.map(g => ({
-        id: g.id,
-        name: g.name,
-        runtimeLabel: g.time_label || '',
-        openPlay: !!g.open_play,
-        needsRef: !!g.needs_ref,
-        venue: g.venue,
-        descr: g.descr || '',
-        inventory: g.inventory || '',
-        players: g.players || '',
-        pointsLabel: g.points_label || '',
-        videoUrl: g.video_url || '',
-        winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
-        slots: slotsByGame[g.id] || [],
-      }));
+      const gamesCatalog = gamesR.recordset.map(g => {
+        const gt = gameTypeById[g.id] || {};
+        return {
+          id: g.id,
+          name: g.name,
+          runtimeLabel: g.time_label || '',
+          openPlay: !!g.open_play,
+          needsRef: !!g.needs_ref,
+          venue: g.venue,
+          descr: g.descr || '',
+          inventory: g.inventory || '',
+          players: g.players || '',
+          pointsLabel: g.points_label || '',
+          videoUrl: g.video_url || '',
+          winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
+          // Game types (migration 009). Pre-009 falls back to the old derivation.
+          headToHead: gt.headToHead !== undefined ? gt.headToHead : !g.open_play,
+          isBracket: !!gt.isBracket,
+          bracketIntro: gt.bracketIntro || '',
+          bracketRounds: bracketRoundsByGame[g.id] || [],
+          slots: slotsByGame[g.id] || [],
+        };
+      });
 
       const schedule = scheduleR.recordset.map(r => ({
         id: r.id, timeLabel: r.time_label, ampm: r.ampm, title: r.title, place: r.place, kind: r.kind,
