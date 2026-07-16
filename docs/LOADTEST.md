@@ -15,7 +15,7 @@ they finish** — no residue in the event data, no real rosters or scores touche
 
 Every phone calls `GET /api/bootstrap` on open and **re-polls every 60s**. That
 endpoint is split (`api/lib/bootstrap.js`): ~15 "shared" queries are **cached
-in-process ~20s** so a crowd doesn't re-run them, and only **2 per-user queries**
+in-process ~45s** so a crowd doesn't re-run them, and only **2 per-user queries**
 run live each call. So steady-state reads are cheap. The spikes that matter:
 
 1. **Read stampede** — event start or the Closing-Ceremony score reveal: every
@@ -24,7 +24,7 @@ run live each call. So steady-state reads are cheap. The spikes that matter:
    the same few seconds. Each signup runs the atomic transaction **and** rebuilds
    a fresh bootstrap, so writes are the heaviest single operation.
 
-One F-specific caveat: the ~20s cache is **per Function instance**, so if Static
+One F-specific caveat: the ~45s cache is **per Function instance**, so if Static
 Web Apps scales out to several instances under load, you get several times the
 shared refills. Watch for it in the metrics.
 
@@ -89,8 +89,9 @@ Thresholds are set for the 100–250 range; edit them near the bottom of
 ## If it strains — the tuning levers (cheapest first)
 
 1. **Lengthen the shared-cache TTL.** `SHARED_TTL_MS` in `api/lib/bootstrap.js`
-   (currently `20000`). Bump to 30–45s: fewer shared refills, players still see
-   their *own* writes immediately (writers bypass the cache), and headcounts stay
+   (now `45000` — raised from 20s after the first crowd test). Push to 60–90s if a
+   run still shows heavy shared-refill cost: fewer refills, players still see their
+   *own* writes immediately (writers bypass the cache), and headcounts stay
    near-live because every successful signup refreshes the shared copy.
 2. **Slow the client poll.** The 60s re-poll drives the steady-state floor. 90s
    halves it with barely-noticeable staleness. (Search the poll interval in

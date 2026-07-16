@@ -163,12 +163,13 @@ The event runs on a **shared Fabric F4** capacity (double F2), and `GET /api/boo
 re-polled every 60s by every player) originally ran **14 queries**. Split in `api/lib/bootstrap.js`:
 
 - **12 shared queries** (games, slots, rosters, tribes, schedule, dip, relay, scores, announcements)
-  → cached in-process **~20s** (`api/lib/cache.js`, `SHARED_KEY`).
+  → cached in-process **~45s** (`api/lib/cache.js`, `SHARED_KEY`; raised from 20s after the first
+  crowd load test — trims cold-fill cost when SWA scales out under a burst).
 - **2 per-user queries** (`myVote`, `myResults`) → always live.
 - Writers bypass/refresh the cache: signup/dip/relay pass `buildBootstrap(pool, user, {fresh:true})`;
   results/admin/team call `bustSharedBootstrap()`. So the writer sees their change immediately and
-  every successful signup refreshes the shared copy → headcounts stay fresh during a rush; the 20s
-  TTL is just a backstop. Net: crowd DB cost drops from once-per-request to ~3 shared-refills/min.
+  every successful signup refreshes the shared copy → headcounts stay fresh during a rush; the 45s
+  TTL is just a backstop. Net: crowd DB cost drops from once-per-request to a few shared-refills/min.
 
 The cache stores raw mssql result objects and `buildBootstrap` only READS them (the one `.sort` is on
 a filtered copy), so it's safe to share across users. Per-user `mine` flags are computed each call.

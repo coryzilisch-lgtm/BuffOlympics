@@ -4,13 +4,17 @@ const cache = require('./cache');
 
 // The shared (identical-for-everyone) half of the bootstrap payload is cached
 // per host instance for a few seconds so a game-day crowd doesn't re-run the
-// same dozen queries against the small Fabric F2 capacity. Writes pass
+// same dozen queries against the shared Fabric F4 capacity. Writes pass
 // { fresh:true } (or call bustSharedBootstrap) so the mutator sees their change
 // immediately and every other player picks it up on their next poll.
 const SHARED_KEY = 'bootstrap:shared';
-// Players poll every 60s and writers bypass the cache (fresh:true), so a ~20s
-// TTL is invisible to any single user while cutting crowd DB refills to ~3/min.
-const SHARED_TTL_MS = 20000;
+// Players poll every 60s and writers bypass the cache (fresh:true), so a 45s
+// TTL is invisible to any single user while cutting crowd DB refills further —
+// this also trims the cold-fill cost when Static Web Apps scales out to several
+// Function instances under a burst (each keeps its own copy). Headcounts stay
+// near-live regardless: every successful signup refreshes the shared copy, so
+// the TTL is just a backstop for pure readers between writes.
+const SHARED_TTL_MS = 45000;
 function bustSharedBootstrap() { cache.bust(SHARED_KEY); }
 
 // Per-tribe sign-up cap (relay + dip are separate). Texas Roadhouse brings
