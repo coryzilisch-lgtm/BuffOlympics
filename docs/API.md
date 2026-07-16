@@ -61,8 +61,9 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 ### Ref+ (require isRef or isAdmin)
 | Method & path | Body |
 |---|---|
-| `POST /api/ref-claim` | `{gameId, claim:true|false}` — the ref self-assigns (`claim:true`, takes the game over since `bo_ref_assignments` is one-ref-per-game) or releases it (`claim:false`, only if it's theirs). Returns fresh `{bootstrap}`. Lets refs move coverage without an admin. |
-| `POST /api/results` | One of:<br>`{type:'winner', gameName, winnerTeam:'buffalo'|'roadhouse', winnerName?, scores?}` → ref picks the winner of a head-to-head / bracket match. Points come from the game's `win_points` (server-authoritative). `scores:false` (within-tribe bracket round) logs advancement with `pts=0`; `scores:true` (cross-tribe championship or plain head-to-head) awards `win_points` to `winnerTeam`.<br>`{type:'vs', gameName, ptsBuffalo, ptsRoadhouse}` → one result row, winner = higher side, `pts = max`, detail `"Buffalo B – R Roadhouse"` (legacy scorekeeping).<br>`{type:'solo', gameName, entries:[{name, team, score}]}` → one row per entry with score>0, winner=team, pts=score, detail `"<name> scored <n>"`, `player_name` set.<br>`{type:'walk', gameName, playerName, team, score}` → one row like solo.<br>Each row records `pts_buffalo`/`pts_roadhouse` contributions and `entered_by` = caller's name. Returns `{ok:true}`. |
+| `POST /api/ref-claim` | `{gameId, claim:true|false}` — the ref adds the game to their list (`claim:true`) or drops it (`claim:false`, removes only their own row). **Multiple refs per game, uncapped** (migration 010: `bo_ref_assignments` PK is `(game_id, user_id)`); claiming never bumps another ref. Pre-010 a claim on a game another ref holds 409s. Returns fresh `{bootstrap}`. |
+| `POST /api/results` | One of:<br>`{type:'winner', gameName, winnerTeam:'buffalo'|'roadhouse', winnerName?, scores?, stage?, slotLabel?, roundLabel?}` → ref picks the winning **team** of a head-to-head / bracket match. Points are server-authoritative: `stage:'round'` (within-tribe bracket round) awards the game's `round_points` (migration 010; 0/NULL = advancement only, `pts=0` like before); otherwise `scores:true` awards `win_points` (championship / plain head-to-head) and `scores:false` logs advancement with `pts=0`.<br>`{type:'vs', gameName, ptsBuffalo, ptsRoadhouse, slotLabel?}` → one result row, winner = higher side, `pts = max`, detail `"Buffalo B – R Roadhouse"` — used for **variable-score team slots** (ref types one score per team).<br>`{type:'solo', gameName, entries:[{name, team, score}], slotLabel?}` → one row per entry with score>0, winner=team, pts=score, detail `"<name> scored <n>"`, `player_name` set.<br>`{type:'walk', gameName, playerName, team, score}` → one row like solo.<br>`slotLabel`/`roundLabel` (migration 010, stored best-effort) tag the result to a timeslot / bracket round so the ref UI can mark them **Scored ✓**. Each row records `pts_buffalo`/`pts_roadhouse` contributions and `entered_by` = caller's name. Returns `{ok:true}`. |
+| `DELETE /api/results/{id}` | Ref+ deletes a logged result (and its edit history) so it can be re-entered — powers the ref "Change result" flow (the UI warns first). Returns `{ok:true}`, 404 if gone. |
 
 ### Admin (require isAdmin)
 | Method & path | Body / returns |
@@ -75,10 +76,10 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 | `POST /api/admin/relay-legs` | `{legId, name?, capDelta?}` (cap min 1). `{ok:true}` |
 | `POST /api/admin/announcements` | `{title, body}` → `{ok:true}` |
 | `POST /api/admin/schedule` | `{action:'add'}` (appends "New Block" 5:00 PM), `{action:'remove', id}`, `{action:'move', id, dir:-1|1}`, `{action:'update', id, timeLabel?, ampm?, title?, place?, kind?, endLabel?, endAmpm?}` (`endLabel`/`endAmpm` = optional end time, migration 006; empty clears it back to no end). `{ok:true}` |
-| `POST /api/admin/ref-assign` | `{gameId, userId}` (userId null/'' = unassign). `{ok:true}` |
+| `POST /api/admin/ref-assign` | `{gameId, userId, op?}` — multi-ref (migration 010): `op:'add'` (default when userId set) adds that ref to the game, `op:'remove'` removes them; `userId` null/'' clears **all** refs from the game. `{ok:true}` |
 | `POST /api/ac/reset-scores` | `{confirm}` — clears ALL logged scores. Requires `confirm === 'RESET'` (shared password the admin types; never shown in the UI — a wrong/missing value returns 403). Deletes every `bo_result_history` then `bo_results` row and re-seals the board (`scores_revealed = '0'`). For wiping pre-event test data; can't be undone. Returns `{ok:true}`. |
-| `POST /api/ac/idols` | Idol clues (hidden-immunity), table `bo_idols` (migration 003). `{action:'add'}` (appends blank "New clue"), `{action:'update', id, title?, clue?, releaseMin?}` (`releaseMin` = minutes since midnight, event-local; `null`/'' = stays hidden), `{action:'toggleFound', id}`, `{action:'remove', id}`. `{ok:true}`. Clues are HIDDEN by default; a clue reveals once its `releaseMin` passes on the viewer's clock or it's marked found. |
-| `POST /api/ac/games` | Games + slots CRUD, **safe mid-event** (edits never touch sign-ups; deletes drop only that item's sign-ups). Actions:<br>`{action:'addGame', name, timeLabel?, venue?, needsRef?, openPlay?}` → `{ok, id}` (id derived from name; `win_points` defaults to 10 via the column DEFAULT — set a custom value with a follow-up updateGame).<br>`{action:'updateGame', gameId, name?, timeLabel?, venue?, needsRef?, openPlay?, winPoints?, players?, pointsLabel?, descr?, videoUrl?, headToHead?, isBracket?, bracketIntro?}` (`winPoints` = points the winning tribe earns when a ref logs a winner, migration 004; `players`/`pointsLabel` = the two pills on the game detail; `descr` = "How to play"; `videoUrl` = "See how it's played" link; `headToHead` = migration 009 flag driving ref scoring — ON → winner-picker awarding the flat `winPoints`, OFF → ref types any number per player; `isBracket`/`bracketIntro` = migration 009 bracket flag + intro blurb. `headToHead`/`isBracket`/`bracketIntro` are updated separately + defensively, so a save still works pre-009; empty string clears the text fields).<br>`{action:'removeGame', gameId}` (deletes its slots + sign-ups + ref assignment + bracket rounds).<br>`{action:'addSlot', gameId, startMin, label, capBuffalo, capRoadhouse}`.<br>`{action:'updateSlot', slotId, startMin?, label?, capBuffalo?, capRoadhouse?}` (slot id is stable, so sign-ups survive an edit).<br>`{action:'removeSlot', slotId}` (drops that slot's sign-ups).<br>**Bracket rounds** (migration 009, table `bo_bracket_rounds`): `{action:'addRound', gameId}` (appends a blank "New round"), `{action:'updateRound', roundId, timeLabel?, name?, detail?, team?}` (`team` = `'buffalo'|'roadhouse'|'both'|'final'` — drives the round's accent + 🏆 on the championship), `{action:'removeRound', roundId}`. Return `{ok:true}` (or `409 "Bracket rounds need migration 009"` pre-migration). Returns `{ok:true}`. `ac-overview.gamesCatalog[]` carries `slots[]` `{id,startMin,label,capBuffalo,capRoadhouse,nBuffalo,nRoadhouse}` plus `headToHead`, `isBracket`, `bracketIntro`, and `bracketRounds[]` `{id,time,name,detail,team}` for the editors. |
+| `POST /api/ac/idols` | Idol clues (hidden-immunity), table `bo_idols` (migration 003; `found_by`/`points` migration 010). `{action:'add'}` (appends blank "New clue"), `{action:'update', id, title?, clue?, releaseMin?, points?}` (`releaseMin` = minutes since midnight, event-local; `null`/'' = stays hidden; `points` = what finding this idol is worth), `{action:'award', id, userId}` — marks the idol found by that person AND logs a `bo_results` row awarding the idol's `points` to their tribe (`game_name='Hidden Idol'`, `player_name` = finder), `{action:'toggleFound', id}` (manual toggle; un-finding clears `found_by` but does NOT remove an awarded result — edit it in Scores), `{action:'remove', id}`. `{ok:true}`. Clues are HIDDEN by default; a clue reveals once its `releaseMin` passes on the viewer's clock or it's marked found. |
+| `POST /api/ac/games` | Games + slots CRUD, **safe mid-event** (edits never touch sign-ups; deletes drop only that item's sign-ups). Actions:<br>`{action:'addGame', name, timeLabel?, venue?, needsRef?, openPlay?}` → `{ok, id}` (id derived from name; `win_points` defaults to 10 via the column DEFAULT — set a custom value with a follow-up updateGame).<br>`{action:'updateGame', gameId, name?, timeLabel?, venue?, needsRef?, openPlay?, winPoints?, roundPoints?, players?, pointsLabel?, descr?, videoUrl?, headToHead?, isBracket?, bracketIntro?}` (`roundPoints` = migration 010 — points each within-tribe bracket-round win awards; the championship still awards `winPoints`) (`winPoints` = points the winning tribe earns when a ref logs a winner, migration 004; `players`/`pointsLabel` = the two pills on the game detail; `descr` = "How to play"; `videoUrl` = "See how it's played" link; `headToHead` = migration 009 flag driving ref scoring — ON → winner-picker awarding the flat `winPoints`, OFF → ref types any number per player; `isBracket`/`bracketIntro` = migration 009 bracket flag + intro blurb. `headToHead`/`isBracket`/`bracketIntro` are updated separately + defensively, so a save still works pre-009; empty string clears the text fields).<br>`{action:'removeGame', gameId}` (deletes its slots + sign-ups + ref assignment + bracket rounds).<br>`{action:'addSlot', gameId, startMin, label, capBuffalo, capRoadhouse}`.<br>`{action:'updateSlot', slotId, startMin?, label?, capBuffalo?, capRoadhouse?}` (slot id is stable, so sign-ups survive an edit).<br>`{action:'removeSlot', slotId}` (drops that slot's sign-ups).<br>**Bracket rounds** (migration 009, table `bo_bracket_rounds`): `{action:'addRound', gameId}` (appends a blank "New round"), `{action:'updateRound', roundId, timeLabel?, name?, detail?, team?}` (`team` = `'buffalo'|'roadhouse'|'both'|'final'` — drives the round's accent + 🏆 on the championship), `{action:'removeRound', roundId}`. Return `{ok:true}` (or `409 "Bracket rounds need migration 009"` pre-migration). Returns `{ok:true}`. `ac-overview.gamesCatalog[]` carries `slots[]` `{id,startMin,label,capBuffalo,capRoadhouse,nBuffalo,nRoadhouse}` plus `headToHead`, `isBracket`, `bracketIntro`, and `bracketRounds[]` `{id,time,name,detail,team}` for the editors. |
 
 **Note on real routes:** the admin functions live under the **`ac`** prefix (`/api/ac-overview`, `/api/ac/{action}`) because Azure Functions reserves `admin`. The `/api/admin/*` paths above are the logical contract names; the client calls the `ac` forms.
 
@@ -137,23 +138,30 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
   // ── refs only (omitted for plain players) ──
   "refStations": [
     { "gameId":"corn", "name":"Cornhole", "venue":"The Lawn", "timeLabel":"1:30 – 2:00 PM",
-      "type":"vs", "headToHead":true, "isBracket":true, "openPlay":false, "winPoints":20,   // type: 'vs' (winner-picker) or 'walk' (type a number) — driven by head_to_head (migration 009)
+      "type":"vs", "headToHead":true, "isBracket":true, "openPlay":false, "winPoints":20, "roundPoints":10,   // type: 'vs' (winner-picker) or 'walk' (score per team) — driven by head_to_head (migration 009); roundPoints = per-bracket-round win (migration 010)
       "slots":[ {"id":11,"label":"1:30 PM","startMin":810,"buffalo":["Cory Z."],"roadhouse":["Maggie F."]} ],
       "signups":[ {"name":"Marcus T.","team":"buffalo","slot":"1:30 PM"} ] }
   ],
   "refGames": [                                               // every game + assignment status, for the ref Games tab
     { "gameId":"corn","name":"Cornhole","venue":"The Lawn","timeLabel":"…","openPlay":false,
-      "needsRef":true,"refUserId":3,"refName":"Will F.","mine":true,"slotCount":2 }
+      "needsRef":true,"refNames":["Will F.","Marcus T."],"mine":true,"slotCount":2 }
+  ],
+  "refResults": [                                             // every logged result (newest first) so refs see what's scored
+    { "id":5,"game":"Cornhole","detail":"Buffalo won (+20)","winner":"buffalo","pts":20,
+      "playerName":"Cory Z. & Dana W.","slotLabel":"1:30 PM","roundLabel":null,
+      "enteredBy":"Will F.","mine":true,"createdAt":"…" }
   ],
   "allPlayers": [ {"name":"Dana W.","team":"buffalo"} ]       // for walk-up search (refs only)
 }
 ```
 
 `refStations` = games **assigned to the calling ref** in `bo_ref_assignments` (walk-up games included —
-they're assigned like anything else, no longer auto-shared to every ref). Each station carries its
-`slots` (with per-tribe rosters) so the ref picks which timeslot they're scoring. The ref UI groups the
-scoring by slot; results are still logged per `POST /api/results`. `refGames` lists every game with its
-assignment status to power the ref self-assign tab.
+they're assigned like anything else, no longer auto-shared to every ref). Multiple refs can hold the
+same game (migration 010). Each station carries its `slots` (with per-tribe rosters) so the ref picks
+which timeslot they're scoring. The ref UI groups the scoring by slot; results are still logged per
+`POST /api/results` (tagged with `slotLabel`/`roundLabel` so slots and bracket rounds show a green
+**Scored** mark, and re-scoring goes through `DELETE /api/results/{id}` first). `refGames` lists every
+game with everyone reffing it (`refNames`) to power the ref self-assign tab.
 
 Notes:
 - `dip.entries[].name` is included **only** for entries on the viewer's own team (cooks are anonymous
@@ -183,7 +191,7 @@ Notes:
   "results": [ { "id":5, "game":"Back to Back Stand", "detail":"9 stands in 60 sec", "pts":10,
                  "winner":"buffalo", "enteredBy":"Will F.", "editedBy":"Cory Z.", "createdAt":"…",
                  "history":[ {"pts":8,"by":"Will F.","when":"…"} ] } ],
-  "refAssignments": { "pickle": 7 },          // gameId -> userId
+  "refAssignments": { "pickle": [7, 9] },     // gameId -> [userId, …] (multi-ref, migration 010)
   "refs": [ {"id":7,"name":"Marcus T."} ],    // users with is_ref=1
   "settings": { "eventMode":"signup", "refJoinCode":"txrhbuff2026", "scoresRevealed":false, "dipRevealed":false },
   "announcements": [ … ]
@@ -212,7 +220,7 @@ bo_results          id INT IDENTITY PK, game_name NVARCHAR(100), detail NVARCHAR
                     created_at DATETIME2, updated_at DATETIME2 NULL
 bo_result_history   id INT IDENTITY PK, result_id INT, pts INT, by_name NVARCHAR(100), created_at DATETIME2
 bo_announcements    id INT IDENTITY PK, title NVARCHAR(200), body NVARCHAR(MAX), created_at DATETIME2
-bo_ref_assignments  game_id NVARCHAR(20) PK, user_id INT
+bo_ref_assignments  game_id NVARCHAR(20), user_id INT — PK (game_id, user_id) since migration 010 (was game_id-only)
 bo_schedule         id INT IDENTITY PK, time_label NVARCHAR(20), ampm NVARCHAR(5), title NVARCHAR(150),
                     place NVARCHAR(120), kind NVARCHAR(10) DEFAULT 'up', sort INT
 ```

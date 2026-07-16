@@ -11,7 +11,7 @@ function toScore(v) {
 }
 
 async function insertResult(pool, row) {
-  await pool.request()
+  const base = (req) => req
     .input('game_name', sql.NVarChar, row.gameName)
     .input('detail', sql.NVarChar, row.detail)
     .input('winner', sql.NVarChar, row.winner)
@@ -20,8 +20,24 @@ async function insertResult(pool, row) {
     .input('pts_roadhouse', sql.Int, row.ptsRoadhouse)
     .input('player_name', sql.NVarChar, row.playerName || null)
     .input('entered_by', sql.NVarChar, row.enteredBy)
-    .input('entered_by_id', sql.Int, row.enteredById)
-    .query(`
+    .input('entered_by_id', sql.Int, row.enteredById);
+  try {
+    // slot_label / round_label tag the result to a timeslot / bracket round so
+    // the ref UI can mark them "Scored" (migration 010).
+    await base(pool.request())
+      .input('slot_label', sql.NVarChar, row.slotLabel || null)
+      .input('round_label', sql.NVarChar, row.roundLabel || null)
+      .query(`
+        INSERT INTO bo_results
+          (game_name, detail, winner, pts, pts_buffalo, pts_roadhouse,
+           player_name, entered_by, entered_by_id, slot_label, round_label)
+        VALUES
+          (@game_name, @detail, @winner, @pts, @pts_buffalo, @pts_roadhouse,
+           @player_name, @entered_by, @entered_by_id, @slot_label, @round_label);
+      `);
+  } catch (e) {
+    // Pre-010 (columns missing) — store the row without the tags.
+    await base(pool.request()).query(`
       INSERT INTO bo_results
         (game_name, detail, winner, pts, pts_buffalo, pts_roadhouse,
          player_name, entered_by, entered_by_id)
@@ -29,17 +45,41 @@ async function insertResult(pool, row) {
         (@game_name, @detail, @winner, @pts, @pts_buffalo, @pts_roadhouse,
          @player_name, @entered_by, @entered_by_id);
     `);
+  }
+}
+
+function labelsFrom(body) {
+  return {
+    slotLabel: String(body.slotLabel || '').trim().slice(0, 80) || null,
+    roundLabel: String(body.roundLabel || '').trim().slice(0, 120) || null,
+  };
 }
 
 app.http('results', {
-  methods: ['POST'],
+  methods: ['POST', 'DELETE'],
   authLevel: 'anonymous',
-  route: 'results',
+  route: 'results/{id?}',
   handler: async (request, context) => {
     try {
       const user = await requireUser(request);
       if (!user) return json({ error: 'Not signed in' }, 401);
       if (!requireRef(user)) return json({ error: 'Referee or admin access required' }, 403);
+
+      // DELETE /api/results/{id} — a ref removes a logged result (and its edit
+      // history) so it can be re-entered. Powers the "Change result" flow; the
+      // frontend warns before calling this.
+      if (request.method === 'DELETE') {
+        const id = parseInt(request.params.id, 10);
+        if (!Number.isInteger(id)) return json({ error: 'A result id is required' }, 400);
+        const pool0 = await getPool();
+        await pool0.request().input('id', sql.Int, id)
+          .query('DELETE FROM bo_result_history WHERE result_id = @id');
+        const dr = await pool0.request().input('id', sql.Int, id)
+          .query('DELETE FROM bo_results WHERE id = @id');
+        if (!dr.rowsAffected[0]) return json({ error: 'That result is already gone' }, 404);
+        bustSharedBootstrap();
+        return json({ ok: true });
+      }
 
       const body = await request.json().catch(() => ({}));
       const gameName = String(body.gameName || '').trim();
@@ -50,6 +90,7 @@ app.http('results', {
       const enteredById = user.id;
 
       if (body.type === 'vs') {
+        // Variable-score team slot — the ref types one score per team.
         const b = toScore(body.ptsBuffalo);
         const r = toScore(body.ptsRoadhouse);
         if (!b && !r) return json({ error: 'Enter a score for at least one tribe' }, 400);
@@ -62,38 +103,50 @@ app.http('results', {
           ptsRoadhouse: r,
           playerName: null,
           enteredBy, enteredById,
+          ...labelsFrom(body),
         });
         bustSharedBootstrap();
         return json({ ok: true });
       }
 
-      // Ref picks the winner of a head-to-head / bracket match. Points come
-      // from the game's admin-set win_points (server-authoritative). `scores`
-      // is false for within-tribe bracket rounds (advancement only) — only the
-      // cross-tribe championship awards tribe points.
+      // Ref picks the winning TEAM of a head-to-head / bracket match. Points
+      // are server-authoritative from the game row: `stage:'round'` (within-
+      // tribe bracket round) awards round_points (migration 010; NULL/0 =
+      // advancement only, the old behavior); otherwise `scores:true` awards
+      // win_points (championship / plain head-to-head).
       if (body.type === 'winner') {
         const winnerTeam = body.winnerTeam;
         if (!TEAMS.includes(winnerTeam)) return json({ error: 'winnerTeam must be buffalo or roadhouse' }, 400);
         const winnerName = String(body.winnerName || '').trim()
           || (winnerTeam === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse');
-        const scores = !!body.scores;
+        const isRound = body.stage === 'round';
         let pts = 0;
-        if (scores) {
+        if (isRound) {
+          try {
+            const pr = await pool.request().input('n', sql.NVarChar, gameName)
+              .query('SELECT TOP 1 round_points AS rp FROM bo_games WHERE name = @n');
+            pts = pr.recordset.length && pr.recordset[0].rp != null ? pr.recordset[0].rp : 0;
+          } catch (e) { pts = 0; /* pre-010 — rounds stay advancement-only */ }
+        } else if (body.scores) {
           try {
             const pr = await pool.request().input('n', sql.NVarChar, gameName)
               .query('SELECT TOP 1 win_points AS wp FROM bo_games WHERE name = @n');
             pts = pr.recordset.length && pr.recordset[0].wp != null ? pr.recordset[0].wp : 10;
           } catch (e) { pts = 10; }
         }
+        const detail = isRound
+          ? (pts > 0 ? `${winnerName} won the round (+${pts}) — advances` : `${winnerName} won — advances`)
+          : `${winnerName} won (+${pts})`;
         await insertResult(pool, {
           gameName,
-          detail: scores ? `${winnerName} won (+${pts})` : `${winnerName} won — advances`,
+          detail,
           winner: winnerTeam,
-          pts: scores ? pts : 0,
-          ptsBuffalo: scores && winnerTeam === 'buffalo' ? pts : 0,
-          ptsRoadhouse: scores && winnerTeam === 'roadhouse' ? pts : 0,
+          pts,
+          ptsBuffalo: winnerTeam === 'buffalo' ? pts : 0,
+          ptsRoadhouse: winnerTeam === 'roadhouse' ? pts : 0,
           playerName: winnerName,
           enteredBy, enteredById,
+          ...labelsFrom(body),
         });
         bustSharedBootstrap();
         return json({ ok: true });
@@ -115,6 +168,7 @@ app.http('results', {
             ptsRoadhouse: e.team === 'roadhouse' ? e.score : 0,
             playerName: e.name,
             enteredBy, enteredById,
+            ...labelsFrom(body),
           });
         }
         bustSharedBootstrap();

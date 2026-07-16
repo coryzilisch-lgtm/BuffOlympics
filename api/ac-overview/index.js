@@ -65,20 +65,35 @@ app.http('ac-overview', {
       // table isn't there yet.
       let idols = [];
       try {
-        const idolsR = await pool.request().query(
-          'SELECT id, title, clue, release_min, found, sort FROM bo_idols ORDER BY sort, id');
+        // found_by / points are migration 010 — fall back to the 003 shape.
+        let idolsR;
+        try {
+          idolsR = await pool.request().query(
+            'SELECT id, title, clue, release_min, found, found_by, points, sort FROM bo_idols ORDER BY sort, id');
+        } catch (e) {
+          idolsR = await pool.request().query(
+            'SELECT id, title, clue, release_min, found, sort FROM bo_idols ORDER BY sort, id');
+        }
         idols = idolsR.recordset.map(x => ({
           id: x.id, title: x.title || '', clue: x.clue || '',
           releaseMin: x.release_min == null ? null : x.release_min, found: !!x.found, sort: x.sort,
+          foundBy: x.found_by || null,
+          points: x.points == null ? null : x.points,
         }));
       } catch (e) { /* table not present yet */ }
 
-      // Per-game win points (migration 004) — defensive so admin loads pre-004.
-      let winPointsById = {};
+      // Per-game win points (migration 004) + bracket round points (010) —
+      // defensive so admin loads pre-migration.
+      let winPointsById = {}, roundPointsById = {};
       try {
-        const wpR = await pool.request().query('SELECT id, win_points FROM bo_games');
-        for (const r of wpR.recordset) winPointsById[r.id] = r.win_points;
-      } catch (e) { /* column not present yet */ }
+        const wpR = await pool.request().query('SELECT id, win_points, round_points FROM bo_games');
+        for (const r of wpR.recordset) { winPointsById[r.id] = r.win_points; roundPointsById[r.id] = r.round_points; }
+      } catch (e) {
+        try {
+          const wpR = await pool.request().query('SELECT id, win_points FROM bo_games');
+          for (const r of wpR.recordset) winPointsById[r.id] = r.win_points;
+        } catch (e2) { /* column not present yet */ }
+      }
 
       // Schedule end times (migration 006) — defensive so admin loads pre-006.
       let schedEndById = {};
@@ -164,6 +179,7 @@ app.http('ac-overview', {
           pointsLabel: g.points_label || '',
           videoUrl: g.video_url || '',
           winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
+          roundPoints: roundPointsById[g.id] != null ? roundPointsById[g.id] : 0,
           // Game types (migration 009). Pre-009 falls back to the old derivation.
           headToHead: gt.headToHead !== undefined ? gt.headToHead : !g.open_play,
           isBracket: !!gt.isBracket,
@@ -233,8 +249,12 @@ app.http('ac-overview', {
         history: historyByResult[r.id] || [],
       }));
 
+      // Multi-ref (migration 010): gameId -> [userId, …].
       const refAssignments = {};
-      for (const a of refAssignR.recordset) refAssignments[a.game_id] = a.user_id;
+      for (const a of refAssignR.recordset) {
+        if (!refAssignments[a.game_id]) refAssignments[a.game_id] = [];
+        refAssignments[a.game_id].push(a.user_id);
+      }
 
       const refs = usersR.recordset
         .filter(u => u.is_ref)

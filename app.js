@@ -24,7 +24,9 @@ const S = {
   tribeTab: 'buffalo',
   videoOpen: null,       // url string
   // ref board UI
-  refOpen: null, refSlot: {}, entryB: 0, entryR: 0, soloScores: {}, refWinner: null, refRound: 'round',
+  refOpen: null, refSlot: {}, entryB: 0, entryR: 0, refWinner: null, refRound: 'round',
+  refRoundSel: null,       // bracket round name being scored (round mode)
+  teamScores: {},          // variable-score entry: { buffalo: n, roadhouse: n }
   walkSearch: '', walkPick: null, walkScore: 0, walkLog: [],
   // admin UI
   adminSection: 'people', schedView: 'list',
@@ -41,6 +43,7 @@ const S = {
   admSchedEdit: null,    // schedule row id currently being edited inline
   admSchedKind: 'up',    // kind of the schedule row being edited: up|live|done
   admIdolEdit: null,     // idol clue id currently being edited inline
+  admIdolAward: null,    // idol id whose "who found it?" search is open
   walkupOpen: false,     // game-day home "earn more points" walk-up expander
   busy: false,
 };
@@ -413,7 +416,7 @@ function authScreen() {
         <img src="/assets/logos/buffalo-orange.png" alt="" style="height:24px;width:auto;"/>
         <div style="line-height:1;">
           <div style="font-family:'BN Kragen';font-size:21px;color:#F3F7F5;letter-spacing:0.01em;">BUFF OLYMPICS</div>
-          <div style="font-size:10px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#FF7F2E;margin-top:4px;">August 14 · The Herd Games</div>
+          <div style="font-size:10px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#FF7F2E;margin-top:4px;">August 14 · Buff Olympics</div>
         </div>
       </div>
       ${inner}
@@ -459,9 +462,12 @@ function homeAgenda(T) {
   const items = [];
   const live = sched.find(e => e.kind === 'live');
   if (live) items.push({ time: live.timeLabel + ' ' + live.ampm, name: live.title, state: 'now' });
-  const mine = (S.boot.mySignups || []).slice().sort((a, b) => a.startMin - b.startMin);
+  const mine = (S.boot.mySignups || []).map(m => ({ min: m.startMin, time: m.label, name: m.game }));
+  // Dip Off cooks drop their dip at the Cafe at 11:30 — put it on their slate.
+  if (S.boot.dip && S.boot.dip.myEntry) mine.push({ min: 690, time: '11:30 AM', name: 'Drop off your dip · The Cafe' });
+  mine.sort((a, b) => a.min - b.min);
   for (const m of mine) {
-    items.push({ time: m.label, name: m.game, state: 'up' });
+    items.push({ time: m.time, name: m.name, state: 'up' });
   }
   const next = sched.find(e => e.kind === 'up');
   if (next) items.push({ time: next.timeLabel + ' ' + next.ampm, name: next.title, state: 'up' });
@@ -498,9 +504,14 @@ function homeScreen() {
   const boot = S.boot;
   const isGameDay = boot.settings.eventMode === 'gameday';
   const signupCount = (boot.mySignups || []).length;
+  const allPicked = signupCount >= signupMax();
   const myTeam = boot.user.team || 'buffalo';
   const myDipCount = (boot.dip && boot.dip.counts && boot.dip.counts[myTeam]) || 0;
   const dipCount = (boot.dip && boot.dip.entries || []).length;
+  const iCook = !!(boot.dip && boot.dip.myEntry);
+  const dipFull = !iCook && myDipCount >= 5;                  // my tribe's cook spots are gone
+  const relay = boot.relay || { legs: [], myLeg: null };
+  const myLegObj = (relay.legs || []).find(l => l.id === relay.myLeg) || null;
   const scores = boot.scores || { revealed: false };
   const agenda = homeAgenda(T);
   const feed = aroundCamp(T);
@@ -543,8 +554,8 @@ function homeScreen() {
         : '<img src="/assets/logos/buffalo-white.png" alt="" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:380px;opacity:0.06;"/>'}
       <div style="position:absolute;inset:0;background:radial-gradient(420px 280px at 50% 12%, ${T.glow}, transparent 70%);"></div>
       <div style="position:relative;">
-        <span style="font-size:11px;font-weight:600;color:${T.A};letter-spacing:0.04em;">Welcome back, ${T.myTeamWord} · August 14</span>
-        <h2 style="font-family:'BN Kragen';font-size:52px;line-height:0.86;color:${th.text};margin:14px 0 0;text-transform:uppercase;">The<br/>Herd<br/>Games.</h2>
+        <span style="font-size:11px;font-weight:600;color:${T.A};letter-spacing:0.04em;">Welcome back, ${esc(boot.user.firstName || T.myTeamWord)}</span>
+        <h2 style="font-family:'BN Kragen';font-size:52px;line-height:0.86;color:${th.text};margin:14px 0 0;text-transform:uppercase;">Buff<br/>Olympics.</h2>
         <p style="font-size:14px;line-height:1.5;color:#C7D3DB;max-width:280px;margin:16px 0 22px;">One day. Two tribes. A field full of games. The fire's lit — let's find out who walks through the storm.</p>
         <button data-act="go" data-to="immunity" style="display:inline-flex;align-items:center;gap:10px;background:${T.A};color:${T.on};font-weight:700;font-size:14px;padding:13px 20px;border-radius:8px;box-shadow:0 0 28px ${T.glow};">
           Hunt the hidden idols
@@ -597,6 +608,15 @@ function homeScreen() {
       </div>
     </div>` : `
     <div style="padding:18px 18px 0;">
+      ${allPicked ? `
+      <button data-act="go" data-to="games" style="width:100%;background:${th.panel};border:1px solid #3FBF87;border-radius:11px;padding:16px;display:flex;align-items:center;gap:13px;">
+        ${checkSvg('#3FBF87', 24, 2.6)}
+        <div style="flex:1;text-align:left;">
+          <div style="font-size:15px;font-weight:800;color:${th.text};">You're all signed up!</div>
+          <div style="font-size:11.5px;color:${th.sub};margin-top:2px;">All ${signupMax()} of your game slots are claimed · tap to review</div>
+        </div>
+        ${chevR('#3FBF87', 9, 15, 2.4)}
+      </button>` : `
       <button data-act="go" data-to="games" style="width:100%;background:${T.A};color:${T.on};border-radius:11px;padding:16px;display:flex;align-items:center;gap:13px;box-shadow:0 8px 22px ${T.glow};">
         ${clipSvg(T.on)}
         <div style="flex:1;text-align:left;">
@@ -604,17 +624,17 @@ function homeScreen() {
           <div style="font-size:11.5px;opacity:0.82;">${signupCount} of ${signupMax()} picked · pick your events</div>
         </div>
         ${chevR(T.on, 9, 15, 2.4)}
-      </button>
+      </button>`}
       <div style="display:flex;gap:11px;margin-top:11px;">
-        <button data-act="go" data-to="dip" style="flex:1;background:${th.panel};border:1px solid ${th.panelBorder};border-radius:11px;padding:15px 13px;text-align:left;">
+        <button data-act="go" data-to="dip" style="flex:1;background:${th.panel};border:1px solid ${iCook ? '#3FBF87' : th.panelBorder};border-radius:11px;padding:15px 13px;text-align:left;">
           <svg width="26" height="26" viewBox="0 0 24 24" fill="none"><path d="M4 11h16M5 11a7 7 0 0014 0M12 3v2M9 5.5C9 6 9.5 6.5 9.5 7M15 5.5C15 6 14.5 6.5 14.5 7M8 20h8" stroke="${T.A}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
           <div style="font-size:13.5px;font-weight:800;color:${th.text};margin-top:9px;">Dip Off</div>
-          <div style="font-size:11px;color:${th.sub};margin-top:2px;">${myDipCount} of 5 cooks · sign up</div>
+          <div style="font-size:11px;color:${iCook ? '#3FBF87' : th.sub};margin-top:2px;font-weight:${iCook || dipFull ? '700' : '400'};">${iCook ? "You're cooking ✓ · drop off 11:30 AM" : (dipFull ? "Your tribe's 5 spots are full" : `${myDipCount} of 5 cooks · sign up`)}</div>
         </button>
-        <button data-act="go" data-to="relay" style="flex:1;background:${th.panel};border:1px solid ${th.panelBorder};border-radius:11px;padding:15px 13px;text-align:left;">
+        <button data-act="go" data-to="relay" style="flex:1;background:${th.panel};border:1px solid ${myLegObj ? '#3FBF87' : th.panelBorder};border-radius:11px;padding:15px 13px;text-align:left;">
           ${relaySvg(T.A)}
           <div style="font-size:13.5px;font-weight:800;color:${th.text};margin-top:9px;">Relay Race</div>
-          <div style="font-size:11px;color:${th.sub};margin-top:2px;">Pick one leg only</div>
+          <div style="font-size:11px;color:${myLegObj ? '#3FBF87' : '#F5C518'};margin-top:2px;font-weight:700;">${myLegObj ? `You're in ✓ · ${esc(myLegObj.name)}` : 'No leg picked yet — grab one!'}</div>
         </button>
       </div>
     </div>`}
@@ -674,14 +694,11 @@ function refBoardScreen() {
   const stations = S.boot.refStations || [];
   const q2 = (S.walkSearch || '').trim().toLowerCase();
   const allPlayers = S.boot.allPlayers || [];
-  // Direct numeric score entry — the ref types any number for a player (walk-up
-  // / solo games are scored by whatever the player earned, no fixed value).
-  const scoreInput = (name, i) => `<input id="ref-score-${i}" data-solo="${esc(name)}" value="${S.soloScores[name] || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:72px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:9px 8px;color:${th.text};font-family:'BN Kragen';font-size:18px;outline:none;"/>`;
 
   const stationHtml = stations.map(st => {
     const open = S.refOpen === st.gameId;
     const isVs = st.type === 'vs', isWalk = st.type === 'walk';
-    const typeLabel = isVs ? 'Head-to-head' : 'Points per player';
+    const typeLabel = isVs ? 'Head-to-head' : 'Score per team';
     // "Open all day" tracks walk-up scheduling (open_play), independent of scoring style.
     const statusLabel = st.openPlay ? 'Open all day' : 'On station';
     const statusColor = st.openPlay ? '#3FBF87' : T.A;
@@ -694,9 +711,33 @@ function refBoardScreen() {
       const selId = S.refSlot[st.gameId];
       const selSlot = slots.find(s => String(s.id) === String(selId)) || null;
       const isBracket = st.isBracket !== undefined ? st.isBracket : !!BRACKETS[st.gameId];
+      const brData = (st.bracket && (st.bracket.rounds || []).length) ? st.bracket : (BRACKETS[st.gameId] || null);
       const winPts = st.winPoints != null ? st.winPoints : 10;
+      const roundPts = st.roundPoints != null ? st.roundPoints : 0;
       const teamColor = (t) => t === 'buffalo' ? '#FF5F00' : '#E0322E';
       const teamLabel = (t) => t === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse';
+      const green = '#3FBF87';
+      // Everything already logged for this game — powers the "Scored" marks,
+      // the logged-result panels, and the bracket progress list.
+      const results = (S.boot.refResults || []).filter(r => r.game === st.name);
+
+      // One logged result + its "Change" button (warns before removing).
+      const resultRow = (r) => `
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid rgba(63,191,135,0.25);">
+          <span style="flex-shrink:0;">${checkSvg(green, 14, 2.6)}</span>
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:12.5px;font-weight:700;color:${th.text};">${esc(r.detail || r.playerName || '')}</div>
+            <div style="font-size:10.5px;color:${th.sub};margin-top:1px;">by ${esc(r.enteredBy || '—')} · ${timeAgo(r.createdAt)}</div>
+          </div>
+          <span style="flex-shrink:0;font-family:'BN Kragen';font-size:15px;color:${green};">${r.pts > 0 ? '+' + r.pts : '—'}</span>
+          <button data-act="refChangeResult" data-ids="${r.id}" style="flex-shrink:0;font-size:11px;font-weight:800;color:#F5C518;border:1px solid rgba(245,197,24,0.5);border-radius:7px;padding:6px 10px;">Change</button>
+        </div>`;
+      const scoredPanel = (rows) => `
+        <div style="margin-top:14px;background:rgba(63,191,135,0.08);border:1px solid rgba(63,191,135,0.45);border-radius:10px;padding:4px 13px 10px;">
+          <div style="padding:10px 0 2px;font-size:10.5px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:${green};">✓ Scored</div>
+          ${rows.map(resultRow).join('')}
+          <div style="font-size:10.5px;color:${th.sub};margin-top:8px;line-height:1.45;">Need to fix it? Tap Change — the logged entry is removed so you can re-enter it.</div>
+        </div>`;
 
       // ── timeslot picker — the ref chooses which slot they're scoring (games
       //    can be played out of order) and sees the players in each ──
@@ -707,9 +748,10 @@ function refBoardScreen() {
             const on = String(s.id) === String(selId);
             const buf = s.buffalo || [], road = s.roadhouse || [];
             const n = buf.length + road.length;
+            const scored = results.some(r => r.slotLabel === s.label);
             const summ = n ? [buf.length ? `Buffalo: ${esc(buf.join(', '))}` : '', road.length ? `TXRH: ${esc(road.join(', '))}` : ''].filter(Boolean).join('  ·  ') : 'No players signed up';
-            return `<button data-act="refSelectSlot" data-game="${esc(st.gameId)}" data-slot="${s.id}" style="text-align:left;border-radius:9px;padding:11px 12px;border:1px solid ${on ? T.A : th.line};background:${on ? T.dim : 'rgba(255,255,255,0.03)'};">
-              <div style="display:flex;align-items:center;gap:8px;"><span style="font-family:'BN Kragen';font-size:15px;color:${on ? T.A : th.text};">${esc(s.label)}</span>${on ? `<span style="font-size:9px;font-weight:800;color:${T.on};background:${T.A};border-radius:4px;padding:1px 6px;">SCORING</span>` : ''}</div>
+            return `<button data-act="refSelectSlot" data-game="${esc(st.gameId)}" data-slot="${s.id}" style="text-align:left;border-radius:9px;padding:11px 12px;border:1px solid ${on ? T.A : (scored ? 'rgba(63,191,135,0.5)' : th.line)};background:${on ? T.dim : 'rgba(255,255,255,0.03)'};">
+              <div style="display:flex;align-items:center;gap:8px;"><span style="font-family:'BN Kragen';font-size:15px;color:${on ? T.A : th.text};">${esc(s.label)}</span>${scored ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:800;color:${green};border:1px solid ${green};border-radius:4px;padding:1px 6px;">${checkSvg(green, 9, 3)}SCORED</span>` : ''}${on ? `<span style="font-size:9px;font-weight:800;color:${T.on};background:${T.A};border-radius:4px;padding:1px 6px;">SCORING</span>` : ''}</div>
               <div style="font-size:11px;color:${th.sub};margin-top:3px;">${summ}</div>
             </button>`;
           }).join('')}
@@ -729,45 +771,96 @@ function refBoardScreen() {
       };
 
       // ── scoring panel, scoped to the selected slot ──
+      const slotResults = selSlot ? results.filter(r => r.slotLabel === selSlot.label) : [];
       let scorer;
-      if (!slots.length) {
+      if (!slots.length && isWalk) {
         scorer = walkOnBlock();                          // pure walk-up, no slots
-      } else if (!selSlot) {
+      } else if (!selSlot && slots.length) {
         scorer = `<div style="margin-top:14px;font-size:12.5px;color:${th.sub};font-style:italic;">Pick a timeslot above to score it.</div>`;
       } else if (isWalk) {
-        const players = [...(selSlot.buffalo || []).map(n => ({ name: n, team: 'buffalo' })), ...(selSlot.roadhouse || []).map(n => ({ name: n, team: 'roadhouse' }))];
-        scorer = `
-          <div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>
-          <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:10px;">${esc(selSlot.label)} · type each score</div>
-          <div style="display:flex;flex-direction:column;gap:8px;">
-            ${players.length ? players.map((p, i) => `<div style="display:flex;align-items:center;gap:11px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:9px;padding:9px 12px;"><div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}</div><div style="font-size:10.5px;font-weight:700;text-transform:uppercase;color:${teamColor(p.team)};">${teamLabel(p.team)}</div></div><div style="flex-shrink:0;">${scoreInput(p.name, i)}</div></div>`).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No one signed up for this slot.</div>`}
-          </div>
-          ${players.length ? `<button data-act="soloSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:13px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Save scores</button>` : ''}
-          <div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>
-          ${walkOnBlock()}`;
+        // Variable score — the ref enters ONE number per team for this slot.
+        if (slotResults.length) {
+          scorer = scoredPanel(slotResults);
+        } else {
+          const teamBox = (team) => {
+            const names = (team === 'buffalo' ? selSlot.buffalo : selSlot.roadhouse) || [];
+            const c = teamColor(team);
+            return `<div style="flex:1;border:1px solid ${th.line};border-radius:10px;padding:12px;background:rgba(255,255,255,0.03);">
+              <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;color:${c};">${teamLabel(team)}</div>
+              <div style="font-size:12.5px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.3;">${names.length ? esc(names.join(' & ')) : '—'}</div>
+              <input id="team-score-${team}" data-teamscore="${team}" value="${S.teamScores[team] || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:100%;margin-top:9px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:9px 8px;color:${th.text};font-family:'BN Kragen';font-size:20px;outline:none;"/>
+            </div>`;
+          };
+          scorer = `
+            <div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>
+            <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:10px;">${esc(selSlot.label)} · enter each team's score</div>
+            <div style="display:flex;gap:11px;">${teamBox('buffalo')}${teamBox('roadhouse')}</div>
+            <button data-act="refVsSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:13px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Save team scores</button>`;
+        }
+        scorer += `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>${walkOnBlock()}`;
       } else {
-        // head-to-head — winner picker for this slot's players
-        const buf = selSlot.buffalo || [], road = selSlot.roadhouse || [];
+        // head-to-head — the ref picks the winning TEAM (whole team, not
+        // individuals); bracket rounds pick the advancing player instead.
+        const buf = selSlot ? (selSlot.buffalo || []) : [];
+        const road = selSlot ? (selSlot.roadhouse || []) : [];
         const round = isBracket ? (S.refRound || 'round') : 'champ';
         const sel = S.refWinner;
+        const roundNames = brData ? brData.rounds.filter(r => r.team !== 'final').map(r => r.name) : [];
+        const champName = brData ? (((brData.rounds || []).find(r => r.team === 'final') || {}).name || 'Championship') : 'Championship';
+        const selRound = roundNames.includes(S.refRoundSel) ? S.refRoundSel : (roundNames[0] || 'Bracket round');
         const tribeBtn = (team, names) => {
           const picked = sel && sel.scores && sel.team === team;
           const c = teamColor(team);
-          return `<button data-act="refPickWinner" data-team="${team}" data-name="${esc(names || teamLabel(team))}" data-scores="1" style="flex:1;text-align:left;border-radius:10px;padding:13px 12px;border:2px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};"><div style="font-size:10.5px;font-weight:800;text-transform:uppercase;color:${c};">${teamLabel(team)}</div><div style="font-size:13px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.25;">${esc(names || '—')}</div>${picked ? `<div style="margin-top:7px;font-size:10.5px;font-weight:800;color:${c};display:flex;align-items:center;gap:5px;">${checkSvg(c, 12)}Winner</div>` : ''}</button>`;
+          return `<button data-act="refPickWinner" data-team="${team}" data-name="${esc(names || teamLabel(team))}" data-scores="1" style="flex:1;text-align:left;border-radius:10px;padding:13px 12px;border:2px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};"><div style="font-size:10.5px;font-weight:800;text-transform:uppercase;color:${c};">${teamLabel(team)}</div><div style="font-size:13px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.25;">${esc(names || '—')}</div>${picked ? `<div style="margin-top:7px;font-size:10.5px;font-weight:800;color:${c};display:flex;align-items:center;gap:5px;">${checkSvg(c, 12)}Winning team</div>` : ''}</button>`;
         };
-        const roundTabs = isBracket ? `<div style="display:flex;background:rgba(255,255,255,0.05);border:1px solid ${th.line};border-radius:9px;padding:3px;gap:3px;margin-bottom:13px;"><button data-act="refRound" data-round="round" style="flex:1;padding:9px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${round === 'round' ? T.A : 'transparent'};color:${round === 'round' ? T.on : th.sub};">Bracket round<br/><span style="font-size:9px;opacity:0.8;">within tribe · no points</span></button><button data-act="refRound" data-round="champ" style="flex:1;padding:9px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${round === 'champ' ? T.A : 'transparent'};color:${round === 'champ' ? T.on : th.sub};">Championship<br/><span style="font-size:9px;opacity:0.8;">+${winPts} pts</span></button></div>` : '';
-        let picker;
+        const roundTabs = isBracket ? `<div style="display:flex;background:rgba(255,255,255,0.05);border:1px solid ${th.line};border-radius:9px;padding:3px;gap:3px;margin-bottom:13px;"><button data-act="refRound" data-round="round" style="flex:1;padding:9px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${round === 'round' ? T.A : 'transparent'};color:${round === 'round' ? T.on : th.sub};">Bracket round<br/><span style="font-size:9px;opacity:0.8;">${roundPts > 0 ? `+${roundPts} pts per win` : 'within tribe · no points'}</span></button><button data-act="refRound" data-round="champ" style="flex:1;padding:9px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${round === 'champ' ? T.A : 'transparent'};color:${round === 'champ' ? T.on : th.sub};">Championship<br/><span style="font-size:9px;opacity:0.8;">+${winPts} pts</span></button></div>` : '';
+        let picker = '';
+        let submitBtn = '';
+        const submitFor = (canSubmit, label) => `<button data-act="refWinnerSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:14px;background:${canSubmit ? T.A : 'rgba(255,255,255,0.08)'};color:${canSubmit ? T.on : th.sub};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">${label}</button>`;
         if (round === 'champ') {
-          picker = `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Who won ${esc(selSlot.label)}? Winner earns ${winPts} pts</div><div style="display:flex;gap:11px;">${tribeBtn('buffalo', buf.join(' & '))}${tribeBtn('roadhouse', road.join(' & '))}</div>`;
+          const done = isBracket ? results.filter(r => r.roundLabel === champName) : slotResults;
+          if (done.length) {
+            picker = scoredPanel(done);
+          } else {
+            picker = `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Which team won${selSlot ? ' ' + esc(selSlot.label) : ''}? Winner earns ${winPts} pts</div><div style="display:flex;gap:11px;">${tribeBtn('buffalo', buf.join(' & '))}${tribeBtn('roadhouse', road.join(' & '))}</div>`;
+            submitBtn = submitFor(!!sel, !sel ? 'Pick the winning team first' : `Log ${teamLabel(sel.team)} win · +${winPts} pts`);
+          }
         } else {
+          const roundChips = roundNames.length > 1 ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">${roundNames.map(rn => `<button data-act="refRoundPick" data-round="${esc(rn)}" style="padding:7px 12px;border-radius:7px;font-size:11.5px;font-weight:700;background:${rn === selRound ? T.A : 'rgba(255,255,255,0.06)'};color:${rn === selRound ? T.on : th.sub};border:1px solid ${th.line};">${esc(rn)}</button>`).join('')}</div>` : '';
+          const roundDone = results.filter(r => r.roundLabel === selRound);
           const players = [...buf.map(n => ({ name: n, team: 'buffalo' })), ...road.map(n => ({ name: n, team: 'roadhouse' }))];
-          picker = `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:4px;">${esc(selSlot.label)} · tap the winner</div><div style="font-size:11px;color:${th.sub};margin-bottom:10px;">Within-tribe round — advances the winner, no tribe points until the championship.</div><div style="display:flex;flex-direction:column;gap:7px;">${players.length ? players.map(p => { const picked = sel && !sel.scores && sel.name === p.name && sel.team === p.team; const c = teamColor(p.team); return `<button data-act="refPickWinner" data-team="${esc(p.team)}" data-name="${esc(p.name)}" data-scores="0" style="display:flex;align-items:center;gap:11px;border-radius:9px;padding:11px 12px;text-align:left;border:1px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};"><span style="flex:1;min-width:0;font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}</span><span style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};flex-shrink:0;">${teamLabel(p.team)}</span>${picked ? checkSvg(c, 14) : ''}</button>`; }).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No one signed up for this slot.</div>`}</div>`;
+          picker = `${roundChips}<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:4px;">${esc(selRound)} · tap the winner</div><div style="font-size:11px;color:${th.sub};margin-bottom:10px;">${roundPts > 0 ? `Within-tribe round — the winner advances and earns +${roundPts} pts for their tribe.` : 'Within-tribe round — advances the winner, no tribe points until the championship.'}</div>${roundDone.length ? scoredPanel(roundDone) + '<div style="height:10px;"></div>' : ''}<div style="display:flex;flex-direction:column;gap:7px;">${players.length ? players.map(p => { const picked = sel && !sel.scores && sel.name === p.name && sel.team === p.team; const c = teamColor(p.team); return `<button data-act="refPickWinner" data-team="${esc(p.team)}" data-name="${esc(p.name)}" data-scores="0" style="display:flex;align-items:center;gap:11px;border-radius:9px;padding:11px 12px;text-align:left;border:1px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};"><span style="flex:1;min-width:0;font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}</span><span style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};flex-shrink:0;">${teamLabel(p.team)}</span>${picked ? checkSvg(c, 14) : ''}</button>`; }).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No one signed up for this slot.</div>`}</div>`;
+          submitBtn = submitFor(!!sel, !sel ? 'Pick the winner first' : (roundPts > 0 ? `Log winner — ${esc(sel.name)} advances · +${roundPts} pts` : `Log winner — ${esc(sel.name)} advances`));
         }
-        const canSubmit = !!sel;
-        const submitLabel = !sel ? 'Pick the winner first' : (sel.scores ? `Log ${teamLabel(sel.team)} win · +${winPts} pts` : `Log winner — ${sel.name} advances`);
-        scorer = `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>${roundTabs}${picker}<button data-act="refWinnerSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:14px;background:${canSubmit ? T.A : 'rgba(255,255,255,0.08)'};color:${canSubmit ? T.on : th.sub};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">${submitLabel}</button>`;
+        scorer = `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>${roundTabs}${picker}${submitBtn}`;
       }
-      body = slotPicker + scorer;
+
+      // ── bracket progress — logged winners flow into the next round ──
+      const bracketProgress = (isVs && isBracket && brData) ? (() => {
+        const rows = brData.rounds.map((r, i) => {
+          const winners = results.filter(x => x.roundLabel === r.name).map(x => x.playerName).filter(Boolean);
+          const prevWinners = i > 0 ? results.filter(x => x.roundLabel === brData.rounds[i - 1].name).map(x => x.playerName).filter(Boolean) : [];
+          const accent = r.team === 'final' ? '#F5C518' : T.A;
+          return `
+          <div style="display:flex;gap:10px;padding:9px 0;border-top:1px solid ${th.line};">
+            <div style="width:72px;flex-shrink:0;font-family:'BN Kragen';font-size:12.5px;color:${accent};padding-top:2px;line-height:1.15;">${esc(r.time || '')}</div>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:12.5px;font-weight:800;color:${th.text};">${esc(r.name)}${r.team === 'final' ? ' 🏆' : ''}</div>
+              ${winners.length
+                ? `<div style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:${green};margin-top:2px;">${checkSvg(green, 11)} ${r.team === 'final' ? 'Champion' : 'Advancing'}: ${esc(winners.join(', '))}</div>`
+                : (prevWinners.length
+                  ? `<div style="font-size:11px;color:${T.A2};font-weight:600;margin-top:2px;">In this round: ${esc(prevWinners.join(', '))}</div>`
+                  : `<div style="font-size:11px;color:${th.sub};margin-top:2px;">${esc(r.detail || '')}</div>`)}
+            </div>
+          </div>`;
+        }).join('');
+        return `<div style="margin-top:16px;"><div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A2};margin-bottom:6px;">🏆 Bracket progress</div>${rows}</div>`;
+      })() : '';
+
+      // Walk-up head-to-head — remind the ref how matchups form.
+      const walkH2HNote = (st.openPlay && isVs) ? `<div style="margin-bottom:12px;display:flex;gap:8px;align-items:flex-start;background:rgba(245,197,24,0.08);border:1px solid rgba(245,197,24,0.4);border-radius:9px;padding:10px 12px;"><span style="flex-shrink:0;">🤝</span><span style="font-size:11.5px;color:${th.text};line-height:1.45;">Walk-up head-to-head — players find someone from the <strong>other tribe</strong> to face. Score whichever matchup shows up.</span></div>` : '';
+
+      body = walkH2HNote + slotPicker + scorer + bracketProgress;
     }
 
     return `
@@ -808,21 +901,24 @@ function refGamesScreen() {
   const games = S.boot.refGames || [];
   const mine = games.filter(g => g.mine);
   const others = games.filter(g => !g.mine);
-  const card = (g) => `
+  const card = (g) => {
+    const refNames = g.refNames || (g.refName ? [g.refName] : []);
+    return `
     <div style="background:rgba(255,255,255,0.04);border:1px solid ${g.mine ? T.A : th.line};border-radius:11px;padding:14px 15px;display:flex;align-items:center;gap:12px;">
       <div style="flex:1;min-width:0;">
         <div style="font-size:15px;font-weight:800;color:${th.text};">${esc(g.name)}</div>
         <div style="font-size:11.5px;color:${th.sub};margin-top:3px;">${esc(g.timeLabel || '')}${g.venue ? ` · ${esc(g.venue)}` : ''}${g.openPlay ? ' · Walk-up' : ''}</div>
-        <div style="font-size:11px;font-weight:700;margin-top:5px;color:${g.mine ? T.A : (g.refName ? th.sub : '#3FBF87')};">${g.mine ? "You're reffing this" : (g.refName ? `Ref: ${esc(g.refName)}` : 'Unassigned')}</div>
+        <div style="font-size:11px;font-weight:700;margin-top:5px;color:${g.mine ? T.A : (refNames.length ? th.sub : '#3FBF87')};">${g.mine ? (refNames.length > 1 ? `You + ${esc(refNames.length - 1)} other ref${refNames.length > 2 ? 's' : ''}` : "You're reffing this") : (refNames.length ? `Ref${refNames.length > 1 ? 's' : ''}: ${esc(refNames.join(', '))}` : 'No ref yet')}</div>
       </div>
-      <button data-act="refClaim" data-game="${esc(g.gameId)}" data-claim="${g.mine ? '0' : '1'}" style="flex-shrink:0;font-size:12px;font-weight:800;padding:9px 13px;border-radius:8px;${g.mine ? `background:transparent;border:1px solid ${th.line};color:${th.sub};` : `background:${T.A};color:${T.on};`}">${g.mine ? 'Release' : "I'll ref it"}</button>
+      <button data-act="refClaim" data-game="${esc(g.gameId)}" data-claim="${g.mine ? '0' : '1'}" style="flex-shrink:0;font-size:12px;font-weight:800;padding:9px 13px;border-radius:8px;${g.mine ? `background:transparent;border:1px solid ${th.line};color:${th.sub};` : `background:${T.A};color:${T.on};`}">${g.mine ? 'Remove' : '+ Add to my list'}</button>
     </div>`;
+  };
   return `
   <div style="padding:20px 0 24px;">
     <div style="padding:0 18px;">
-      <div style="display:flex;align-items:center;gap:9px;">${shieldSvg(T.A)}<span style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A};">Ref · assign yourself</span></div>
+      <div style="display:flex;align-items:center;gap:9px;">${shieldSvg(T.A)}<span style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A};">Ref · build your list</span></div>
       <h2 style="font-family:'BN Kragen';font-size:32px;color:${th.text};text-transform:uppercase;margin:8px 0 0;line-height:0.92;">Cover a game</h2>
-      <p style="font-size:13px;color:${th.sub};margin:7px 0 0;">Grab any game to ref it — it moves onto your Home board. Handy when coverage needs to shuffle.</p>
+      <p style="font-size:13px;color:${th.sub};margin:7px 0 0;">Add any game to your list — it shows on your Home board. Any number of refs can cover the same game, so grab whatever you're near.</p>
     </div>
     <div style="padding:16px 18px 0;">
       ${mine.length ? `<div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:${th.sub};margin-bottom:9px;">Your games</div><div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">${mine.map(card).join('')}</div>` : ''}
@@ -1040,7 +1136,9 @@ function gameDetailScreen() {
   const pills = (playersPill || pointsPill) ? `<div style="padding:14px 18px 0;display:flex;flex-wrap:wrap;gap:8px;">${playersPill}${pointsPill}</div>` : '';
   const howTo = g.descr ? `<div style="padding:16px 18px 0;"><div style="background:rgba(255,95,0,0.07);border:1px solid ${th.line};border-radius:10px;padding:14px 15px;"><div style="font-size:11px;font-weight:800;letter-spacing:0.12em;text-transform:uppercase;color:${T.A};margin-bottom:7px;">How to play</div><div style="font-size:13.5px;color:${th.text};line-height:1.55;white-space:pre-line;">${esc(g.descr)}</div></div></div>` : '';
   const video = g.videoUrl ? `<div style="padding:14px 18px 0;"><button data-act="openVideo" data-id="${esc(g.id)}" style="width:100%;display:flex;align-items:center;justify-content:center;gap:10px;background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:10px;padding:13px;color:${th.text};font-weight:800;font-size:13.5px;"><span style="width:30px;height:30px;border-radius:50%;background:${T.A};display:flex;align-items:center;justify-content:center;flex-shrink:0;"><svg width="13" height="13" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="${T.on}"/></svg></span>See how it's played</button></div>` : '';
-  const info = pills + howTo + video;
+  // Walk-up head-to-head: you bring your own opponent from the other tribe.
+  const h2hNote = (g.openPlay && g.headToHead) ? `<div style="padding:14px 18px 0;"><div style="display:flex;align-items:flex-start;gap:9px;background:rgba(245,197,24,0.08);border:1px solid rgba(245,197,24,0.4);border-radius:10px;padding:12px 14px;"><span style="flex-shrink:0;font-size:15px;">🤝</span><span style="font-size:12.5px;color:${th.text};line-height:1.5;">This one's head-to-head — <strong>find a person from the other tribe to compete with</strong>, then have the ref score your matchup.</span></div></div>` : '';
+  const info = pills + howTo + video + h2hNote;
 
   // Pure walk-up game (no slots at all) — no sign-up, just show up.
   if (g.openPlay && !hasSlots) {
@@ -1116,6 +1214,10 @@ function scheduleScreen() {
     const g = gameById[m.gameId];
     return { isGame: true, kind: 'game', timeLabel: m.label, ampm: '', title: m.game, place: g ? g.venue : '', min: m.startMin };
   });
+  // Dip Off cooks: their 11:30 AM drop-off is part of their day.
+  if (S.boot.dip && S.boot.dip.myEntry) {
+    games.push({ isGame: true, isDip: true, kind: 'game', timeLabel: '11:30', ampm: 'AM', title: 'Drop off your dip', place: 'The Cafe', min: 690 });
+  }
   const all = [...fixed, ...games];
   all.forEach((it, i) => { it._i = i; });
   all.sort((a, b) => ((a.min == null ? Infinity : a.min) - (b.min == null ? Infinity : b.min)) || (a._i - b._i));
@@ -1141,7 +1243,7 @@ function scheduleScreen() {
         <div style="background:${cardBg};border:1px solid ${cardBorder};border-radius:9px;padding:13px 14px;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <span style="font-family:'BN Kragen';font-size:17px;color:${th.text};text-transform:uppercase;line-height:1;">${esc(e.title)}</span>
-            ${game ? `<span style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:${T.on};background:${T.A};border-radius:4px;padding:2px 6px;">YOUR GAME</span>` : ''}
+            ${game ? `<span style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:${T.on};background:${T.A};border-radius:4px;padding:2px 6px;">${e.isDip ? 'DIP OFF' : 'YOUR GAME'}</span>` : ''}
             ${live ? `<span style="font-size:9px;font-weight:800;letter-spacing:0.08em;color:${T.on};background:${T.A};border-radius:4px;padding:2px 6px;">LIVE</span>` : ''}
           </div>
           ${!game && e.endLabel ? `<div style="font-size:11px;font-weight:700;color:${T.A2};margin-top:4px;">${esc(e.timeLabel)} ${esc(e.ampm)} – ${esc(e.endLabel)} ${esc(e.endAmpm)}</div>` : ''}
@@ -1341,8 +1443,12 @@ function immunityScreen() {
         <div style="font-family:'BN Kragen';font-size:38px;color:#FF5F00;line-height:0.9;">${foundCount}<span style="font-size:19px;color:#8AA7B9;">/${total}</span></div>
         <div>
           <div style="font-size:13px;font-weight:700;color:${th.text};">Idols claimed so far</div>
-          <div style="font-size:11.5px;color:#8AA7B9;margin-top:2px;">Who's holding them stays secret until Tribal Council</div>
+          <div style="font-size:11.5px;color:#8AA7B9;margin-top:2px;">Each one earns points for the finder's tribe · who's holding them stays secret until Tribal Council</div>
         </div>
+      </div>
+      <div style="margin-top:11px;display:flex;align-items:flex-start;gap:10px;background:rgba(255,255,255,0.04);border:1px dashed rgba(255,255,255,0.20);border-radius:10px;padding:13px 15px;">
+        <span style="font-size:16px;flex-shrink:0;">🤫</span>
+        <span style="font-size:12px;color:#C7D3DB;line-height:1.5;">Psst — there are <strong style="color:${th.text};">other idols hidden around camp with no clues at all</strong>. Find one and it gives your tribe an advantage in the relay race.</span>
       </div>
     </div>
     <div style="padding:0 18px;">
@@ -2078,6 +2184,11 @@ function admBracketModal() {
       ${admToggle('', g.isBracket, 'admBracketToggle')}
     </div>
     <div style="font-size:11px;color:#9AA7A5;margin:8px 0 16px;line-height:1.5;">When ON, players and refs see a 🏆 Bracket pill and the rounds below as the game's "Bracket path."</div>
+    <div style="display:flex;gap:12px;align-items:flex-end;background:#F6F8F7;border:1px solid #E6ECEA;border-radius:9px;padding:12px 13px;margin-bottom:8px;">
+      <div style="width:150px;">${admFieldLabel('Points per round win')}${admTextInput('br-roundpts', 'brRoundPts', S.f.brRoundPts !== undefined ? S.f.brRoundPts : String(g.roundPoints || 0), 'e.g. 10')}</div>
+      <button data-act="admBracketPointsSave" style="font-size:12px;font-weight:700;color:#FF5F00;border:1px solid #FFD3B5;border-radius:7px;padding:9px 13px;margin-bottom:1px;">Save points</button>
+    </div>
+    <div style="font-size:11px;color:#9AA7A5;margin:0 0 16px;line-height:1.5;">Each within-tribe round win awards these points to the winner's tribe (0 = advancement only). The overall champion earns the game's "Points for a win" — currently <strong>${g.winPoints != null ? g.winPoints : 10}</strong>, set in the game editor.</div>
     ${admFieldLabel('Intro blurb (optional)')}
     <textarea id="br-intro" data-field="brIntro" placeholder="One line explaining how the bracket works…" style="width:100%;min-height:64px;font-size:13.5px;color:#00253D;border:1px solid #DCE3E2;border-radius:8px;padding:10px 11px;font-family:'Montserrat';outline:none;resize:vertical;">${esc(S.f.brIntro !== undefined ? S.f.brIntro : (g.bracketIntro || ''))}</textarea>
     <div style="margin-top:8px;"><button data-act="admBracketIntroSave" style="font-size:12px;font-weight:700;color:#FF5F00;border:1px solid #FFD3B5;border-radius:7px;padding:8px 13px;">Save intro</button></div>
@@ -2203,6 +2314,27 @@ function admScheduleSection(ov) {
 function admIdolsSection(ov) {
   const idols = ov.idols || [];
   const foundCount = idols.filter(x => x.found).length;
+  const people = (ov.people || []).filter(p => p.team === 'buffalo' || p.team === 'roadhouse');
+  // "Award" search — pick the finder; awarding marks the idol found AND logs
+  // the idol's points to the finder's tribe.
+  const awardPanel = (idol) => {
+    if (S.admIdolAward !== idol.id) return '';
+    const q = (S.f.admIdolSearch || '').trim().toLowerCase();
+    const matches = q ? people.filter(p => (p.name || '').toLowerCase().includes(q)).slice(0, 6) : [];
+    return `
+    <div style="padding:12px 18px;border-bottom:1px solid #EEF2F1;background:#FCFBF7;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#6D7C83;margin-bottom:7px;">Who found ${esc(idol.title || 'this idol')}? ${idol.points ? `They earn +${idol.points} pts for their tribe.` : '(Set its points in Edit to award any.)'}</div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input id="idol-award-search" data-live="admIdolSearch" value="${esc(S.f.admIdolSearch || '')}" placeholder="Type the finder's name…" style="flex:1;min-width:0;font-size:13px;color:#00253D;border:1px solid #DCE3E2;border-radius:7px;padding:8px 10px;outline:none;font-family:'Montserrat';"/>
+        <button data-act="admIdolAwardCancel" style="flex-shrink:0;font-size:12px;font-weight:700;color:#6D7C83;border:1px solid #DCE3E2;border-radius:7px;padding:8px 11px;">Cancel</button>
+      </div>
+      ${matches.length ? `<div style="display:flex;flex-direction:column;gap:5px;margin-top:8px;">${matches.map(p => `
+        <button data-act="admIdolAwardPick" data-id="${idol.id}" data-uid="${p.id}" data-name="${esc(p.name)}" style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:#fff;border:1px solid #E0E6E5;border-radius:7px;padding:8px 11px;text-align:left;">
+          <span style="font-size:13px;font-weight:700;color:#00253D;">${esc(p.name)}</span>
+          ${admTeamChip(p.team)}
+        </button>`).join('')}</div>` : (q ? '<div style="font-size:12px;color:#9AA7A5;margin-top:8px;font-style:italic;">No matches.</div>' : '<div style="font-size:11.5px;color:#9AA7A5;margin-top:7px;">Start typing a name…</div>')}
+    </div>`;
+  };
   const rowHtml = (idol, i) => {
     if (S.admIdolEdit === idol.id) {
       return `
@@ -2210,10 +2342,12 @@ function admIdolsSection(ov) {
         <div style="display:flex;gap:12px;flex-wrap:wrap;">
           <div style="flex:1;min-width:180px;">${admFieldLabel('Short label')}${admTextInput('id-title', 'idTitle', S.f.idTitle || '', 'Clue ' + (i + 1))}</div>
           <div style="width:170px;">${admFieldLabel('Release time (blank = hidden)')}${admTextInput('id-time', 'idTime', S.f.idTime || '', 'e.g. 1:30 PM')}</div>
+          <div style="width:120px;">${admFieldLabel('Points')}${admTextInput('id-points', 'idPoints', S.f.idPoints || '', 'e.g. 10')}</div>
         </div>
         <div style="margin-top:12px;">${admFieldLabel('Clue (hidden from players until release)')}
           <textarea id="id-clue" data-field="idClue" placeholder="Type the clue riddle…" style="width:100%;min-height:70px;font-size:14px;color:#00253D;border:1px solid #DCE3E2;border-radius:8px;padding:11px 12px;font-family:'Montserrat';outline:none;resize:vertical;">${esc(S.f.idClue || '')}</textarea>
         </div>
+        <div style="font-size:11px;color:#9AA7A5;margin-top:6px;">Points go to the finder's tribe when you award the idol (needs migration 010).</div>
         <div style="display:flex;gap:8px;margin-top:14px;">
           <button data-act="admIdolSave" data-id="${idol.id}" style="background:#FF5F00;color:#011220;font-weight:800;font-size:13px;padding:10px 16px;border-radius:8px;">Save clue</button>
           <button data-act="admIdolCancel" style="color:#6D7C83;font-weight:700;font-size:13px;padding:10px 12px;border-radius:8px;border:1px solid #DCE3E2;">Cancel</button>
@@ -2225,22 +2359,27 @@ function admIdolsSection(ov) {
     <div style="display:flex;align-items:center;gap:14px;padding:13px 18px;border-bottom:1px solid #EEF2F1;">
       <span style="width:30px;height:30px;border-radius:50%;background:${idol.found ? '#FF5F00' : '#EEF2F1'};color:${idol.found ? '#011220' : '#6D7C83'};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'BN Kragen';font-size:13px;">${i + 1}</span>
       <div style="flex:1;min-width:0;">
-        <div style="font-size:14px;font-weight:700;color:#00253D;">${esc(idol.title || 'Clue ' + (i + 1))}</div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="font-size:14px;font-weight:700;color:#00253D;">${esc(idol.title || 'Clue ' + (i + 1))}</span>
+          ${idol.points ? `<span style="font-size:10px;font-weight:800;color:#8A5A12;background:#FCEFDD;border:1px solid #F0D9BB;border-radius:5px;padding:1px 7px;">+${idol.points} pts</span>` : ''}
+        </div>
         <div style="font-size:12px;color:#6D7C83;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${idol.clue ? esc(idol.clue) : '<span style="font-style:italic;color:#9AA7A5;">No clue text yet</span>'}</div>
-        <div style="font-size:11px;font-weight:700;color:${idol.releaseMin != null ? '#00253D' : '#9AA7A5'};margin-top:3px;">${idol.releaseMin != null ? '⏱ ' + esc(releaseLabel) : esc(releaseLabel)}</div>
+        <div style="font-size:11px;font-weight:700;color:${idol.releaseMin != null ? '#00253D' : '#9AA7A5'};margin-top:3px;">${idol.releaseMin != null ? '⏱ ' + esc(releaseLabel) : esc(releaseLabel)}${idol.found && idol.foundBy ? ` · <span style="color:#1F8A5B;">Found by ${esc(idol.foundBy)}</span>` : ''}</div>
       </div>
-      <button data-act="admIdolFound" data-id="${idol.id}" style="flex-shrink:0;font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:6px;background:${idol.found ? '#1F8A5B' : 'transparent'};color:${idol.found ? '#fff' : '#6D7C83'};border:1px solid ${idol.found ? '#1F8A5B' : '#C9D3D2'};">${idol.found ? 'Found ✓' : 'Mark found'}</button>
+      ${idol.found
+        ? `<button data-act="admIdolFound" data-id="${idol.id}" style="flex-shrink:0;font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:6px;background:#1F8A5B;color:#fff;border:1px solid #1F8A5B;">Found ✓</button>`
+        : `<button data-act="admIdolAwardOpen" data-id="${idol.id}" style="flex-shrink:0;font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:6px;background:transparent;color:#6D7C83;border:1px solid #C9D3D2;">🏆 Award</button>`}
       <div style="display:flex;gap:6px;flex-shrink:0;">
         <button data-act="admIdolEdit" data-id="${idol.id}" style="height:30px;padding:0 11px;border-radius:6px;border:1px solid #DCE3E2;color:#00253D;font-size:12px;font-weight:700;">Edit</button>
         <button data-act="admIdolDelete" data-id="${idol.id}" data-title="${esc(idol.title || 'this clue')}" style="width:30px;height:30px;border-radius:6px;border:1px solid #F0CDB3;color:#C77B23;display:flex;align-items:center;justify-content:center;font-size:16px;">×</button>
       </div>
-    </div>`;
+    </div>${awardPanel(idol)}`;
   };
   return `
   <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap;">
     <div>
       <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Idols</h3>
-      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Hidden-immunity clues — all hidden by default. Type each clue, set a release time (it stays hidden until then), and mark one found when it's claimed. ${foundCount} of ${idols.length} found.</p>
+      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Hidden-immunity clues — all hidden by default. Type each clue, set a release time and its points, then hit 🏆 Award and pick the finder — their tribe gets the points automatically. ${foundCount} of ${idols.length} found.</p>
     </div>
     <button data-act="admIdolAdd" style="flex-shrink:0;background:#FF5F00;color:#011220;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;">+ Add clue</button>
   </div>
@@ -2439,25 +2578,33 @@ function admScoresSection(ov) {
 
 function admRefsSection(ov) {
   const needsRef = (ov.gamesCatalog || []).filter(g => g.needsRef);
+  const refById = {};
+  for (const rf of (ov.refs || [])) refById[rf.id] = rf.name;
   const rows = needsRef.map(g => {
-    const assigned = (ov.refAssignments || {})[g.id] || '';
+    // Multi-ref (migration 010): any number of refs can cover a game.
+    const raw = (ov.refAssignments || {})[g.id];
+    const assigned = Array.isArray(raw) ? raw : (raw ? [raw] : []);
+    const addable = (ov.refs || []).filter(rf => !assigned.includes(rf.id));
     return `
     <div style="display:flex;align-items:center;gap:16px;padding:13px 18px;border-bottom:1px solid #EEF2F1;">
-      <div style="flex:1;min-width:0;">
+      <div style="width:220px;flex-shrink:0;min-width:0;">
         <div style="font-size:14px;font-weight:700;color:#00253D;">${esc(g.name)}</div>
         <div style="font-size:12px;color:#6D7C83;margin-top:2px;">${esc(g.venue || '')}</div>
       </div>
-      <span style="font-size:11px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${assigned ? '#1F8A5B' : '#C77B23'};width:96px;flex-shrink:0;">${assigned ? 'Assigned' : 'Unassigned'}</span>
-      <select data-change="admRefAssign" data-gid="${esc(g.id)}" style="width:190px;flex-shrink:0;font-size:13px;font-weight:600;color:#00253D;background:#fff;border:1px solid #DCE3E2;border-radius:7px;padding:8px 10px;cursor:pointer;">
-        <option value="">Unassigned</option>
-        ${(ov.refs || []).map(rf => `<option value="${rf.id}" ${String(assigned) === String(rf.id) ? 'selected' : ''}>${esc(rf.name)}</option>`).join('')}
-      </select>
+      <div style="flex:1;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+        ${assigned.map(uid => `<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#011220;background:#FFEDE0;border:1px solid #FFD3B5;border-radius:6px;padding:5px 8px;">${esc(refById[uid] || 'Ref #' + uid)}<button data-act="admRefRemove" data-gid="${esc(g.id)}" data-uid="${uid}" style="color:#C77B23;font-weight:800;font-size:14px;line-height:1;">×</button></span>`).join('')}
+        ${assigned.length === 0 ? '<span style="font-size:12px;color:#C77B23;font-weight:700;">No ref yet</span>' : ''}
+        ${addable.length ? `<select data-change="admRefAssign" data-gid="${esc(g.id)}" style="font-size:12px;font-weight:700;color:#FF5F00;background:#fff;border:1px dashed #FF5F00;border-radius:6px;padding:5px 8px;cursor:pointer;">
+          <option value="">+ Add ref</option>
+          ${addable.map(rf => `<option value="${rf.id}">${esc(rf.name)}</option>`).join('')}
+        </select>` : ''}
+      </div>
     </div>`;
   }).join('');
   return `
   <div style="margin-bottom:16px;">
     <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Referees</h3>
-    <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Referees create their own account with the shared join code below — no approval needed. Then assign a SUP ref to every game that needs one.</p>
+    <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Referees create their own account with the shared join code below — no approval needed. Any number of refs can cover the same game; refs can also add games themselves from their phone.</p>
   </div>
   <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;padding:18px;margin-bottom:20px;max-width:540px;">
     <div style="display:flex;align-items:center;gap:9px;margin-bottom:11px;">
@@ -2688,7 +2835,7 @@ function screenHtml() {
   switch (S.route) {
     case 'home': return ref ? refBoardScreen() : homeScreen();
     case 'games': return ref ? refGamesScreen() : gamesScreen();
-    case 'game': return gameDetailScreen();
+    case 'game': return ref ? refGamesScreen() : gameDetailScreen();   // refs never sign up for games
     case 'schedule': return scheduleScreen();
     case 'tribes': return tribesScreen();
     case 'score': return ref ? refBoardScreen() : scoreScreen();
@@ -2742,7 +2889,9 @@ function render() {
       ${adminScreen()}
     </div>
     ${admGamesModals()}`;
-  } else if (S.isDesk && S.route !== 'game' && (S.route === 'games')) {
+  } else if (S.isDesk && S.route === 'games' && !isRefUser()) {
+    // Players get the rich desktop sign-up board; REFS never do — their
+    // desktop experience mirrors the mobile ref board (phone column below).
     html = `
     <div style="height:100vh;height:100dvh;display:flex;flex-direction:column;">
       ${deskNav()}
@@ -2975,11 +3124,11 @@ const ACTIONS = {
     else {
       S.refOpen = id;
       S.entryB = 0; S.entryR = 0; S.walkSearch = ''; S.walkPick = null; S.walkScore = 0;
-      S.refWinner = null; S.refRound = 'round';
+      S.refWinner = null; S.refRound = 'round'; S.refRoundSel = null; S.teamScores = {};
     }
     render();
   },
-  refSelectSlot: (el) => { S.refSlot[el.dataset.game] = parseInt(el.dataset.slot, 10); S.refWinner = null; S.soloScores = {}; render(); },
+  refSelectSlot: (el) => { S.refSlot[el.dataset.game] = parseInt(el.dataset.slot, 10); S.refWinner = null; S.teamScores = {}; render(); },
   refClaim: (el) => guarded(async () => {
     const claim = el.dataset.claim === '1';
     const res = await api('/ref-claim', { method: 'POST', body: { gameId: el.dataset.game, claim } });
@@ -2987,6 +3136,7 @@ const ACTIONS = {
     toast(claim ? "You're reffing it" : 'Released');
   }),
   refRound: (el) => { S.refRound = el.dataset.round; S.refWinner = null; render(); },
+  refRoundPick: (el) => { S.refRoundSel = el.dataset.round; S.refWinner = null; render(); },
   refPickWinner: (el) => {
     S.refWinner = { team: el.dataset.team, name: el.dataset.name, scores: el.dataset.scores === '1' };
     render();
@@ -2995,34 +3145,58 @@ const ACTIONS = {
     const w = S.refWinner;
     if (!w) { toast('Tap the winner first'); return; }
     const st = (S.boot.refStations || []).find(x => x.gameId === el.dataset.game);
+    // Tag the result to the slot + bracket round being scored so it shows a
+    // green "Scored" mark (and the next round populates on the round list).
+    const selId = S.refSlot[el.dataset.game];
+    const slot = st ? (st.slots || []).find(s => String(s.id) === String(selId)) : null;
+    const isBracket = st && (st.isBracket !== undefined ? st.isBracket : !!BRACKETS[st.gameId]);
+    const brData = st && ((st.bracket && (st.bracket.rounds || []).length) ? st.bracket : (BRACKETS[st.gameId] || null));
+    const round = isBracket ? (S.refRound || 'round') : 'champ';
+    let roundLabel = null;
+    if (isBracket && brData) {
+      if (round === 'round') {
+        const names = brData.rounds.filter(r => r.team !== 'final').map(r => r.name);
+        roundLabel = names.includes(S.refRoundSel) ? S.refRoundSel : (names[0] || 'Bracket round');
+      } else {
+        roundLabel = ((brData.rounds || []).find(r => r.team === 'final') || {}).name || 'Championship';
+      }
+    }
     await api('/results', { method: 'POST', body: {
       type: 'winner', gameName: st ? st.name : el.dataset.game,
       winnerTeam: w.team, winnerName: w.name, scores: !!w.scores,
+      stage: round === 'round' ? 'round' : 'champ',
+      slotLabel: slot ? slot.label : null, roundLabel,
     } });
     S.refWinner = null;
-    toast(w.scores ? 'Winner logged & scored' : 'Winner logged');
+    toast(round === 'round' ? 'Winner logged — they advance' : 'Winner logged & scored');
     loadBoot(true);
   }),
-  soloSubmit: (el) => guarded(async () => {
+  refVsSubmit: (el) => guarded(async () => {
     const st = (S.boot.refStations || []).find(x => x.gameId === el.dataset.game);
     if (!st) return;
-    // Score the players in the SELECTED slot (fall back to the game's full
-    // sign-up list for a no-slot game).
+    const b = S.teamScores.buffalo || 0, r = S.teamScores.roadhouse || 0;
+    if (!b && !r) { toast('Enter a score for at least one team'); return; }
     const selId = S.refSlot[el.dataset.game];
     const slot = (st.slots || []).find(s => String(s.id) === String(selId));
-    const players = slot
-      ? [...(slot.buffalo || []).map(n => ({ name: n, team: 'buffalo' })), ...(slot.roadhouse || []).map(n => ({ name: n, team: 'roadhouse' }))]
-      : (st.signups || []).map(p => ({ name: p.name, team: p.team }));
-    const seen = new Set();
-    const entries = players
-      .filter(p => (S.soloScores[p.name] || 0) > 0 && !seen.has(p.name) && seen.add(p.name))
-      .map(p => ({ name: p.name, team: p.team, score: S.soloScores[p.name] }));
-    if (!entries.length) { toast('Score at least one player first'); return; }
-    await api('/results', { method: 'POST', body: { type: 'solo', gameName: st.name, entries } });
-    S.soloScores = {};
-    toast('Logged');
+    await api('/results', { method: 'POST', body: {
+      type: 'vs', gameName: st.name, ptsBuffalo: b, ptsRoadhouse: r,
+      slotLabel: slot ? slot.label : null,
+    } });
+    S.teamScores = {};
+    toast('Team scores logged');
     loadBoot(true);
   }),
+  refChangeResult: (el) => {
+    const ids = String(el.dataset.ids || '').split(',').map(x => parseInt(x, 10)).filter(Number.isInteger);
+    if (!ids.length) return;
+    if (!window.confirm('⚠️ Change this result?\n\nThe logged entry (and its points) will be removed so you can re-enter it. Do this only if it was scored wrong.')) return;
+    guarded(async () => {
+      for (const id of ids) await api('/results/' + id, { method: 'DELETE' });
+      S.refWinner = null; S.teamScores = {};
+      toast('Result removed — enter the correct one now');
+      await loadBoot(true);
+    });
+  },
   walkPick: (el) => { S.walkPick = { name: el.dataset.name, team: el.dataset.team }; S.walkSearch = el.dataset.name; S.walkScore = 0; render(); },
   walkSubmit: (el) => guarded(async () => {
     if (!S.walkPick) return;
@@ -3039,7 +3213,7 @@ const ACTIONS = {
   }),
 
   // ── admin ──
-  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; S.admSchedEdit = null; S.admIdolEdit = null; S.admFillSlot = null; S.admAddSlot = null; S.admBracketEdit = null; render(); },
+  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; S.admSchedEdit = null; S.admIdolEdit = null; S.admIdolAward = null; S.admFillSlot = null; S.admAddSlot = null; S.admBracketEdit = null; render(); },
   admMode: (el) => guarded(async () => {
     await api('/ac/settings', { method: 'POST', body: { eventMode: el.dataset.mode } });
     await afterAdminMutation();
@@ -3153,6 +3327,7 @@ const ACTIONS = {
       S.admIdolEdit = last.id;
       S.f.idTitle = last.title || ''; S.f.idClue = last.clue || '';
       S.f.idTime = last.releaseMin != null ? minToLabel(last.releaseMin) : '';
+      S.f.idPoints = last.points != null ? String(last.points) : '';
     }
     render();
   }),
@@ -3163,6 +3338,7 @@ const ACTIONS = {
     S.admIdolEdit = id;
     S.f.idTitle = idol.title || ''; S.f.idClue = idol.clue || '';
     S.f.idTime = idol.releaseMin != null ? minToLabel(idol.releaseMin) : '';
+    S.f.idPoints = idol.points != null ? String(idol.points) : '';
     render();
   },
   admIdolCancel: () => { S.admIdolEdit = null; render(); },
@@ -3177,6 +3353,7 @@ const ACTIONS = {
     await api('/ac/idols', { method: 'POST', body: {
       action: 'update', id,
       title: (S.f.idTitle || '').trim(), clue: (S.f.idClue || '').trim(), releaseMin,
+      points: Math.max(0, parseInt(S.f.idPoints, 10) || 0),
     } });
     S.admIdolEdit = null;
     await loadOverview(true);
@@ -3186,6 +3363,18 @@ const ACTIONS = {
     await api('/ac/idols', { method: 'POST', body: { action: 'toggleFound', id: parseInt(el.dataset.id, 10) } });
     await loadOverview(true);
   }),
+  admIdolAwardOpen: (el) => { S.admIdolAward = parseInt(el.dataset.id, 10); S.f.admIdolSearch = ''; render(); },
+  admIdolAwardCancel: () => { S.admIdolAward = null; S.f.admIdolSearch = ''; render(); },
+  admIdolAwardPick: (el) => {
+    const name = el.dataset.name || 'this person';
+    if (!window.confirm(`Award this idol to ${name}? Their tribe gets the idol's points and the entry shows in Scores.`)) return;
+    guarded(async () => {
+      await api('/ac/idols', { method: 'POST', body: { action: 'award', id: parseInt(el.dataset.id, 10), userId: parseInt(el.dataset.uid, 10) } });
+      S.admIdolAward = null; S.f.admIdolSearch = '';
+      await afterAdminMutation();
+      toast(`Idol awarded to ${name}`);
+    });
+  },
   admIdolDelete: (el) => {
     if (!window.confirm(`Delete ${el.dataset.title}? This can't be undone.`)) return;
     guarded(async () => {
@@ -3234,6 +3423,7 @@ const ACTIONS = {
     S.admRoundEdit = null;
     const g = (S.overview.gamesCatalog || []).find(x => x.id === el.dataset.id);
     S.f.brIntro = g ? (g.bracketIntro || '') : '';
+    S.f.brRoundPts = g ? String(g.roundPoints || 0) : '0';
     render();
   },
   admBracketClose: () => { S.admBracketEdit = null; S.admRoundEdit = null; render(); },
@@ -3245,6 +3435,15 @@ const ACTIONS = {
       await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: be.gameId, isBracket: next } });
       await loadOverview(true);
       toast(next ? 'Marked as a bracket game' : 'No longer a bracket game');
+    });
+  },
+  admBracketPointsSave: () => {
+    const be = S.admBracketEdit; if (!be) return;
+    const rp = Math.max(0, parseInt(S.f.brRoundPts, 10) || 0);
+    guarded(async () => {
+      await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: be.gameId, roundPoints: rp } });
+      await loadOverview(true);
+      toast(rp > 0 ? `Round wins now earn ${rp} pts` : 'Rounds are advancement-only');
     });
   },
   admBracketIntroSave: () => {
@@ -3376,6 +3575,10 @@ const ACTIONS = {
     toast('Added to the slot');
   }),
   admAddCancel: () => { S.admAddSlot = null; render(); },
+  admRefRemove: (el) => guarded(async () => {
+    await api('/ac/ref-assign', { method: 'POST', body: { gameId: el.dataset.gid, userId: parseInt(el.dataset.uid, 10), op: 'remove' } });
+    await loadOverview(true);
+  }),
 
   admDipReveal: () => guarded(async () => {
     const cur = !!(S.overview && S.overview.dip && S.overview.dip.revealed);
@@ -3463,8 +3666,10 @@ const CHANGES = {
   admRefAssign: (el) => {
     const gid = el.dataset.gid;
     const uid = el.value ? parseInt(el.value, 10) : null;
+    if (uid === null) return;
+    el.value = '';
     guarded(async () => {
-      await api('/ac/ref-assign', { method: 'POST', body: { gameId: gid, userId: uid } });
+      await api('/ac/ref-assign', { method: 'POST', body: { gameId: gid, userId: uid, op: 'add' } });
       await loadOverview(true);
     });
   },
@@ -3487,11 +3692,11 @@ document.addEventListener('click', (e) => {
 document.addEventListener('input', (e) => {
   const el = e.target;
   if (el.dataset && el.dataset.field) S.f[el.dataset.field] = el.value;
-  // Ref score entry — type any number for a player. No re-render (keeps the
-  // caret in the field); the value is read from state on submit.
-  if (el.dataset && el.dataset.solo !== undefined) {
+  // Ref score entry — one number per TEAM. No re-render (keeps the caret in
+  // the field); the value is read from state on submit.
+  if (el.dataset && el.dataset.teamscore !== undefined) {
     const v = parseInt(el.value, 10);
-    S.soloScores[el.dataset.solo] = Number.isFinite(v) && v > 0 ? v : 0;
+    S.teamScores[el.dataset.teamscore] = Number.isFinite(v) && v > 0 ? v : 0;
   }
   if (el.dataset && el.dataset.walkscore !== undefined) {
     const v = parseInt(el.value, 10);
@@ -3500,6 +3705,8 @@ document.addEventListener('input', (e) => {
   if (el.dataset && el.dataset.live === 'gameSearch') { S.gameSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'walkSearch') { S.walkSearch = el.value; S.walkPick = null; render(); }
   if (el.dataset && el.dataset.live === 'admFill') { S.f.admFillSearch = el.value; render(); }
+  if (el.dataset && el.dataset.live === 'admIdolSearch') { S.f.admIdolSearch = el.value; render(); }
+  if (el.dataset && el.dataset.live === 'admRefSearch') { S.f.admRefSearch = el.value; render(); }
   if (el.dataset && el.dataset.debounce === 'refCode') {
     S.f.refCodeDraft = el.value;
     const code = el.value.trim();

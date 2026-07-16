@@ -68,6 +68,12 @@ infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
                              + bo_bracket_rounds table (editable brackets). Backfills head_to_head
                              (non-walk-up=1) + seeds the Cornhole/Ping-Pong brackets. RUN IN TWO
                              STEPS (Part 1 schema, then Part 2 backfill — Fabric Msg 207 gotcha).
+  010_ref_mode.sql         — ref-mode redesign: bo_ref_assignments PK -> (game_id, user_id)
+                             (MULTIPLE refs per game, uncapped), bo_results.slot_label/round_label
+                             (green "Scored" marks + ref change-result), bo_games.round_points
+                             (points per bracket-round win; champion still earns win_points),
+                             bo_idols.points/found_by (admin awards an idol to its finder).
+                             RUN IN TWO STEPS like 009.
 scripts/
   concurrency-loadtest.js  — proves the atomic slot guard against a live deploy (Node 18+, no deps)
   loadtest-crowd.js        — realistic crowd load test: read stampede + sign-up burst + sustained
@@ -235,30 +241,34 @@ the DJ.
 ## Referee experience (`refBoardScreen`, `refGamesScreen`, `ref-claim/`, `results/`)
 
 Refs have **no tribe**, so they skip the pick-your-tribe gate (`render()` guards the gate with
-`!isRefUser()`). Their world:
+`!isRefUser()`). **Desktop mirrors mobile for refs** — the desktop sign-up board is player-only
+(`render()` gates it with `!isRefUser()`), so refs always get the phone-column ref UI, and
+`screenHtml()` routes refs away from the sign-up game detail (refs never sign up). Their world:
 
-- **Home (`refBoardScreen`) = only the games they're assigned to.** Walk-up games are NOT auto-shown
-  to every ref anymore — they're assigned like any other game (bootstrap `refStations` filters to
-  `assignments[g.id] === uid`). Each station carries its `slots[]` (per-tribe rosters).
-- **Games tab (`refGamesScreen`) = self-assign.** Every game with its assignment status + an "I'll ref
-  it"/"Release" button → `POST /api/ref-claim {gameId, claim}` (`bo_ref_assignments` is one-ref-per-
-  game, so claiming takes it over — lets refs move coverage without an admin). Powered by
-  `payload.refGames`.
-- **Scoring: click a game → pick the timeslot → log it.** Games run out of order, so the ref selects
-  which slot they're scoring (`S.refSlot[gameId]`), sees that slot's players, and logs via
-  `POST /api/results`. **Which scoring UI a ref sees is driven by the game's `head_to_head` flag**
-  (migration 009), NOT `open_play` — `refStations.type` is `'vs'` when head_to_head, else `'walk'`:
-  - **Head-to-head** (`type:'vs'` station) → **winner-picker** (`type:'winner'`, `{winnerTeam,
-    winnerName, scores}`). Points come from the game's `win_points` (server-authoritative). Bracket
-    games (`refStations.isBracket`, DB-backed via migration 009 with a `BRACKETS`-const fallback pre-009)
-    get a **round toggle**: "Bracket round" = within-tribe, logs advancement with `scores:false` (no
-    points); "Championship" = cross-tribe, `scores:true` (awards points). So **only the cross-tribe
-    championship scores**.
-  - **Not head-to-head** (`type:'walk'` station) → the ref **types any number** per player
-    (`type:'solo'`), plus a walk-on search to score anyone not on the slot list (`type:'walk'`). No
-    fixed value — whatever they earned. (Any game can be this now, not just walk-up ones.)
+- **Home (`refBoardScreen`) = only the games on their list.** Walk-up games are NOT auto-shown
+  to every ref — they're claimed like any other game. **Multiple refs per game, uncapped**
+  (migration 010: `bo_ref_assignments` PK is `(game_id, user_id)`); bootstrap filters `refStations`
+  to games whose ref list includes the caller. Each station carries `slots[]` (per-tribe rosters).
+- **Games tab (`refGamesScreen`) = build your list.** Every game with everyone reffing it
+  (`refNames[]`) + an "+ Add to my list"/"Remove" button → `POST /api/ref-claim {gameId, claim}`.
+  Claiming adds a row (never bumps another ref); releasing removes only the caller's row.
+- **Scoring: click a game → pick the timeslot → log it.** Results are tagged with
+  `slotLabel`/`roundLabel` (migration 010) so scored slots/rounds show a green **Scored ✓** mark;
+  `payload.refResults` (refs only) feeds the marks, the logged-result panels, and the bracket
+  progress list. A **Change** button (warns first) `DELETE /api/results/{id}`s the row so the ref
+  re-enters it. `refStations.type` from `head_to_head` (009):
+  - **Head-to-head** (`type:'vs'`) → ref picks the winning **TEAM** (both teammates' names shown in
+    the two boxes). Bracket games get the round toggle + a round-name chip row; a "Bracket round"
+    win awards `round_points` (010, 0 = advancement-only) via `stage:'round'`, the championship
+    awards `win_points`. The **Bracket progress** list shows each round's logged winners and
+    populates the next round with them. Walk-up H2H stations show a "players find someone from the
+    other tribe" note (the player game detail shows the same note).
+  - **Not head-to-head** (`type:'walk'`) → ref enters **one score per team** for the slot
+    (`type:'vs'` result), plus the walk-on search to score an individual not on the list
+    (`type:'walk'`).
 
-Admin still assigns refs in **Admin → Referees** (`ref-assign`); both paths write `bo_ref_assignments`.
+Admin still adds/removes refs in **Admin → Referees** (`ref-assign` `{gameId,userId,op}` — chips per
+game); both paths write `bo_ref_assignments`.
 
 ---
 
@@ -382,12 +392,23 @@ Shipped since (all merged to `main`):
   scored by typing any number; **ref experience rework** — Home shows only assigned games, self-assign
   from the Games tab (`ref-claim`), score by picking the timeslot (games run out of order), refs skip
   the team gate.
+- **Ref mode redesign (migration 010):** desktop refs mirror the mobile UI; multiple refs per game
+  (uncapped, add-to-my-list model); winner picked as a whole TEAM; variable games scored one number
+  per team; green **Scored ✓** marks + logged-result panels + warn-first **Change result**
+  (`DELETE /api/results/{id}`); bracket rounds award admin-set `round_points` (champion earns
+  `win_points`) and the bracket progress list populates the next round with logged winners.
+  **Plus:** idols carry points + an admin 🏆 Award-to-finder flow (auto-logs the tribe points);
+  walk-up head-to-head note (player + ref); dip cooks get an 11:30 AM Cafe drop-off on their
+  schedule; home hero says "Welcome back, FIRSTNAME" / "Buff Olympics." (date removed); home cards
+  reflect all-slots-picked / relay-leg / dip-full state; "Herd Games" → "Buff Olympics".
 
 DB migrations **003–008 have been run** in Fabric (idols / win_points / default-ref / schedule-end /
-game details / widen game text). **009 (game types + brackets) must still be run** — two steps, Part 1
-then Part 2. Until it is, the head-to-head toggle / bracket editor stay dormant (backend is defensive)
-and refs fall back to the old open_play-derived scoring + the hard-coded `BRACKETS`. Edit the game
-lineup only via the admin editor — never re-run 002 (it wipes sign-ups).
+game details / widen game text). **009 (game types + brackets) and 010 (ref mode) must still be
+run** — each in two steps, Part 1 then Part 2. Until they are, the backend stays defensive: pre-009
+refs fall back to the old open_play-derived scoring + the hard-coded `BRACKETS`; pre-010 only one ref
+per game can claim (second claim 409s), results aren't slot-tagged (no Scored marks), bracket rounds
+stay advancement-only, and idol points stay dormant. Edit the game lineup only via the admin editor —
+never re-run 002 (it wipes sign-ups).
 
 Open ideas / not built: overlap indicator on the games list (grey out games that clash with an
 existing pick — scoped but not built); email/notifications; richer mobile polish. Nothing blocking.

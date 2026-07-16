@@ -1,7 +1,7 @@
 {
   "name": "Buff Olympics",
   "short_name": "Buff Olympics",
-  "description": "The Herd Games — August 14. Sign up for games, follow the day, and see the scores.",
+  "description": "Buff Olympics — August 14. Sign up for games, follow the day, and see the scores.",
   "id": "/",
   "start_url": "/",
   "scope": "/",
