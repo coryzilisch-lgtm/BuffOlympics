@@ -74,6 +74,11 @@ infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
                              (points per bracket-round win; champion still earns win_points),
                              bo_idols.points/found_by (admin awards an idol to its finder).
                              RUN IN TWO STEPS like 009.
+  011_team_games.sql       — team games: bo_games.team_size (players/team; 1=individuals) +
+                             bo_signups.team_no (which team within a slot+tribe). A slot then holds
+                             Team 1 / Team 2 per tribe (players pick a teammate at sign-up), and refs
+                             score whole teams. Backfills team_size=2 for Cornhole/Ping-Pong. RUN IN
+                             TWO STEPS like 009. Signup atomic guard is per-(slot,tribe,team_no).
 scripts/
   concurrency-loadtest.js  — proves the atomic slot guard against a live deploy (Node 18+, no deps)
   loadtest-crowd.js        — realistic crowd load test: read stampede + sign-up burst + sustained
@@ -128,6 +133,13 @@ Sign-ups are **per time slot**, not per game. Each `bo_games` row has rows in `b
   game reverts to free walk-up after. **Walk-up slots MAY overlap another pick** (frontend shows a
   yellow "finish inside the window" warning; the signup API skips the overlap check for open_play).
 - Relay + Dip Off are separate from the slot cap.
+- **Team games** (`bo_games.team_size ≥ 2`, migration 011): a slot's per-tribe seats split into teams
+  of `team_size` (numTeams = `floor(cap/team_size)`). The player joins a **specific** team via
+  `POST /api/signups {slotId, teamNo}` — that's how partners are chosen — and `bo_signups.team_no`
+  records it. The **atomic guard** counts per `(slot, tribe, team_no)` capped at `team_size` (same
+  lock discipline as the individual path — don't regress it). `team_size` = 1 (default/pre-011) is
+  the plain individual model. Set caps to **# teams × team_size**; the Games editor's slot form does
+  this for you (asks "# teams").
 - **Sign-up API:** `POST /api/signups {slotId}` / `DELETE /api/signups/{slotId}`.
 
 ### 002_slots.sql is a RESEED — never re-run it mid-event
@@ -257,15 +269,17 @@ Refs have **no tribe**, so they skip the pick-your-tribe gate (`render()` guards
   `payload.refResults` (refs only) feeds the marks, the logged-result panels, and the bracket
   progress list. A **Change** button (warns first) `DELETE /api/results/{id}`s the row so the ref
   re-enters it. `refStations.type` from `head_to_head` (009):
-  - **Head-to-head** (`type:'vs'`) → ref picks the winning **TEAM** (both teammates' names shown in
-    the two boxes). Bracket games get the round toggle + a round-name chip row; a "Bracket round"
-    win awards `round_points` (010, 0 = advancement-only) via `stage:'round'`, the championship
-    awards `win_points`. The **Bracket progress** list shows each round's logged winners and
-    populates the next round with them. Walk-up H2H stations show a "players find someone from the
-    other tribe" note (the player game detail shows the same note).
-  - **Not head-to-head** (`type:'walk'`) → ref enters **one score per team** for the slot
-    (`type:'vs'` result), plus the walk-on search to score an individual not on the list
-    (`type:'walk'`).
+  - **Head-to-head** (`type:'vs'`) → ref taps the **winning UNIT** and can log **several matchups per
+    slot** (each tap is its own result). A unit is a whole **team** for team games (`teamSize ≥ 2`,
+    migration 011 — from the slot's `buffaloTeams`/`roadhouseTeams`) or a single player otherwise;
+    `slotUnits(slot, tribe)` builds them (`app.js`). Bracket rounds are **within-tribe** (BCI-vs-BCI,
+    TXRH-vs-TXRH) and award `round_points` (010, 0 = advancement-only) via `stage:'round'`; the
+    championship is cross-tribe and awards `win_points`. The **Bracket progress** list shows each
+    round's logged winners and populates the next round. Walk-up H2H stations show a "find someone
+    from the other tribe" note.
+  - **Not head-to-head** (`type:'walk'`) → ref enters **one score per PERSON** (each logged separately
+    as `type:'solo'`); already-scored people drop off until Changed. The "score anyone not on the
+    list" walk-on search now shows **only for walk-up (`open_play`) games**, not every variable game.
 
 Admin still adds/removes refs in **Admin → Referees** (`ref-assign` `{gameId,userId,op}` — chips per
 game); both paths write `bo_ref_assignments`.
@@ -403,12 +417,14 @@ Shipped since (all merged to `main`):
   reflect all-slots-picked / relay-leg / dip-full state; "Herd Games" → "Buff Olympics".
 
 DB migrations **003–008 have been run** in Fabric (idols / win_points / default-ref / schedule-end /
-game details / widen game text). **009 (game types + brackets) and 010 (ref mode) must still be
-run** — each in two steps, Part 1 then Part 2. Until they are, the backend stays defensive: pre-009
-refs fall back to the old open_play-derived scoring + the hard-coded `BRACKETS`; pre-010 only one ref
-per game can claim (second claim 409s), results aren't slot-tagged (no Scored marks), bracket rounds
-stay advancement-only, and idol points stay dormant. Edit the game lineup only via the admin editor —
-never re-run 002 (it wipes sign-ups).
+game details / widen game text). **009 (game types + brackets), 010 (ref mode), and 011 (team games)
+must still be run** — each in two steps, Part 1 then Part 2. Until they are, the backend stays
+defensive: pre-009 refs fall back to the old open_play-derived scoring + the hard-coded `BRACKETS`;
+pre-010 only one ref per game can claim (second claim 409s), results aren't slot-tagged (no Scored
+marks), bracket rounds stay advancement-only, and idol points stay dormant; **pre-011 every game is
+an individual game** (`team_size` defaults to 1, `team_no` ignored) — the team sign-up/scoring UI
+only appears once a game's `team_size` is set to ≥2 (run 011, then set it in the Games editor). Edit
+the game lineup only via the admin editor — never re-run 002 (it wipes sign-ups).
 
 Open ideas / not built: overlap indicator on the games list (grey out games that clash with an
 existing pick — scoped but not built); email/notifications; richer mobile polish. Nothing blocking.

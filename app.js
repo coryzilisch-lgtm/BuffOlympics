@@ -27,6 +27,7 @@ const S = {
   refOpen: null, refSlot: {}, entryB: 0, entryR: 0, refWinner: null, refRound: 'round',
   refRoundSel: null,       // bracket round name being scored (round mode)
   teamScores: {},          // variable-score entry: { buffalo: n, roadhouse: n }
+  soloScores: {},          // per-person variable-score entry: { 'Alex R.': n, … }
   walkSearch: '', walkPick: null, walkScore: 0, walkLog: [],
   // admin UI
   adminSection: 'people', schedView: 'list',
@@ -257,6 +258,23 @@ function gameSummary(g) {
     openPlay: !!g.openPlay, hasSlots: slots.length > 0,
     cap, filled, open: Math.max(0, cap - filled), mine: !!mineLabel, mineLabel,
   };
+}
+// The scoring "units" in a slot for one tribe. Team games (teamSize ≥ 2, migration
+// 011) → the tribe's teams (from the payload's buffaloTeams/roadhouseTeams); each
+// unit is a whole team the ref scores together. Individual games → one unit per
+// person. `teamNo` is set only for team units (drives the sign-up team join).
+function slotUnits(slot, team) {
+  const teams = team === 'buffalo' ? slot.buffaloTeams : slot.roadhouseTeams;
+  if (teams && (slot.teamSize || 1) >= 2) {
+    return teams.map((members, i) => ({
+      team, teamNo: i + 1, members: members || [],
+      key: `${team}:t${i + 1}`,
+      name: (members && members.length) ? members.join(' & ') : `Team ${i + 1}`,
+      label: `Team ${i + 1}`, empty: !(members && members.length),
+    }));
+  }
+  const flat = (team === 'buffalo' ? slot.buffalo : slot.roadhouse) || [];
+  return flat.map(nm => ({ team, teamNo: null, members: [nm], key: `${team}:${nm}`, name: nm, label: nm, empty: false }));
 }
 
 /* ════════════════════ auth screens ════════════════════ */
@@ -778,59 +796,70 @@ function refBoardScreen() {
       } else if (!selSlot && slots.length) {
         scorer = `<div style="margin-top:14px;font-size:12.5px;color:${th.sub};font-style:italic;">Pick a timeslot above to score it.</div>`;
       } else if (isWalk) {
-        // Variable score — the ref enters ONE number per team for this slot.
-        if (slotResults.length) {
-          scorer = scoredPanel(slotResults);
+        // Not head-to-head → variable score, one number PER PERSON. Two people in
+        // a slot are scored separately (each is its own logged result). Already-
+        // scored people drop off the list until their result is Changed.
+        const people = [
+          ...((selSlot.buffalo || []).map(n => ({ name: n, team: 'buffalo' }))),
+          ...((selSlot.roadhouse || []).map(n => ({ name: n, team: 'roadhouse' }))),
+        ];
+        const scoredNames = new Set(slotResults.map(r => (r.playerName || '').trim()).filter(Boolean));
+        const todo = people.filter(p => !scoredNames.has(p.name));
+        const personRow = (p, i) => {
+          const c = teamColor(p.team);
+          return `<div style="display:flex;align-items:center;gap:12px;background:rgba(255,255,255,0.03);border:1px solid ${th.line};border-radius:9px;padding:11px 13px;">
+            <div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}</div><div style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};margin-top:2px;">${teamLabel(p.team)}</div></div>
+            <input id="solo-${i}" data-soloscore="${esc(p.name)}" data-team="${esc(p.team)}" value="${S.soloScores[p.name] || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:74px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:9px 8px;color:${th.text};font-family:'BN Kragen';font-size:18px;outline:none;"/>
+          </div>`;
+        };
+        scorer = `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>`;
+        if (slotResults.length) scorer += scoredPanel(slotResults);
+        if (todo.length) {
+          scorer += `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin:14px 0 10px;">${esc(selSlot.label)} · score each player</div><div style="display:flex;flex-direction:column;gap:8px;">${todo.map(personRow).join('')}</div><button data-act="refSoloSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:13px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Save scores</button>`;
+        } else if (people.length) {
+          scorer += `<div style="margin-top:12px;font-size:12px;color:${th.sub};font-style:italic;">Everyone here is scored — tap Change on a row to fix one.</div>`;
         } else {
-          const teamBox = (team) => {
-            const names = (team === 'buffalo' ? selSlot.buffalo : selSlot.roadhouse) || [];
-            const c = teamColor(team);
-            return `<div style="flex:1;border:1px solid ${th.line};border-radius:10px;padding:12px;background:rgba(255,255,255,0.03);">
-              <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;color:${c};">${teamLabel(team)}</div>
-              <div style="font-size:12.5px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.3;">${names.length ? esc(names.join(' & ')) : '—'}</div>
-              <input id="team-score-${team}" data-teamscore="${team}" value="${S.teamScores[team] || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:100%;margin-top:9px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:9px 8px;color:${th.text};font-family:'BN Kragen';font-size:20px;outline:none;"/>
-            </div>`;
-          };
-          scorer = `
-            <div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>
-            <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:10px;">${esc(selSlot.label)} · enter each team's score</div>
-            <div style="display:flex;gap:11px;">${teamBox('buffalo')}${teamBox('roadhouse')}</div>
-            <button data-act="refVsSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:13px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Save team scores</button>`;
+          scorer += `<div style="margin-top:12px;font-size:12px;color:${th.sub};font-style:italic;">No players signed up for this slot.</div>`;
         }
-        scorer += `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>${walkOnBlock()}`;
+        // The "score anyone not on the list" walk-on search is only for true
+        // walk-up (open_play) games — a fixed-roster game scores its slot only.
+        if (st.openPlay) scorer += `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>${walkOnBlock()}`;
       } else {
-        // head-to-head — the ref picks the winning TEAM (whole team, not
-        // individuals); bracket rounds pick the advancing player instead.
-        const buf = selSlot ? (selSlot.buffalo || []) : [];
-        const road = selSlot ? (selSlot.roadhouse || []) : [];
+        // Head-to-head — the ref taps the WINNING UNIT (a whole team for team
+        // games, a single player otherwise) and can log several matchups in the
+        // same slot (each tap logs its own result). Bracket rounds are within
+        // each tribe; the championship is cross-tribe.
         const round = isBracket ? (S.refRound || 'round') : 'champ';
         const sel = S.refWinner;
+        const isTeamGame = (st.teamSize || 1) >= 2;
         const roundNames = brData ? brData.rounds.filter(r => r.team !== 'final').map(r => r.name) : [];
         const champName = brData ? (((brData.rounds || []).find(r => r.team === 'final') || {}).name || 'Championship') : 'Championship';
         const selRound = roundNames.includes(S.refRoundSel) ? S.refRoundSel : (roundNames[0] || 'Bracket round');
-        const tribeBtn = (team, names) => {
-          const picked = sel && sel.scores && sel.team === team;
-          const c = teamColor(team);
-          return `<button data-act="refPickWinner" data-team="${team}" data-name="${esc(names || teamLabel(team))}" data-scores="1" style="flex:1;text-align:left;border-radius:10px;padding:13px 12px;border:2px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};"><div style="font-size:10.5px;font-weight:800;text-transform:uppercase;color:${c};">${teamLabel(team)}</div><div style="font-size:13px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.25;">${esc(names || '—')}</div>${picked ? `<div style="margin-top:7px;font-size:10.5px;font-weight:800;color:${c};display:flex;align-items:center;gap:5px;">${checkSvg(c, 12)}Winning team</div>` : ''}</button>`;
+        const bufUnits = selSlot ? slotUnits(selSlot, 'buffalo').filter(u => !u.empty) : [];
+        const roadUnits = selSlot ? slotUnits(selSlot, 'roadhouse').filter(u => !u.empty) : [];
+        const unitBtn = (u, scores) => {
+          const picked = sel && sel.key === u.key && sel.scores === scores;
+          const c = teamColor(u.team);
+          const sub = isTeamGame ? `${teamLabel(u.team)} · ${esc(u.label)}` : teamLabel(u.team);
+          return `<button data-act="refPickWinner" data-team="${u.team}" data-name="${esc(u.name)}" data-key="${esc(u.key)}" data-scores="${scores ? '1' : '0'}" style="flex:1;min-width:132px;text-align:left;border-radius:10px;padding:12px;border:2px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};"><div style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};">${sub}</div><div style="font-size:13px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.25;">${esc(u.name)}</div>${picked ? `<div style="margin-top:6px;font-size:10.5px;font-weight:800;color:${c};display:flex;align-items:center;gap:5px;">${checkSvg(c, 12)}Winner</div>` : ''}</button>`;
         };
         const roundTabs = isBracket ? `<div style="display:flex;background:rgba(255,255,255,0.05);border:1px solid ${th.line};border-radius:9px;padding:3px;gap:3px;margin-bottom:13px;"><button data-act="refRound" data-round="round" style="flex:1;padding:9px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${round === 'round' ? T.A : 'transparent'};color:${round === 'round' ? T.on : th.sub};">Bracket round<br/><span style="font-size:9px;opacity:0.8;">${roundPts > 0 ? `+${roundPts} pts per win` : 'within tribe · no points'}</span></button><button data-act="refRound" data-round="champ" style="flex:1;padding:9px;border-radius:6px;font-size:11.5px;font-weight:700;text-align:center;background:${round === 'champ' ? T.A : 'transparent'};color:${round === 'champ' ? T.on : th.sub};">Championship<br/><span style="font-size:9px;opacity:0.8;">+${winPts} pts</span></button></div>` : '';
+        const submitFor = (canSubmit, label) => `<button data-act="refWinnerSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:14px;background:${canSubmit ? T.A : 'rgba(255,255,255,0.08)'};color:${canSubmit ? T.on : th.sub};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">${label}</button>`;
         let picker = '';
         let submitBtn = '';
-        const submitFor = (canSubmit, label) => `<button data-act="refWinnerSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:14px;background:${canSubmit ? T.A : 'rgba(255,255,255,0.08)'};color:${canSubmit ? T.on : th.sub};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">${label}</button>`;
         if (round === 'champ') {
           const done = isBracket ? results.filter(r => r.roundLabel === champName) : slotResults;
-          if (done.length) {
-            picker = scoredPanel(done);
-          } else {
-            picker = `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Which team won${selSlot ? ' ' + esc(selSlot.label) : ''}? Winner earns ${winPts} pts</div><div style="display:flex;gap:11px;">${tribeBtn('buffalo', buf.join(' & '))}${tribeBtn('roadhouse', road.join(' & '))}</div>`;
-            submitBtn = submitFor(!!sel, !sel ? 'Pick the winning team first' : `Log ${teamLabel(sel.team)} win · +${winPts} pts`);
-          }
+          const units = [...bufUnits, ...roadUnits];
+          picker = `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Tap the winner${selSlot ? ' · ' + esc(selSlot.label) : ''} — earns ${winPts} pts</div>`;
+          if (done.length) picker += scoredPanel(done) + '<div style="height:10px;"></div>';
+          picker += units.length ? `<div style="display:flex;flex-wrap:wrap;gap:9px;">${units.map(u => unitBtn(u, true)).join('')}</div>` : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No one signed up for this slot.</div>`;
+          submitBtn = submitFor(!!sel, !sel ? 'Tap the winner first' : `Log ${esc(sel.name)} win · +${winPts} pts`);
         } else {
           const roundChips = roundNames.length > 1 ? `<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;">${roundNames.map(rn => `<button data-act="refRoundPick" data-round="${esc(rn)}" style="padding:7px 12px;border-radius:7px;font-size:11.5px;font-weight:700;background:${rn === selRound ? T.A : 'rgba(255,255,255,0.06)'};color:${rn === selRound ? T.on : th.sub};border:1px solid ${th.line};">${esc(rn)}</button>`).join('')}</div>` : '';
           const roundDone = results.filter(r => r.roundLabel === selRound);
-          const players = [...buf.map(n => ({ name: n, team: 'buffalo' })), ...road.map(n => ({ name: n, team: 'roadhouse' }))];
-          picker = `${roundChips}<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:4px;">${esc(selRound)} · tap the winner</div><div style="font-size:11px;color:${th.sub};margin-bottom:10px;">${roundPts > 0 ? `Within-tribe round — the winner advances and earns +${roundPts} pts for their tribe.` : 'Within-tribe round — advances the winner, no tribe points until the championship.'}</div>${roundDone.length ? scoredPanel(roundDone) + '<div style="height:10px;"></div>' : ''}<div style="display:flex;flex-direction:column;gap:7px;">${players.length ? players.map(p => { const picked = sel && !sel.scores && sel.name === p.name && sel.team === p.team; const c = teamColor(p.team); return `<button data-act="refPickWinner" data-team="${esc(p.team)}" data-name="${esc(p.name)}" data-scores="0" style="display:flex;align-items:center;gap:11px;border-radius:9px;padding:11px 12px;text-align:left;border:1px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};"><span style="flex:1;min-width:0;font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}</span><span style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};flex-shrink:0;">${teamLabel(p.team)}</span>${picked ? checkSvg(c, 14) : ''}</button>`; }).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No one signed up for this slot.</div>`}</div>`;
-          submitBtn = submitFor(!!sel, !sel ? 'Pick the winner first' : (roundPts > 0 ? `Log winner — ${esc(sel.name)} advances · +${roundPts} pts` : `Log winner — ${esc(sel.name)} advances`));
+          const tribeGroup = (label, units) => units.length ? `<div style="font-size:10px;font-weight:800;text-transform:uppercase;color:${th.sub};margin:2px 0 6px;">${label} · pick the winner</div><div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;">${units.map(u => unitBtn(u, false)).join('')}</div>` : '';
+          picker = `${roundChips}<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:4px;">${esc(selRound)} · tap the winning ${isTeamGame ? 'team' : 'player'}</div><div style="font-size:11px;color:${th.sub};margin-bottom:10px;">${roundPts > 0 ? `Within-tribe — the winner advances and earns +${roundPts} pts for their tribe.` : 'Within-tribe — advances the winner, no tribe points until the championship.'}</div>${roundDone.length ? scoredPanel(roundDone) + '<div style="height:10px;"></div>' : ''}${(bufUnits.length + roadUnits.length) ? tribeGroup('Buffalo', bufUnits) + tribeGroup('Texas Roadhouse', roadUnits) : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;">No one signed up for this slot.</div>`}`;
+          submitBtn = submitFor(!!sel, !sel ? 'Tap the winner first' : (roundPts > 0 ? `Log ${esc(sel.name)} — advances · +${roundPts} pts` : `Log ${esc(sel.name)} — advances`));
         }
         scorer = `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>${roundTabs}${picker}${submitBtn}`;
       }
@@ -1010,6 +1039,50 @@ function slotRowHtml(g, slot) {
   const myLabel = team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse';
   const otherLabel = team === 'buffalo' ? 'Texas Roadhouse' : 'Buffalo';
   const otherColor = team === 'buffalo' ? '#E0322E' : '#FF7F2E';
+
+  // Team games (migration 011): the slot is split into Team 1 / Team 2 … per
+  // tribe. The player joins a SPECIFIC team — that's how partners are chosen.
+  if ((slot.teamSize || 1) >= 2) {
+    const ts = slot.teamSize;
+    const mode = S.boot.settings.eventMode;
+    const myName = (S.boot.user && S.boot.user.name) || '';
+    const myTeams = slotUnits(slot, team);
+    const otherTeams = slotUnits(slot, team === 'buffalo' ? 'roadhouse' : 'buffalo');
+    const mineIdx = myTeams.findIndex(u => u.members.includes(myName));
+    const myTeamNo = mineIdx >= 0 ? myTeams[mineIdx].teamNo : null;
+    const inThisSlot = myTeamNo != null || ss.st === 'signed';
+    const gateLabel = ss.st === 'max' ? `Your ${signupMax()} slots are full`
+      : ss.st === 'conflict' ? 'Overlaps a pick'
+      : mode === 'gameday' ? 'Locked'
+      : (ss.cap <= 0 ? `${myLabel} not in this slot` : '');
+    const teamRow = (u) => {
+      const full = u.members.length >= ts;
+      const mineRow = myTeamNo != null && u.teamNo === myTeamNo;
+      let act;
+      if (mineRow) act = `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;"><span style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:800;color:#3FBF87;">${checkSvg('#3FBF87', 12)}You're in</span>${mode !== 'gameday' ? `<button data-act="leaveSlot" data-slot="${slot.id}" style="font-size:10.5px;color:${th.sub};text-decoration:underline;">Cancel</button>` : ''}</div>`;
+      else if (inThisSlot) act = `<span style="flex-shrink:0;font-size:10.5px;color:${th.sub};">—</span>`;
+      else if (full) act = `<span style="flex-shrink:0;font-size:11px;font-weight:700;color:${th.sub};">Full</span>`;
+      else if (gateLabel) act = `<span style="flex-shrink:0;font-size:10.5px;font-weight:700;color:${th.sub};max-width:84px;text-align:right;">${esc(gateLabel)}</span>`;
+      else act = `<button data-act="joinSlot" data-slot="${slot.id}" data-teamno="${u.teamNo}" style="flex-shrink:0;background:${T.A};color:${T.on};font-weight:800;font-size:12px;padding:8px 14px;border-radius:8px;">Join</button>`;
+      return `<div style="background:${mineRow ? T.dim : 'rgba(255,255,255,0.03)'};border:1px solid ${mineRow ? T.A : th.line};border-radius:9px;padding:10px 12px;">
+        <div style="display:flex;align-items:center;gap:10px;">
+          <div style="flex:1;min-width:0;"><div style="font-size:13px;font-weight:800;color:${th.text};">${esc(u.label)} <span style="font-size:11px;font-weight:700;color:${T.A};">${u.members.length}/${ts}</span></div>${u.members.length ? `<div style="font-size:11px;color:${th.sub};margin-top:2px;">${esc(u.members.join(' · '))}</div>` : `<div style="font-size:11px;color:${th.sub};margin-top:2px;font-style:italic;">Open — be the first</div>`}</div>
+          ${act}
+        </div>
+      </div>`;
+    };
+    const otherFilled = otherTeams.reduce((a, u) => a + u.members.length, 0);
+    return `
+    <div style="background:${slot.mine ? T.dim : 'rgba(255,255,255,0.04)'};border:1px solid ${slot.mine ? T.A : th.line};border-radius:10px;padding:12px 14px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
+        <div style="font-family:'BN Kragen';font-size:17px;color:${th.text};line-height:1;">${esc(slot.label)}</div>
+        <span style="font-size:10.5px;font-weight:700;color:${otherColor};">${otherLabel} ${otherFilled}/${ss.otherCap}</span>
+      </div>
+      <div style="font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${th.sub};margin:9px 0 7px;">${myLabel} · pick your team (${ts} per team)</div>
+      <div style="display:flex;flex-direction:column;gap:7px;">${myTeams.map(teamRow).join('')}</div>
+      ${ss.overlap ? `<div style="margin-top:9px;display:flex;align-items:center;gap:7px;font-size:10.5px;font-weight:600;color:#F5C518;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><path d="M12 3 2 20h20L12 3z" stroke="#F5C518" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4M12 16.5v.5" stroke="#F5C518" stroke-width="2" stroke-linecap="round"/></svg>Overlaps another pick — fine for a walk-up, just finish inside the window.</div>` : ''}
+    </div>`;
+  }
 
   let action;
   if (ss.st === 'signed') action = `<div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0;"><span style="display:flex;align-items:center;gap:5px;font-size:11.5px;font-weight:800;color:#3FBF87;">${checkSvg('#3FBF87', 13)}You're in</span>${S.boot.settings.eventMode !== 'gameday' ? `<button data-act="leaveSlot" data-slot="${slot.id}" style="font-size:10.5px;color:${th.sub};text-decoration:underline;">Cancel</button>` : ''}</div>`;
@@ -2099,6 +2172,10 @@ function admGamesModals() {
       ${admTextInput('gm-points', 'gmPoints', S.f.gmPoints || '', 'e.g. 10')}
       <div style="font-size:11px;color:#9AA7A5;margin-top:5px;">The number awarded to the winning tribe when a ref logs a head-to-head / championship winner.</div>
       <div style="height:14px;"></div>
+      ${admFieldLabel('Team size (players per team)')}
+      ${admTextInput('gm-teamsize', 'gmTeamSize', S.f.gmTeamSize || '', 'e.g. 1 for singles, 2 for pairs')}
+      <div style="font-size:11px;color:#9AA7A5;margin-top:5px;">1 = individuals (default). 2+ = teams — each timeslot then holds Team 1 / Team 2 sign-ups per tribe (players pick a teammate) and the ref scores each team. Set a slot's caps to <strong>teams × team size</strong>.</div>
+      <div style="height:14px;"></div>
       ${admFieldLabel('How to play')}
       <textarea id="gm-descr" data-field="gmDescr" placeholder="Explain how the game is played…" style="width:100%;min-height:84px;font-size:14px;color:#00253D;border:1px solid #DCE3E2;border-radius:8px;padding:11px 12px;font-family:'Montserrat';outline:none;resize:vertical;">${esc(S.f.gmDescr || '')}</textarea>
       <div style="height:14px;"></div>
@@ -2116,16 +2193,26 @@ function admGamesModals() {
   }
   const se = S.admSlotEdit;
   if (se) {
-    const inner = `
-      ${admFieldLabel('Time')}
-      ${admTextInput('sl-time', 'slTime', S.f.slTime || '', 'e.g. 1:30 PM')}
-      <div style="font-size:11px;color:#9AA7A5;margin-top:5px;">Type it like “1:30 PM”. This sets both the label and the sort order.</div>
-      <div style="height:14px;"></div>
+    const sg = ((S.overview || {}).gamesCatalog || []).find(x => x.id === se.gameId) || {};
+    const sts = (sg.teamSize && sg.teamSize >= 2) ? sg.teamSize : 1;
+    const capsBlock = sts >= 2 ? `
+      <div style="display:flex;gap:12px;">
+        <div style="flex:1;">${admFieldLabel('# Buffalo teams')}${admTextInput('sl-tb', 'slTeamsB', S.f.slTeamsB || '', '0')}</div>
+        <div style="flex:1;">${admFieldLabel('# TXRH teams')}${admTextInput('sl-tr', 'slTeamsR', S.f.slTeamsR || '', '0')}</div>
+      </div>
+      <div style="font-size:11px;color:#9AA7A5;margin-top:8px;line-height:1.5;">${esc(sg.name || 'This game')} plays in teams of <strong>${sts}</strong>. Each tribe's cap = (# teams) × ${sts}, so players sign up as Team 1 / Team 2. 0 teams = that tribe isn't in this slot.</div>`
+      : `
       <div style="display:flex;gap:12px;">
         <div style="flex:1;">${admFieldLabel('Buffalo cap')}${admTextInput('sl-cb', 'slCapB', S.f.slCapB || '', '0')}</div>
         <div style="flex:1;">${admFieldLabel('TXRH cap')}${admTextInput('sl-cr', 'slCapR', S.f.slCapR || '', '0')}</div>
       </div>
       <div style="font-size:11px;color:#9AA7A5;margin-top:8px;">0 for a tribe means that tribe isn't in this slot.</div>`;
+    const inner = `
+      ${admFieldLabel('Time')}
+      ${admTextInput('sl-time', 'slTime', S.f.slTime || '', 'e.g. 1:30 PM')}
+      <div style="font-size:11px;color:#9AA7A5;margin-top:5px;">Type it like “1:30 PM”. This sets both the label and the sort order.</div>
+      <div style="height:14px;"></div>
+      ${capsBlock}`;
     html += admModalShell(se.mode === 'add' ? 'Add time slot' : 'Edit time slot', inner, 'admSlotSave', 'admSlotCancel');
   }
   if (S.admBracketEdit) html += admBracketModal();
@@ -3075,7 +3162,9 @@ const ACTIONS = {
   clearSearch: () => { S.gameSearch = ''; render(); },
   toggleWalkup: () => { S.walkupOpen = !S.walkupOpen; render(); },
   joinSlot: (el) => guarded(async () => {
-    const res = await api('/signups', { method: 'POST', body: { slotId: parseInt(el.dataset.slot, 10) } });
+    const body = { slotId: parseInt(el.dataset.slot, 10) };
+    if (el.dataset.teamno) body.teamNo = parseInt(el.dataset.teamno, 10);   // team games (migration 011)
+    const res = await api('/signups', { method: 'POST', body });
     applyBoot(res); toast("You're in!");
   }),
   leaveSlot: (el) => guarded(async () => {
@@ -3124,11 +3213,11 @@ const ACTIONS = {
     else {
       S.refOpen = id;
       S.entryB = 0; S.entryR = 0; S.walkSearch = ''; S.walkPick = null; S.walkScore = 0;
-      S.refWinner = null; S.refRound = 'round'; S.refRoundSel = null; S.teamScores = {};
+      S.refWinner = null; S.refRound = 'round'; S.refRoundSel = null; S.teamScores = {}; S.soloScores = {};
     }
     render();
   },
-  refSelectSlot: (el) => { S.refSlot[el.dataset.game] = parseInt(el.dataset.slot, 10); S.refWinner = null; S.teamScores = {}; render(); },
+  refSelectSlot: (el) => { S.refSlot[el.dataset.game] = parseInt(el.dataset.slot, 10); S.refWinner = null; S.teamScores = {}; S.soloScores = {}; render(); },
   refClaim: (el) => guarded(async () => {
     const claim = el.dataset.claim === '1';
     const res = await api('/ref-claim', { method: 'POST', body: { gameId: el.dataset.game, claim } });
@@ -3138,7 +3227,11 @@ const ACTIONS = {
   refRound: (el) => { S.refRound = el.dataset.round; S.refWinner = null; render(); },
   refRoundPick: (el) => { S.refRoundSel = el.dataset.round; S.refWinner = null; render(); },
   refPickWinner: (el) => {
-    S.refWinner = { team: el.dataset.team, name: el.dataset.name, scores: el.dataset.scores === '1' };
+    S.refWinner = {
+      team: el.dataset.team, name: el.dataset.name,
+      key: el.dataset.key || (el.dataset.team + ':' + el.dataset.name),
+      scores: el.dataset.scores === '1',
+    };
     render();
   },
   refWinnerSubmit: (el) => guarded(async () => {
@@ -3186,13 +3279,35 @@ const ACTIONS = {
     toast('Team scores logged');
     loadBoot(true);
   }),
+  refSoloSubmit: (el) => guarded(async () => {
+    // Non-head-to-head slot — log one result per player who has a score.
+    const st = (S.boot.refStations || []).find(x => x.gameId === el.dataset.game);
+    if (!st) return;
+    const selId = S.refSlot[el.dataset.game];
+    const slot = (st.slots || []).find(s => String(s.id) === String(selId));
+    if (!slot) { toast('Pick a timeslot first'); return; }
+    const people = [
+      ...((slot.buffalo || []).map(n => ({ name: n, team: 'buffalo' }))),
+      ...((slot.roadhouse || []).map(n => ({ name: n, team: 'roadhouse' }))),
+    ];
+    const entries = people
+      .map(p => ({ name: p.name, team: p.team, score: S.soloScores[p.name] || 0 }))
+      .filter(e => e.score > 0);
+    if (!entries.length) { toast('Enter a score for at least one player'); return; }
+    await api('/results', { method: 'POST', body: {
+      type: 'solo', gameName: st.name, entries, slotLabel: slot.label,
+    } });
+    S.soloScores = {};
+    toast('Scores logged');
+    loadBoot(true);
+  }),
   refChangeResult: (el) => {
     const ids = String(el.dataset.ids || '').split(',').map(x => parseInt(x, 10)).filter(Number.isInteger);
     if (!ids.length) return;
     if (!window.confirm('⚠️ Change this result?\n\nThe logged entry (and its points) will be removed so you can re-enter it. Do this only if it was scored wrong.')) return;
     guarded(async () => {
       for (const id of ids) await api('/results/' + id, { method: 'DELETE' });
-      S.refWinner = null; S.teamScores = {};
+      S.refWinner = null; S.teamScores = {}; S.soloScores = {};
       toast('Result removed — enter the correct one now');
       await loadBoot(true);
     });
@@ -3398,7 +3513,7 @@ const ACTIONS = {
   admGameNew: () => {
     S.admGameEdit = { mode: 'add', needsRef: true, openPlay: false, headToHead: true };
     S.f.gmName = ''; S.f.gmTime = ''; S.f.gmVenue = ''; S.f.gmPoints = '10';
-    S.f.gmPlayers = ''; S.f.gmPointsLabel = ''; S.f.gmDescr = ''; S.f.gmVideo = '';
+    S.f.gmPlayers = ''; S.f.gmPointsLabel = ''; S.f.gmDescr = ''; S.f.gmVideo = ''; S.f.gmTeamSize = '1';
     render();
   },
   admGameEdit: (el) => {
@@ -3412,6 +3527,7 @@ const ACTIONS = {
     S.f.gmPoints = String(g.winPoints != null ? g.winPoints : 10);
     S.f.gmPlayers = g.players || ''; S.f.gmPointsLabel = g.pointsLabel || '';
     S.f.gmDescr = g.descr || ''; S.f.gmVideo = g.videoUrl || '';
+    S.f.gmTeamSize = String(g.teamSize != null ? g.teamSize : 1);
     render();
   },
   admGameFlagRef: () => { if (S.admGameEdit) { S.admGameEdit.needsRef = !S.admGameEdit.needsRef; render(); } },
@@ -3489,8 +3605,10 @@ const ACTIONS = {
     const name = (S.f.gmName || '').trim();
     if (!name) { toast('Give the game a name'); return; }
     const wp = Math.max(0, parseInt(S.f.gmPoints, 10) || 0);
+    const ts = Math.max(1, parseInt(S.f.gmTeamSize, 10) || 1);
     const details = {
       winPoints: wp,
+      teamSize: ts,
       players: (S.f.gmPlayers || '').trim(),
       pointsLabel: (S.f.gmPointsLabel || '').trim(),
       descr: (S.f.gmDescr || '').trim(),
@@ -3528,13 +3646,22 @@ const ACTIONS = {
       toast('Game deleted');
     });
   },
-  admSlotNew: (el) => { S.admSlotEdit = { mode: 'add', gameId: el.dataset.game }; S.f.slTime = ''; S.f.slCapB = '1'; S.f.slCapR = '1'; render(); },
+  admSlotNew: (el) => {
+    const g = (S.overview.gamesCatalog || []).find(x => x.id === el.dataset.game) || {};
+    const ts = (g.teamSize && g.teamSize >= 2) ? g.teamSize : 1;
+    S.admSlotEdit = { mode: 'add', gameId: el.dataset.game };
+    S.f.slTime = ''; S.f.slCapB = String(ts); S.f.slCapR = String(ts);
+    S.f.slTeamsB = '2'; S.f.slTeamsR = '2';
+    render();
+  },
   admSlotEdit: (el) => {
     const g = (S.overview.gamesCatalog || []).find(x => x.id === el.dataset.game);
     const s = g && (g.slots || []).find(z => String(z.id) === el.dataset.slot);
     if (!s) return;
+    const ts = (g.teamSize && g.teamSize >= 2) ? g.teamSize : 1;
     S.admSlotEdit = { mode: 'edit', gameId: el.dataset.game, slotId: s.id };
     S.f.slTime = s.label; S.f.slCapB = String(s.capBuffalo); S.f.slCapR = String(s.capRoadhouse);
+    S.f.slTeamsB = String(Math.round((s.capBuffalo || 0) / ts)); S.f.slTeamsR = String(Math.round((s.capRoadhouse || 0) / ts));
     render();
   },
   admSlotCancel: () => { S.admSlotEdit = null; render(); },
@@ -3542,10 +3669,19 @@ const ACTIONS = {
     const se = S.admSlotEdit; if (!se) return;
     const startMin = parseTimeLabel(S.f.slTime || '');
     if (startMin === null) { toast('Enter a time like 1:30 PM'); return; }
+    // Team games derive caps from (# teams) × team size; individual games use
+    // the raw caps typed in.
+    const sg = (S.overview.gamesCatalog || []).find(x => x.id === se.gameId) || {};
+    const sts = (sg.teamSize && sg.teamSize >= 2) ? sg.teamSize : 1;
+    const capBuffalo = sts >= 2
+      ? Math.max(0, parseInt(S.f.slTeamsB, 10) || 0) * sts
+      : Math.max(0, parseInt(S.f.slCapB, 10) || 0);
+    const capRoadhouse = sts >= 2
+      ? Math.max(0, parseInt(S.f.slTeamsR, 10) || 0) * sts
+      : Math.max(0, parseInt(S.f.slCapR, 10) || 0);
     const body = {
       startMin, label: minToLabel(startMin),
-      capBuffalo: Math.max(0, parseInt(S.f.slCapB, 10) || 0),
-      capRoadhouse: Math.max(0, parseInt(S.f.slCapR, 10) || 0),
+      capBuffalo, capRoadhouse,
     };
     if (se.mode === 'add') { body.action = 'addSlot'; body.gameId = se.gameId; }
     else { body.action = 'updateSlot'; body.slotId = se.slotId; }
@@ -3697,6 +3833,11 @@ document.addEventListener('input', (e) => {
   if (el.dataset && el.dataset.teamscore !== undefined) {
     const v = parseInt(el.value, 10);
     S.teamScores[el.dataset.teamscore] = Number.isFinite(v) && v > 0 ? v : 0;
+  }
+  // Ref score entry — one number per PERSON (non-head-to-head). No re-render.
+  if (el.dataset && el.dataset.soloscore !== undefined) {
+    const v = parseInt(el.value, 10);
+    S.soloScores[el.dataset.soloscore] = Number.isFinite(v) && v > 0 ? v : 0;
   }
   if (el.dataset && el.dataset.walkscore !== undefined) {
     const v = parseInt(el.value, 10);

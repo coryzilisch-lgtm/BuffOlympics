@@ -131,6 +131,19 @@ async function loadSharedBootstrap(pool, fresh) {
     } catch (e2) { /* column not present yet — default applied below */ }
   }
 
+  // Per-game team size + which team each player signed up with (migration 011).
+  // Defensive so the app boots pre-011 — then every game is an individual game
+  // (team_size 1) and team_no is ignored, exactly like today.
+  let teamSizeById = {}, teamNoBySignup = {};
+  try {
+    const tsR = await pool.request().query('SELECT id, team_size FROM bo_games');
+    for (const r of tsR.recordset) teamSizeById[r.id] = r.team_size;
+  } catch (e) { /* column not present yet — every game individual */ }
+  try {
+    const tnR = await pool.request().query('SELECT slot_id, user_id, team_no FROM bo_signups');
+    for (const r of tnR.recordset) teamNoBySignup[`${r.slot_id}:${r.user_id}`] = r.team_no;
+  } catch (e) { /* column not present yet — team_no ignored */ }
+
   // Schedule end times (migration 006). Defensive so the app boots pre-006.
   let schedEndById = {};
   try {
@@ -166,7 +179,7 @@ async function loadSharedBootstrap(pool, fresh) {
   const shared = {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
     legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, roundPointsById,
-    schedEndById, gameTypeById, bracketRoundsByGame,
+    schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup,
   };
   cache.set(SHARED_KEY, shared, SHARED_TTL_MS);
   return shared;
@@ -182,7 +195,7 @@ async function buildBootstrap(pool, user, opts = {}) {
   const {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
     legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, roundPointsById,
-    schedEndById, gameTypeById, bracketRoundsByGame,
+    schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup,
   } = shared;
   // Bracket payload for a game, or null. Undefined isBracket (pre-009) is left
   // for the frontend to resolve against its BRACKETS fallback.
@@ -203,6 +216,7 @@ async function buildBootstrap(pool, user, opts = {}) {
 
   // ── per-slot rosters ──
   const slotRoster = {};          // slotId -> { buffalo:[names], roadhouse:[names] }
+  const slotTeamNo = {};          // slotId -> { buffalo:[teamNos], roadhouse:[teamNos] } (aligned w/ names)
   const mySlotIds = new Set();
   const signupPeopleByGame = {};  // gameId -> [{ name, team, slot, startMin }]  (for ref stations)
   const slotGameId = {};          // slotId -> gameId  (filled below)
@@ -214,7 +228,12 @@ async function buildBootstrap(pool, user, opts = {}) {
   for (const s of signupsR.recordset) {
     const name = formatName(s.first_name, s.last_name, s.username);
     if (!slotRoster[s.slot_id]) slotRoster[s.slot_id] = { buffalo: [], roadhouse: [] };
-    if (s.team === 'buffalo' || s.team === 'roadhouse') slotRoster[s.slot_id][s.team].push(name);
+    if (!slotTeamNo[s.slot_id]) slotTeamNo[s.slot_id] = { buffalo: [], roadhouse: [] };
+    if (s.team === 'buffalo' || s.team === 'roadhouse') {
+      slotRoster[s.slot_id][s.team].push(name);
+      const no = teamNoBySignup[`${s.slot_id}:${s.user_id}`];
+      slotTeamNo[s.slot_id][s.team].push(no && no > 0 ? no : 1);
+    }
     if (s.user_id === uid) mySlotIds.add(s.slot_id);
     const gid = slotGameId[s.slot_id];
     if (gid) {
@@ -229,10 +248,29 @@ async function buildBootstrap(pool, user, opts = {}) {
   }
 
   // ── slots grouped by game ──
+  // For team games (team_size ≥ 2) each tribe's roster is split into teams so
+  // players pick a teammate at sign-up and refs score each team. numTeams for a
+  // tribe = floor(cap / team_size). buffaloTeams/roadhouseTeams are arrays of
+  // teams (each an array of member names); null for individual games. The flat
+  // buffalo/roadhouse name arrays are kept unchanged for back-compat.
+  const buildTeams = (names, nos, cap, ts) => {
+    if (!ts || ts < 2) return null;
+    const numTeams = Math.max(1, Math.floor((cap || 0) / ts));
+    const teams = Array.from({ length: numTeams }, () => []);
+    names.forEach((nm, i) => {
+      let no = nos && nos[i] > 0 ? nos[i] : 1;
+      if (no > numTeams) no = numTeams;   // clamp any stray team_no into range
+      teams[no - 1].push(nm);
+    });
+    return teams;
+  };
   const slotsByGame = {};
   for (const s of slotsR.recordset) {
     if (!slotsByGame[s.game_id]) slotsByGame[s.game_id] = [];
     const roster = slotRoster[s.id] || { buffalo: [], roadhouse: [] };
+    const nos = slotTeamNo[s.id] || { buffalo: [], roadhouse: [] };
+    const tsRaw = teamSizeById[s.game_id];
+    const ts = tsRaw && tsRaw >= 2 ? tsRaw : 1;
     slotsByGame[s.game_id].push({
       id: s.id,
       startMin: s.start_min,
@@ -241,6 +279,9 @@ async function buildBootstrap(pool, user, opts = {}) {
       capRoadhouse: s.cap_roadhouse,
       buffalo: roster.buffalo,
       roadhouse: roster.roadhouse,
+      teamSize: ts,
+      buffaloTeams: buildTeams(roster.buffalo, nos.buffalo, s.cap_buffalo, ts),
+      roadhouseTeams: buildTeams(roster.roadhouse, nos.roadhouse, s.cap_roadhouse, ts),
       mine: mySlotIds.has(s.id),
     });
   }
@@ -270,6 +311,7 @@ async function buildBootstrap(pool, user, opts = {}) {
       // it falls back to the old derivation: non-walk-up games were head-to-head.
       headToHead: gt.headToHead !== undefined ? gt.headToHead : !g.open_play,
       isBracket: gt.isBracket,                 // undefined pre-009 → frontend uses BRACKETS fallback
+      teamSize: (teamSizeById[g.id] && teamSizeById[g.id] >= 2) ? teamSizeById[g.id] : 1,  // migration 011; 1 = individuals
       bracket: bracketFor(g.id),
       runtimeLabel: g.time_label || '',
       players: g.players || '',
@@ -408,6 +450,7 @@ async function buildBootstrap(pool, user, opts = {}) {
         // 'vs' → winner-picker, 'walk' → variable score per team.
         type: headToHead ? 'vs' : 'walk',
         headToHead,
+        teamSize: (teamSizeById[g.id] && teamSizeById[g.id] >= 2) ? teamSizeById[g.id] : 1,  // migration 011
         isBracket: gt.isBracket,           // undefined pre-009 → ref board uses BRACKETS fallback
         bracket: bracketFor(g.id),         // rounds for the ref bracket path (migration 009)
         openPlay: !!g.open_play,
