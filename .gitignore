@@ -1,4 +1,5 @@
 .DS_Store
+scripts/.fake-accounts.json
 api/node_modules/
 infra/main.parameters.json
 node_modules/
