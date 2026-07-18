@@ -486,9 +486,20 @@ async function buildBootstrap(pool, user, opts = {}) {
       };
     });
 
+    // Dedupe by display name + team: results and rosters key on the display
+    // string, so two accounts rendering identically would show as confusing
+    // duplicate rows in the ref walk-on picker (and scoring "each" of them
+    // would double-count). One row per distinct name is the honest view.
+    const seenPlayer = new Set();
     payload.allPlayers = usersR.recordset
       .filter(u => u.team === 'buffalo' || u.team === 'roadhouse')
-      .map(u => ({ name: formatName(u.first_name, u.last_name, u.username), team: u.team }));
+      .map(u => ({ name: formatName(u.first_name, u.last_name, u.username), team: u.team }))
+      .filter(p => {
+        const k = p.team + '|' + p.name;
+        if (seenPlayer.has(k)) return false;
+        seenPlayer.add(k);
+        return true;
+      });
 
     // Every logged result (newest first) so refs can SEE what's been scored,
     // mark slots/rounds "Scored", and change a result. slot_label/round_label

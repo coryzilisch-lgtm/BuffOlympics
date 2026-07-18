@@ -66,9 +66,7 @@ const api = async (p, { method = 'GET', token, body } = {}) => {
   return { status: res.status, json };
 };
 
-// A little variety so rosters don't read as a wall of identical names.
-const FIRST = ['Alex', 'Sam', 'Jordan', 'Casey', 'Riley', 'Taylor', 'Morgan', 'Jamie', 'Avery', 'Quinn',
-  'Reese', 'Parker', 'Drew', 'Skyler', 'Hayden', 'Rowan', 'Emerson', 'Finley', 'Sawyer', 'Charlie'];
+// Varied last names so rosters don't read as a wall of identical initials.
 const LAST = ['Reed', 'Lane', 'Cole', 'Ford', 'Hart', 'Vance', 'Wells', 'Pike', 'Rhodes', 'Booker',
   'Cross', 'Dean', 'Frost', 'Grove', 'Hale', 'Knox', 'Marsh', 'Nash', 'Pace', 'Quill'];
 
@@ -95,18 +93,22 @@ async function main() {
   const manifest = loadManifest();
   const made = [];   // { id, email, team, name }
 
-  // 2) Create the fake player pool.
+  // 2) Create the fake player pool. The app displays people as
+  // "FirstName L." (first name + last initial), so every fake needs a UNIQUE
+  // first name — otherwise dozens of accounts all render as "Zztest A." and
+  // the ref walk-on picker shows indistinguishable duplicate rows.
   console.log('  … creating fake players');
   const pool = { buffalo: [], roadhouse: [] };
   const plan = [['buffalo', POOL_BUFFALO], ['roadhouse', POOL_ROADHOUSE]];
+  let serial = 0;
   for (const [team, count] of plan) {
     for (let i = 0; i < count; i++) {
-      const first = FIRST[i % FIRST.length];
+      serial++;
       const last = LAST[(i + team.length) % LAST.length];
       const email = `${FAKE_PREFIX}-${stamp}-${team}-${i}@example.com`;
       const r = await api('/auth/signup', {
         method: 'POST',
-        body: { firstName: 'Zztest', lastName: `${first}${last}`, email, password: 'FakeSeed!12345', team, shirtSize: 'M', years: '1st', songRequest: '' },
+        body: { firstName: `Zztest${serial}`, lastName: last, email, password: 'FakeSeed!12345', team, shirtSize: 'M', years: '1st', songRequest: '' },
       });
       if (r.status !== 200 || !r.json?.token) throw new Error(`signup (${team} ${i}) failed (${r.status}): ${JSON.stringify(r.json)}`);
       const rec = { id: r.json.user.id, email, team, name: r.json.user.name };
