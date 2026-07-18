@@ -3619,20 +3619,27 @@ const ACTIONS = {
       needsRef: !!ge.needsRef, openPlay: !!ge.openPlay,
     };
     details.headToHead = !!ge.headToHead;
+    let upRes = null;
     if (ge.mode === 'add') {
       // addGame inserts the core row (text fields default NULL); set the pills /
       // how-to-play / video / win-points in a follow-up updateGame.
       body.action = 'addGame';
       const res = await api('/ac/games', { method: 'POST', body });
       if (res && res.id) {
-        await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: res.id, ...details } });
+        upRes = await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: res.id, ...details } });
       }
     } else {
-      await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: ge.id, ...body, ...details } });
+      upRes = await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: ge.id, ...body, ...details } });
     }
     S.admGameEdit = null;
     await loadOverview(true);
-    toast(ge.mode === 'add' ? 'Game added' : 'Game updated');
+    // Team size can't be stored until migration 011 is run — say so clearly
+    // rather than letting the save look successful when it didn't take.
+    if (ts >= 2 && upRes && upRes.teamSizeSaved === false) {
+      toast('Saved — but team size needs migration 011 (run it in Fabric, then set team size again).');
+    } else {
+      toast(ge.mode === 'add' ? 'Game added' : 'Game updated');
+    }
   }),
   admGameDelete: (el) => {
     const signed = parseInt(el.dataset.signed, 10) || 0;
