@@ -38,7 +38,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const BASE_URL = (process.env.BASE_URL || '').replace(/\/+$/, '');
+// Accept BASE_URL with or without a scheme (default to https:// so fetch can parse it).
+let BASE_URL = (process.env.BASE_URL || '').trim().replace(/\/+$/, '');
+if (BASE_URL && !/^https?:\/\//i.test(BASE_URL)) BASE_URL = 'https://' + BASE_URL;
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const POOL_BUFFALO = parseInt(process.env.POOL_BUFFALO || '30', 10);
