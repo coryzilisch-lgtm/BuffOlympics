@@ -1654,6 +1654,44 @@ function scoreScreen() {
   const scores = S.boot.scores || { revealed: false };
   const myResults = (S.boot.myResults || []).map(r => ({ ...r, ptsLabel: r.pts > 0 ? ('+' + r.pts) : '—' }));
   const myPoints = myResults.reduce((a, r) => a + (r.pts || 0), 0);
+  const lb = S.boot.leaderboard || { buffalo: [], roadhouse: [], myRank: null, myPts: 0, tribeCount: 0 };
+  const myName = (S.boot.user && S.boot.user.name) || '';
+  const myTeam = myTeamKey();
+  const myTribeLabel = myTeam === 'roadhouse' ? 'Texas Roadhouse' : 'Buffalo';
+
+  // ── leaderboard — top 10 scorers per tribe, live all game day ──
+  const lbCol = (team, title, accent) => {
+    const rows = lb[team] || [];
+    return `
+    <div style="flex:1;min-width:0;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-radius:10px;padding:12px 12px 8px;">
+      <div style="font-size:10.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:${accent};margin-bottom:8px;">${title}</div>
+      ${rows.length ? rows.map((p, i) => {
+        const mine = team === myTeam && p.name === myName;
+        return `
+        <div style="display:flex;align-items:center;gap:8px;padding:6px 6px;margin:0 -6px;border-radius:7px;${mine ? `background:${T.dim};border:1px solid ${T.A};` : ''}">
+          <span style="width:20px;flex-shrink:0;font-family:'BN Kragen';font-size:13px;color:${i < 3 ? accent : th.sub};">${i + 1}</span>
+          <span style="flex:1;min-width:0;font-size:12px;font-weight:700;color:${th.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(p.name)}${mine ? ' (you)' : ''}</span>
+          <span style="flex-shrink:0;font-family:'BN Kragen';font-size:14px;color:${accent};">${p.pts}</span>
+        </div>`;
+      }).join('') : `<div style="font-size:11.5px;color:${th.sub};font-style:italic;padding-bottom:4px;">No points logged yet.</div>`}
+    </div>`;
+  };
+  const hasLb = (lb.buffalo || []).length || (lb.roadhouse || []).length;
+  const myRankChip = lb.myRank
+    ? `<div style="margin-top:10px;background:${T.dim};border:1px solid ${T.A};border-radius:10px;padding:11px 14px;display:flex;align-items:center;gap:10px;">
+        <span style="font-family:'BN Kragen';font-size:24px;color:${T.A};line-height:1;">#${lb.myRank}</span>
+        <span style="font-size:12.5px;font-weight:700;color:${th.text};">Your rank in ${esc(myTribeLabel)}<span style="color:${th.sub};font-weight:600;"> · ${lb.myPts} pts · ${lb.tribeCount} scorer${lb.tribeCount === 1 ? '' : 's'} on the board</span></span>
+      </div>`
+    : (hasLb ? `<div style="margin-top:10px;font-size:11.5px;color:${th.sub};padding:0 2px;">No points yet — log a result in any game and you'll appear on the ${esc(myTribeLabel)} board.</div>` : '');
+  const leaderboard = hasLb ? `
+    <div style="padding:20px 18px 0;">
+      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${th.sub};margin-bottom:10px;">🏆 Leaderboard · top 10 per tribe</div>
+      <div style="display:flex;gap:10px;">
+        ${lbCol('buffalo', 'Buffalo', '#FF7F2E')}
+        ${lbCol('roadhouse', 'Texas Roadhouse', '#E0322E')}
+      </div>
+      ${myRankChip}
+    </div>` : '';
 
   const banner = scores.revealed ? `
     <div style="margin:16px 18px 0;">
@@ -1689,6 +1727,7 @@ function scoreScreen() {
       <h2 style="font-family:'BN Kragen';font-size:36px;color:${th.text};text-transform:uppercase;margin:6px 0 0;line-height:0.92;">Score Room</h2>
     </div>
     ${banner}
+    ${leaderboard}
     <div style="padding:20px 18px 0;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:11px;">
         <span style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${th.sub};">Your results</span>
