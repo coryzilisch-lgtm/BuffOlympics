@@ -282,7 +282,11 @@ Refs have **no tribe**, so they skip the pick-your-tribe gate (`render()` guards
   "Bracket matches"): per-round match rows with lane badges, add/edit/remove, round-1 caps derived
   from team size. **Walk-up matchup builder**: walk-up team games (and walk-up H2H) get a "New
   walk-up matchup" panel — pick each spot with a UNIQUE player (Buffalo side vs TXRH side), then tap
-  the winner (H2H) or type each side's score;
+  the winner (H2H) or type each side's score. Logged walk-up entries (walk-ons + matchups) stay
+  visible in a "✓ Walk-up results" panel right after the sign-up slots (with Change). `allPlayers`
+  is deduped by display name+team (identical display names would read as confusing duplicate rows).
+  A scored championship shows a 🏆 "Champion … +N pts awarded to <tribe>" banner; champion points
+  (`win_points`) are editable in the bracket modal next to round points;
   `payload.refResults` (refs only) feeds the marks, the logged-result panels, and the bracket
   progress list. A **Change** button (warns first) `DELETE /api/results/{id}`s the row so the ref
   re-enters it. `refStations.type` from `head_to_head` (009):

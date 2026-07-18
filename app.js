@@ -942,6 +942,17 @@ function refBoardScreen() {
         };
         scorer = `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>`;
         if (m.scored.length) {
+          // Champion banner — make it unmistakable that the points landed.
+          if (isFinal) {
+            const cr = m.scored[m.scored.length - 1];
+            scorer += `<div style="background:rgba(245,197,24,0.10);border:1px solid rgba(245,197,24,0.5);border-radius:10px;padding:13px 15px;display:flex;align-items:center;gap:11px;">
+              <span style="font-size:22px;">🏆</span>
+              <div style="flex:1;min-width:0;">
+                <div style="font-size:14px;font-weight:800;color:${th.text};">Champion: ${esc(cr.playerName || '')}</div>
+                <div style="font-size:12px;font-weight:700;color:#F5C518;margin-top:2px;">+${cr.pts || 0} pts awarded to ${teamLabel(cr.winner)}</div>
+              </div>
+            </div>`;
+          }
           scorer += scoredPanel(m.scored);
         } else if (m.waiting && m.units.length < 2) {
           scorer += `<div style="display:flex;gap:9px;align-items:flex-start;background:rgba(255,255,255,0.04);border:1px dashed ${th.line};border-radius:10px;padding:13px 14px;"><span>⏳</span><div><div style="font-size:13px;font-weight:700;color:${th.text};">${esc(m.waiting)}</div><div style="font-size:11.5px;color:${th.sub};margin-top:3px;">This match fills in automatically once the earlier round is scored.</div></div></div>`;
@@ -1073,6 +1084,18 @@ function refBoardScreen() {
       // Walk-up head-to-head — remind the ref how matchups form.
       const walkH2HNote = (st.openPlay && isVs) ? `<div style="margin-bottom:12px;display:flex;gap:8px;align-items:flex-start;background:rgba(245,197,24,0.08);border:1px solid rgba(245,197,24,0.4);border-radius:9px;padding:10px 12px;"><span style="flex-shrink:0;">🤝</span><span style="font-size:11.5px;color:${th.text};line-height:1.45;">Walk-up head-to-head — players find someone from the <strong>other tribe</strong> to face. Score whichever matchup shows up.</span></div>` : '';
 
+      // ── walk-up results — everything logged OUTSIDE the sign-up slots (walk-on
+      // scores + matchup-builder results) stays visible here, with Change,
+      // right after the sign-up slots. Otherwise a logged walk-up vanished.
+      const unslotted = st.openPlay ? results.filter(r =>
+        r.slotId == null && (!r.slotLabel || r.slotLabel === 'Walk-up')) : [];
+      const walkupResultsPanel = unslotted.length ? `
+        <div style="margin-top:14px;background:rgba(63,191,135,0.08);border:1px solid rgba(63,191,135,0.45);border-radius:10px;padding:4px 13px 10px;">
+          <div style="padding:10px 0 2px;font-size:10.5px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:${green};">✓ Walk-up results</div>
+          ${unslotted.map(resultRow).join('')}
+          <div style="font-size:10.5px;color:${th.sub};margin-top:8px;line-height:1.45;">Wrong entry? Tap Change — it's removed so you can re-enter it.</div>
+        </div>` : '';
+
       // ── walk-up MATCHUP builder — for walk-up games played in teams (and any
       // walk-up head-to-head): pick each spot with a UNIQUE player, Buffalo side
       // vs TXRH side, then score the matchup. Replaces the one-name walk-on for
@@ -1117,7 +1140,7 @@ function refBoardScreen() {
           ${action}`;
       };
 
-      body = walkH2HNote + slotPicker + scorer + (showMu ? muBlock() : '') + bracketProgress;
+      body = walkH2HNote + slotPicker + walkupResultsPanel + scorer + (showMu ? muBlock() : '') + bracketProgress;
     }
 
     return `
@@ -2589,11 +2612,12 @@ function admBracketModal() {
       ${admToggle('', g.isBracket, 'admBracketToggle')}
     </div>
     <div style="font-size:11px;color:#9AA7A5;margin:8px 0 16px;line-height:1.5;">When ON, players and refs see a 🏆 Bracket pill and the rounds below as the game's "Bracket path."</div>
-    <div style="display:flex;gap:12px;align-items:flex-end;background:#F6F8F7;border:1px solid #E6ECEA;border-radius:9px;padding:12px 13px;margin-bottom:8px;">
-      <div style="width:150px;">${admFieldLabel('Points per round win')}${admTextInput('br-roundpts', 'brRoundPts', S.f.brRoundPts !== undefined ? S.f.brRoundPts : String(g.roundPoints || 0), 'e.g. 10')}</div>
+    <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;background:#F6F8F7;border:1px solid #E6ECEA;border-radius:9px;padding:12px 13px;margin-bottom:8px;">
+      <div style="width:140px;">${admFieldLabel('Points per round win')}${admTextInput('br-roundpts', 'brRoundPts', S.f.brRoundPts !== undefined ? S.f.brRoundPts : String(g.roundPoints || 0), 'e.g. 10')}</div>
+      <div style="width:140px;">${admFieldLabel('Champion points')}${admTextInput('br-champpts', 'brChampPts', S.f.brChampPts !== undefined ? S.f.brChampPts : String(g.winPoints != null ? g.winPoints : 10), 'e.g. 30')}</div>
       <button data-act="admBracketPointsSave" style="font-size:12px;font-weight:700;color:#FF5F00;border:1px solid #FFD3B5;border-radius:7px;padding:9px 13px;margin-bottom:1px;">Save points</button>
     </div>
-    <div style="font-size:11px;color:#9AA7A5;margin:0 0 16px;line-height:1.5;">Each within-tribe round win awards these points to the winner's tribe (0 = advancement only). The overall champion earns the game's "Points for a win" — currently <strong>${g.winPoints != null ? g.winPoints : 10}</strong>, set in the game editor.</div>
+    <div style="font-size:11px;color:#9AA7A5;margin:0 0 16px;line-height:1.5;">Each within-tribe round win awards the round points (0 = advancement only). Winning the championship awards the <strong>Champion points</strong> to the winner's tribe (this is the game's "Points for a win" — editable here or in the game editor).</div>
     ${admBracketBuilder(g)}
     ${admFieldLabel('Intro blurb (optional)')}
     <textarea id="br-intro" data-field="brIntro" placeholder="One line explaining how the bracket works…" style="width:100%;min-height:64px;font-size:13.5px;color:#00253D;border:1px solid #DCE3E2;border-radius:8px;padding:10px 11px;font-family:'Montserrat';outline:none;resize:vertical;">${esc(S.f.brIntro !== undefined ? S.f.brIntro : (g.bracketIntro || ''))}</textarea>
@@ -3983,6 +4007,7 @@ const ACTIONS = {
     const g = (S.overview.gamesCatalog || []).find(x => x.id === el.dataset.id);
     S.f.brIntro = g ? (g.bracketIntro || '') : '';
     S.f.brRoundPts = g ? String(g.roundPoints || 0) : '0';
+    S.f.brChampPts = g ? String(g.winPoints != null ? g.winPoints : 10) : '10';
     render();
   },
   admBracketClose: () => { S.admBracketEdit = null; S.admRoundEdit = null; render(); },
@@ -3999,10 +4024,11 @@ const ACTIONS = {
   admBracketPointsSave: () => {
     const be = S.admBracketEdit; if (!be) return;
     const rp = Math.max(0, parseInt(S.f.brRoundPts, 10) || 0);
+    const cp = Math.max(0, parseInt(S.f.brChampPts, 10) || 0);
     guarded(async () => {
-      await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: be.gameId, roundPoints: rp } });
+      await api('/ac/games', { method: 'POST', body: { action: 'updateGame', gameId: be.gameId, roundPoints: rp, winPoints: cp } });
       await loadOverview(true);
-      toast(rp > 0 ? `Round wins now earn ${rp} pts` : 'Rounds are advancement-only');
+      toast(`Rounds ${rp > 0 ? `earn ${rp} pts` : 'are advancement-only'} · champion earns ${cp} pts`);
     });
   },
   admBracketIntroSave: () => {
