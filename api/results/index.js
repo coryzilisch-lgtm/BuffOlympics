@@ -22,36 +22,55 @@ async function insertResult(pool, row) {
     .input('entered_by', sql.NVarChar, row.enteredBy)
     .input('entered_by_id', sql.Int, row.enteredById);
   try {
-    // slot_label / round_label tag the result to a timeslot / bracket round so
-    // the ref UI can mark them "Scored" (migration 010).
+    // slot_id (migration 012) pins the result to ONE slot even when two slots
+    // share a time label (two 1:30 bracket matches); slot_label / round_label
+    // (migration 010) drive the "Scored" marks and round displays.
     await base(pool.request())
       .input('slot_label', sql.NVarChar, row.slotLabel || null)
       .input('round_label', sql.NVarChar, row.roundLabel || null)
+      .input('slot_id', sql.Int, row.slotId || null)
       .query(`
         INSERT INTO bo_results
           (game_name, detail, winner, pts, pts_buffalo, pts_roadhouse,
-           player_name, entered_by, entered_by_id, slot_label, round_label)
+           player_name, entered_by, entered_by_id, slot_label, round_label, slot_id)
         VALUES
           (@game_name, @detail, @winner, @pts, @pts_buffalo, @pts_roadhouse,
-           @player_name, @entered_by, @entered_by_id, @slot_label, @round_label);
+           @player_name, @entered_by, @entered_by_id, @slot_label, @round_label, @slot_id);
       `);
-  } catch (e) {
-    // Pre-010 (columns missing) — store the row without the tags.
-    await base(pool.request()).query(`
-      INSERT INTO bo_results
-        (game_name, detail, winner, pts, pts_buffalo, pts_roadhouse,
-         player_name, entered_by, entered_by_id)
-      VALUES
-        (@game_name, @detail, @winner, @pts, @pts_buffalo, @pts_roadhouse,
-         @player_name, @entered_by, @entered_by_id);
-    `);
+  } catch (e0) {
+    try {
+      // Pre-012 (slot_id missing) — store with the 010 label tags only.
+      await base(pool.request())
+        .input('slot_label', sql.NVarChar, row.slotLabel || null)
+        .input('round_label', sql.NVarChar, row.roundLabel || null)
+        .query(`
+          INSERT INTO bo_results
+            (game_name, detail, winner, pts, pts_buffalo, pts_roadhouse,
+             player_name, entered_by, entered_by_id, slot_label, round_label)
+          VALUES
+            (@game_name, @detail, @winner, @pts, @pts_buffalo, @pts_roadhouse,
+             @player_name, @entered_by, @entered_by_id, @slot_label, @round_label);
+        `);
+    } catch (e) {
+      // Pre-010 (columns missing) — store the row without the tags.
+      await base(pool.request()).query(`
+        INSERT INTO bo_results
+          (game_name, detail, winner, pts, pts_buffalo, pts_roadhouse,
+           player_name, entered_by, entered_by_id)
+        VALUES
+          (@game_name, @detail, @winner, @pts, @pts_buffalo, @pts_roadhouse,
+           @player_name, @entered_by, @entered_by_id);
+      `);
+    }
   }
 }
 
 function labelsFrom(body) {
+  const sid = parseInt(body.slotId, 10);
   return {
     slotLabel: String(body.slotLabel || '').trim().slice(0, 80) || null,
     roundLabel: String(body.roundLabel || '').trim().slice(0, 120) || null,
+    slotId: Number.isInteger(sid) && sid > 0 ? sid : null,
   };
 }
 

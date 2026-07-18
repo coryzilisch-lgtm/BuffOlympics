@@ -79,6 +79,11 @@ infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
                              Team 1 / Team 2 per tribe (players pick a teammate at sign-up), and refs
                              score whole teams. Backfills team_size=2 for Cornhole/Ping-Pong. RUN IN
                              TWO STEPS like 009. Signup atomic guard is per-(slot,tribe,team_no).
+  012_bracket_engine.sql   — bracket engine: bo_game_slots.round_no/lane (slots become bracket
+                             MATCHES — Round 1 seeds from sign-ups, later rounds auto-fill with
+                             winners, lane 'final' = championship) + bo_results.slot_id (results pin
+                             to ONE slot — fixes two same-time matches both marking Scored). RUN IN
+                             TWO STEPS like 009; Part 2 backfills round 1 lanes from caps.
 scripts/
   concurrency-loadtest.js  — proves the atomic slot guard against a live deploy (Node 18+, no deps)
   loadtest-crowd.js        — realistic crowd load test: read stampede + sign-up burst + sustained
@@ -230,8 +235,9 @@ UPDATE in try/catch; round actions 409 pre-009) so the editor still works before
 
 ## Full admin action list (`POST /api/ac/{action}`, admin-only)
 
-`settings` (eventMode/refJoinCode/scoresRevealed[one-way]/dipRevealed) · `people`
-(toggleAdmin/toggleRef/addGame/removeGame/**fillSlot**/**resetPassword**/**removeUser**) · `relay-legs` · `announcements` ·
+`settings` (eventMode/refJoinCode/scoresRevealed[re-sealable — the Scores tab has a "Re-seal scores"
+undo]/dipRevealed) · `people`
+(toggleAdmin/toggleRef/addGame/removeGame/**fillSlot**/**unfillSlot**/**resetPassword**/**removeUser**) · `relay-legs` · `announcements` ·
 `schedule` (add/remove/move/update) · **`idols`** (add/update/remove/toggleFound — hidden-immunity clues,
 `bo_idols`, migration 003; hidden by default, reveal by release time or found) · `ref-assign` · `games`
 (addGame/updateGame/removeGame/addSlot/updateSlot/removeSlot + **addRound/updateRound/removeRound** —
@@ -265,7 +271,18 @@ Refs have **no tribe**, so they skip the pick-your-tribe gate (`render()` guards
   (`refNames[]`) + an "+ Add to my list"/"Remove" button → `POST /api/ref-claim {gameId, claim}`.
   Claiming adds a row (never bumps another ref); releasing removes only the caller's row.
 - **Scoring: click a game → pick the timeslot → log it.** Results are tagged with
-  `slotLabel`/`roundLabel` (migration 010) so scored slots/rounds show a green **Scored ✓** mark;
+  `slotLabel`/`roundLabel` (migration 010) **and `slotId` (migration 012)** — slot-id matching is what
+  lets two same-time matches score independently. A non-walk-up game whose every slot has a result
+  turns **green ("All slots scored" + COMPLETE badge)** on the ref board. **Structured brackets**
+  (migration 012, slots with `roundNo`/`lane`): the ref board lists each round's MATCHES — Round 1
+  seeds from sign-ups, later matches show "Waiting on Round N results" until fed, then auto-populate
+  with winners (`bracketMatches()` in app.js computes the progression); the championship (lane
+  `'final'`) seeds from each tribe's bracket winner and awards `win_points` (rounds award
+  `round_points`). Admin builds the structure in the **Bracket Builder** (Games → 🏆 Bracket →
+  "Bracket matches"): per-round match rows with lane badges, add/edit/remove, round-1 caps derived
+  from team size. **Walk-up matchup builder**: walk-up team games (and walk-up H2H) get a "New
+  walk-up matchup" panel — pick each spot with a UNIQUE player (Buffalo side vs TXRH side), then tap
+  the winner (H2H) or type each side's score;
   `payload.refResults` (refs only) feeds the marks, the logged-result panels, and the bracket
   progress list. A **Change** button (warns first) `DELETE /api/results/{id}`s the row so the ref
   re-enters it. `refStations.type` from `head_to_head` (009):
@@ -417,8 +434,10 @@ Shipped since (all merged to `main`):
   reflect all-slots-picked / relay-leg / dip-full state; "Herd Games" → "Buff Olympics".
 
 DB migrations **003–008 have been run** in Fabric (idols / win_points / default-ref / schedule-end /
-game details / widen game text). **009 (game types + brackets), 010 (ref mode), and 011 (team games)
-must still be run** — each in two steps, Part 1 then Part 2. Until they are, the backend stays
+game details / widen game text). **009 (game types + brackets), 010 (ref mode), 011 (team games),
+and 012 (bracket engine) must still be run** — each in two steps, Part 1 then Part 2. Pre-012 there
+are no structured brackets (legacy round/champ tabs) and results match slots by LABEL — so two
+same-time matches will both show Scored until 012 is run. Until they are, the backend stays
 defensive: pre-009 refs fall back to the old open_play-derived scoring + the hard-coded `BRACKETS`;
 pre-010 only one ref per game can claim (second claim 409s), results aren't slot-tagged (no Scored
 marks), bracket rounds stay advancement-only, and idol points stay dormant; **pre-011 every game is

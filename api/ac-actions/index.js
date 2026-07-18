@@ -17,10 +17,10 @@ async function handleSettings(pool, body) {
     await upsertSetting(pool, 'ref_join_code', code);
   }
   if (body.scoresRevealed !== undefined) {
-    // One-way: once revealed, scores can't be un-revealed.
-    if (body.scoresRevealed === true) {
-      await upsertSetting(pool, 'scores_revealed', '1');
-    }
+    // Reveal is guarded in the UI (confirm). Un-revealing (re-sealing) is
+    // allowed too — for "I pressed it to test it" moments; the frontend asks
+    // for an extra confirm before sending false.
+    await upsertSetting(pool, 'scores_revealed', body.scoresRevealed === true ? '1' : '0');
   }
   if (body.dipRevealed !== undefined) {
     await upsertSetting(pool, 'dip_revealed', body.dipRevealed ? '1' : '0');
@@ -162,7 +162,19 @@ async function handlePeople(pool, body) {
     return json({ ok: true });
   }
 
-  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, removeGame, fillSlot, resetPassword, or removeUser' }, 400);
+  if (action === 'unfillSlot') {
+    // Admin pulls a specific person OUT of a specific time slot — the reverse
+    // of fillSlot; powers the slot roster editor in the Games tab.
+    const slotId = parseInt(body.slotId, 10);
+    if (!Number.isInteger(slotId)) return json({ error: 'slotId is required' }, 400);
+    await pool.request()
+      .input('uid', sql.Int, userId)
+      .input('sid', sql.Int, slotId)
+      .query('DELETE FROM bo_signups WHERE user_id = @uid AND slot_id = @sid');
+    return json({ ok: true });
+  }
+
+  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, removeGame, fillSlot, unfillSlot, resetPassword, or removeUser' }, 400);
 }
 
 // ── POST /api/admin/relay-legs ─────────────────────────────────────────────
@@ -584,7 +596,7 @@ async function handleGames(pool, body) {
     if (!label) return json({ error: 'A time label is required' }, 400);
     const sortR = await pool.request().input('gid', sql.NVarChar, gameId)
       .query('SELECT ISNULL(MAX(sort), -1) + 1 AS next FROM bo_game_slots WHERE game_id = @gid');
-    await pool.request()
+    const insR = await pool.request()
       .input('gid', sql.NVarChar, gameId)
       .input('start_min', sql.Int, startMin)
       .input('label', sql.NVarChar, label)
@@ -593,8 +605,20 @@ async function handleGames(pool, body) {
       .input('sort', sql.Int, sortR.recordset[0].next)
       .query(`
         INSERT INTO bo_game_slots (game_id, start_min, label, cap_buffalo, cap_roadhouse, sort)
-        VALUES (@gid, @start_min, @label, @cb, @cr, @sort)`);
-    return json({ ok: true });
+        VALUES (@gid, @start_min, @label, @cb, @cr, @sort);
+        SELECT SCOPE_IDENTITY() AS id;`);
+    const newId = insR.recordset[0] && insR.recordset[0].id;
+    // Bracket-match placement (migration 012) — defensive, so a plain slot add
+    // still works pre-012 (the match structure just stays dormant).
+    if (newId && (body.roundNo !== undefined || body.lane !== undefined)) {
+      try {
+        await pool.request().input('sid', sql.Int, newId)
+          .input('rn', sql.Int, toInt(body.roundNo, null))
+          .input('lane', sql.NVarChar, body.lane ? String(body.lane) : null)
+          .query('UPDATE bo_game_slots SET round_no = @rn, lane = @lane WHERE id = @sid');
+      } catch (e) { /* pre-012 */ }
+    }
+    return json({ ok: true, id: newId || null });
   }
 
   if (action === 'updateSlot') {
@@ -610,9 +634,23 @@ async function handleGames(pool, body) {
     }
     if (body.capBuffalo !== undefined) { sets.push('cap_buffalo = @cb'); req.input('cb', sql.Int, Math.max(0, toInt(body.capBuffalo, 0))); }
     if (body.capRoadhouse !== undefined) { sets.push('cap_roadhouse = @cr'); req.input('cr', sql.Int, Math.max(0, toInt(body.capRoadhouse, 0))); }
-    if (!sets.length) return json({ error: 'Nothing to update' }, 400);
-    const r = await req.query(`UPDATE bo_game_slots SET ${sets.join(', ')} WHERE id = @sid`);
-    if (!r.rowsAffected[0]) return json({ error: 'Slot not found' }, 404);
+    // Bracket-match placement (migration 012) — its own defensive UPDATE so a
+    // pre-012 cap/time edit still saves. null clears the placement.
+    const hasBracketBits = body.roundNo !== undefined || body.lane !== undefined;
+    if (hasBracketBits) {
+      try {
+        const bset = [];
+        const breq = pool.request().input('sid', sql.Int, slotId);
+        if (body.roundNo !== undefined) { bset.push('round_no = @rn'); breq.input('rn', sql.Int, toInt(body.roundNo, null)); }
+        if (body.lane !== undefined) { bset.push('lane = @lane'); breq.input('lane', sql.NVarChar, body.lane ? String(body.lane) : null); }
+        await breq.query(`UPDATE bo_game_slots SET ${bset.join(', ')} WHERE id = @sid`);
+      } catch (e) { /* pre-012 */ }
+    }
+    if (!sets.length && !hasBracketBits) return json({ error: 'Nothing to update' }, 400);
+    if (sets.length) {
+      const r = await req.query(`UPDATE bo_game_slots SET ${sets.join(', ')} WHERE id = @sid`);
+      if (!r.rowsAffected[0]) return json({ error: 'Slot not found' }, 404);
+    }
     return json({ ok: true });
   }
 

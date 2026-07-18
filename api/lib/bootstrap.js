@@ -144,6 +144,14 @@ async function loadSharedBootstrap(pool, fresh) {
     for (const r of tnR.recordset) teamNoBySignup[`${r.slot_id}:${r.user_id}`] = r.team_no;
   } catch (e) { /* column not present yet — team_no ignored */ }
 
+  // Bracket-match structure on slots (migration 012): round_no + lane turn a
+  // bracket game's slots into real matches with progression. Defensive pre-012.
+  let slotBracketById = {};
+  try {
+    const sbR = await pool.request().query('SELECT id, round_no, lane FROM bo_game_slots');
+    for (const r of sbR.recordset) slotBracketById[r.id] = { roundNo: r.round_no, lane: r.lane || null };
+  } catch (e) { /* columns not present yet — no structured brackets */ }
+
   // Schedule end times (migration 006). Defensive so the app boots pre-006.
   let schedEndById = {};
   try {
@@ -179,7 +187,7 @@ async function loadSharedBootstrap(pool, fresh) {
   const shared = {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
     legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, roundPointsById,
-    schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup,
+    schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup, slotBracketById,
   };
   cache.set(SHARED_KEY, shared, SHARED_TTL_MS);
   return shared;
@@ -195,7 +203,7 @@ async function buildBootstrap(pool, user, opts = {}) {
   const {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
     legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, roundPointsById,
-    schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup,
+    schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup, slotBracketById,
   } = shared;
   // Bracket payload for a game, or null. Undefined isBracket (pre-009) is left
   // for the frontend to resolve against its BRACKETS fallback.
@@ -282,6 +290,8 @@ async function buildBootstrap(pool, user, opts = {}) {
       teamSize: ts,
       buffaloTeams: buildTeams(roster.buffalo, nos.buffalo, s.cap_buffalo, ts),
       roadhouseTeams: buildTeams(roster.roadhouse, nos.roadhouse, s.cap_roadhouse, ts),
+      roundNo: (slotBracketById[s.id] || {}).roundNo ?? null,   // migration 012 — bracket match round
+      lane: (slotBracketById[s.id] || {}).lane || null,         // 'buffalo' | 'roadhouse' | 'final' | null
       mine: mySlotIds.has(s.id),
     });
   }
@@ -487,13 +497,20 @@ async function buildBootstrap(pool, user, opts = {}) {
     try {
       refResultsR = await pool.request().query(`
         SELECT TOP 300 id, game_name, detail, winner, pts, player_name,
-               entered_by, entered_by_id, slot_label, round_label, created_at
+               entered_by, entered_by_id, slot_label, round_label, slot_id, created_at
         FROM bo_results ORDER BY created_at DESC, id DESC`);
-    } catch (e) {
-      refResultsR = await pool.request().query(`
-        SELECT TOP 300 id, game_name, detail, winner, pts, player_name,
-               entered_by, entered_by_id, created_at
-        FROM bo_results ORDER BY created_at DESC, id DESC`);
+    } catch (e012) {
+      try {
+        refResultsR = await pool.request().query(`
+          SELECT TOP 300 id, game_name, detail, winner, pts, player_name,
+                 entered_by, entered_by_id, slot_label, round_label, created_at
+          FROM bo_results ORDER BY created_at DESC, id DESC`);
+      } catch (e) {
+        refResultsR = await pool.request().query(`
+          SELECT TOP 300 id, game_name, detail, winner, pts, player_name,
+                 entered_by, entered_by_id, created_at
+          FROM bo_results ORDER BY created_at DESC, id DESC`);
+      }
     }
     payload.refResults = refResultsR.recordset.map(r => ({
       id: r.id,
@@ -504,6 +521,7 @@ async function buildBootstrap(pool, user, opts = {}) {
       playerName: r.player_name || null,
       slotLabel: r.slot_label || null,
       roundLabel: r.round_label || null,
+      slotId: r.slot_id != null ? r.slot_id : null,   // migration 012 — pins the result to ONE slot
       enteredBy: r.entered_by || '',
       mine: r.entered_by_id === uid,
       createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
