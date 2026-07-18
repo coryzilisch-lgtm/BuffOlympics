@@ -86,11 +86,8 @@ async function refLogin(pool, body) {
 }
 
 async function refCreate(pool, body) {
-  const username = String(body.username || '').trim();
   const password = String(body.password || '');
   const joinCode = String(body.joinCode || '').trim();
-
-  if (!username) return json({ error: 'Username is required' }, 400);
   if (!password) return json({ error: 'Password is required' }, 400);
 
   const settings = await getSettings(pool);
@@ -99,10 +96,43 @@ async function refCreate(pool, body) {
     return json({ error: 'bad_code' }, 403);
   }
 
+  // Full-profile path — refs fill in the SAME fields as players (first/last
+  // name, email, shirt size, …) minus the tribe (refs are neutral). They then
+  // sign back in through the normal email/password sign-in.
+  const firstName = String(body.firstName || '').trim();
+  const lastName = String(body.lastName || '').trim();
+  const email = String(body.email || '').trim();
+  if (email || firstName || lastName) {
+    if (!firstName || !lastName) return json({ error: 'First and last name are required' }, 400);
+    if (!email) return json({ error: 'Email is required' }, 400);
+    if (await findByEmail(pool, email)) {
+      return json({ error: 'An account with that email already exists' }, 409);
+    }
+    const r = await pool.request()
+      .input('email', sql.NVarChar, email)
+      .input('password_hash', sql.NVarChar, hashPassword(password))
+      .input('first_name', sql.NVarChar, firstName)
+      .input('last_name', sql.NVarChar, lastName)
+      .input('shirt_size', sql.NVarChar, body.shirtSize ? String(body.shirtSize) : null)
+      .input('years', sql.NVarChar, body.years ? String(body.years) : null)
+      .input('song_request', sql.NVarChar, body.songRequest ? String(body.songRequest) : null)
+      .query(`
+        INSERT INTO bo_users
+          (email, password_hash, first_name, last_name, shirt_size, years, song_request, is_ref, is_admin)
+        OUTPUT INSERTED.*
+        VALUES
+          (@email, @password_hash, @first_name, @last_name, @shirt_size, @years, @song_request, 1, 0);
+      `);
+    const user = r.recordset[0];
+    return json({ token: signToken(user.id), user: userToJson(user) });
+  }
+
+  // Legacy username-only path (pre-existing ref accounts sign in via ref-login).
+  const username = String(body.username || '').trim();
+  if (!username) return json({ error: 'First and last name are required' }, 400);
   if (await findByUsername(pool, username)) {
     return json({ error: 'That username is taken' }, 409);
   }
-
   const r = await pool.request()
     .input('username', sql.NVarChar, username)
     .input('password_hash', sql.NVarChar, hashPassword(password))

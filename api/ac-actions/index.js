@@ -434,8 +434,18 @@ async function handleRefAssign(pool, body) {
   }
 
   const userR = await pool.request().input('id', sql.Int, userId)
-    .query('SELECT id FROM bo_users WHERE id = @id');
+    .query('SELECT id, is_ref FROM bo_users WHERE id = @id');
   if (!userR.recordset.length) return json({ error: 'User not found' }, 404);
+
+  // Assigning someone who isn't a referee yet auto-promotes them — the ref
+  // board is gated by is_ref, so an assignment without the flag would be
+  // invisible to them. The admin picks anyone; the flag follows.
+  let promoted = false;
+  if (!userR.recordset[0].is_ref) {
+    await pool.request().input('id', sql.Int, userId)
+      .query('UPDATE bo_users SET is_ref = 1 WHERE id = @id');
+    promoted = true;
+  }
 
   try {
     await pool.request()
@@ -451,7 +461,7 @@ async function handleRefAssign(pool, body) {
       .input('uid', sql.Int, userId)
       .query('UPDATE bo_ref_assignments SET user_id = @uid WHERE game_id = @gid');
   }
-  return json({ ok: true });
+  return json({ ok: true, promoted });
 }
 
 // ── POST /api/ac/games ─────────────────────────────────────────────────────

@@ -42,6 +42,7 @@ const S = {
   admRoundEdit: null,    // round id being edited inline in the bracket modal
   admRoundTeam: 'both',  // selected matchup for the round being edited
   admFillSlot: null,     // { slotId, gameId } — "Fill slot" search open in Games tab
+  admRefAdd: null,       // gameId — "+ Add ref" search open in the Referees tab
   admAddSlot: null,      // { uid, gameId } — slot picker open in People tab
   admSchedEdit: null,    // schedule row id currently being edited inline
   admSchedKind: 'up',    // kind of the schedule row being edited: up|live|done
@@ -496,14 +497,35 @@ function authScreen() {
           ${S.inErr ? errLine('Enter your username and password.') : ''}
           ${S.authMsg ? errLine(S.authMsg) : ''}
           <button data-act="refLogin" style="width:100%;background:#FF5F00;color:#011220;font-weight:800;font-size:15px;text-align:center;padding:15px;border-radius:9px;box-shadow:0 8px 22px rgba(255,95,0,0.28);">Sign in as referee</button>
+          <div style="font-size:11.5px;color:#8AA7B9;text-align:center;">Made your ref account with an email? Use the regular player sign-in instead.</div>
         </div>` : `
         <div style="display:flex;flex-direction:column;gap:12px;">
-          <input id="rc-user" data-field="rcUser" value="${esc(f.rcUser || '')}" placeholder="Choose a username" autocomplete="username" style="${inputStyle()}"/>
-          <input id="rc-pass" data-field="rcPass" value="${esc(f.rcPass || '')}" type="password" placeholder="Create a password" autocomplete="new-password" style="${inputStyle()}"/>
+          <div style="display:flex;gap:10px;">
+            <div style="flex:1;">${fieldLabel('First name')}
+              <input id="rc-first" data-field="rcFirst" value="${esc(f.rcFirst || '')}" placeholder="Jordan" autocomplete="given-name" style="${inputStyle('12px 13px')}"/></div>
+            <div style="flex:1;">${fieldLabel('Last name')}
+              <input id="rc-last" data-field="rcLast" value="${esc(f.rcLast || '')}" placeholder="Lee" autocomplete="family-name" style="${inputStyle('12px 13px')}"/></div>
+          </div>
+          <div>${fieldLabel('Email')}
+            <input id="rc-email" data-field="rcEmail" value="${esc(f.rcEmail || '')}" placeholder="you@company.com" type="email" autocomplete="email" style="${inputStyle('12px 13px')}"/></div>
+          <div>${fieldLabel('Password')}
+            <input id="rc-pass" data-field="rcPass" value="${esc(f.rcPass || '')}" type="password" placeholder="Create a password" autocomplete="new-password" style="${inputStyle('12px 13px')}"/></div>
+          <div style="display:flex;gap:10px;">
+            <div style="flex:1;">${fieldLabel('Shirt size')}
+              <select data-field="rcShirt" style="width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.14);border-radius:8px;padding:12px 11px;color:#F3F7F5;font-size:14px;font-family:'Montserrat';outline:none;">
+                ${shirtOptions.map(o => `<option value="${o}" style="color:#00253D;" ${o === (f.rcShirt || 'M') ? 'selected' : ''}>${o}</option>`).join('')}
+              </select></div>
+            <div style="flex:1;">${fieldLabel('Which Buff Olympics is this for you?')}
+              <select data-field="rcYears" style="width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.14);border-radius:8px;padding:12px 11px;color:#F3F7F5;font-size:14px;font-family:'Montserrat';outline:none;">
+                ${yearOptions.map(o => `<option value="${o}" style="color:#00253D;" ${o === (f.rcYears || '1st') ? 'selected' : ''}>${o}</option>`).join('')}
+              </select></div>
+          </div>
+          <div>${fieldLabel('Song request for the DJ')}
+            <input id="rc-song" data-field="rcSong" value="${esc(f.rcSong || '')}" placeholder="Artist — Song title" style="${inputStyle('12px 13px')}"/></div>
           <div>${fieldLabel('Referee join code')}
             <input id="rc-code" data-field="rcCode" value="${esc(f.rcCode || '')}" placeholder="Enter the code from your admin" style="${inputStyle()}letter-spacing:0.04em;"/></div>
           ${S.rcErr ? errLineIcon("That join code isn't right. Check with your admin.") : ''}
-          ${S.inErr ? errLine('Pick a username and password first.') : ''}
+          ${S.inErr ? errLine('Fill in your name, email and password first.') : ''}
           ${S.authMsg ? errLine(S.authMsg) : ''}
           <button data-act="refCreate" style="width:100%;background:#FF5F00;color:#011220;font-weight:800;font-size:15px;text-align:center;padding:15px;border-radius:9px;box-shadow:0 8px 22px rgba(255,95,0,0.28);">Create referee account</button>
         </div>`}
@@ -3054,28 +3076,47 @@ function admScoresSection(ov) {
 
 function admRefsSection(ov) {
   const needsRef = (ov.gamesCatalog || []).filter(g => g.needsRef);
-  const refById = {};
-  for (const rf of (ov.refs || [])) refById[rf.id] = rf.name;
+  const nameById = {};
+  for (const p of (ov.people || [])) nameById[p.id] = p.name;
+  for (const rf of (ov.refs || [])) if (!nameById[rf.id]) nameById[rf.id] = rf.name;
+  const refIds = new Set((ov.refs || []).map(rf => rf.id));
   const rows = needsRef.map(g => {
     // Multi-ref (migration 010): any number of refs can cover a game.
     const raw = (ov.refAssignments || {})[g.id];
     const assigned = Array.isArray(raw) ? raw : (raw ? [raw] : []);
-    const addable = (ov.refs || []).filter(rf => !assigned.includes(rf.id));
+    // "+ Add ref" search — anyone can be picked; a non-ref is promoted to ref
+    // on assign (server-side), so the admin never hits a dead end when no
+    // spare referee accounts exist yet.
+    const adding = S.admRefAdd === g.id;
+    const q = adding ? (S.f.admRefAddSearch || '').trim().toLowerCase() : '';
+    const matches = q ? (ov.people || [])
+      .filter(p => !assigned.includes(p.id) && (p.name || '').toLowerCase().includes(q))
+      .slice(0, 6) : [];
+    const addPanel = adding ? `
+      <div style="padding:10px 18px 12px;border-bottom:1px solid #EEF2F1;background:#FCFBF7;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <input id="refadd-search" data-live="admRefAddSearch" value="${esc(S.f.admRefAddSearch || '')}" placeholder="Type any name — non-refs become refs when added…" style="flex:1;min-width:0;font-size:13px;color:#00253D;border:1px solid #DCE3E2;border-radius:7px;padding:8px 10px;outline:none;font-family:'Montserrat';"/>
+          <button data-act="admRefAddCancel" style="flex-shrink:0;font-size:12px;font-weight:700;color:#6D7C83;border:1px solid #DCE3E2;border-radius:7px;padding:8px 11px;">Cancel</button>
+        </div>
+        ${matches.length ? `<div style="display:flex;flex-direction:column;gap:5px;margin-top:8px;">${matches.map(p => `
+          <button data-act="admRefAddPick" data-gid="${esc(g.id)}" data-uid="${p.id}" data-isref="${refIds.has(p.id) ? '1' : '0'}" style="display:flex;align-items:center;gap:8px;background:#fff;border:1px solid #E0E6E5;border-radius:7px;padding:8px 11px;text-align:left;">
+            <span style="flex:1;font-size:13px;font-weight:700;color:#00253D;">${esc(p.name)}</span>
+            ${refIds.has(p.id) ? '<span style="font-size:9px;font-weight:800;color:#fff;background:#FF5F00;border-radius:4px;padding:2px 6px;">REF</span>' : ''}
+            ${admTeamChip(p.team)}
+          </button>`).join('')}</div>` : (q ? '<div style="font-size:12px;color:#9AA7A5;margin-top:8px;font-style:italic;">No matches.</div>' : '<div style="font-size:11.5px;color:#9AA7A5;margin-top:7px;">Start typing a name — anyone can ref; non-refs are made refs when you add them.</div>')}
+      </div>` : '';
     return `
-    <div style="display:flex;align-items:center;gap:16px;padding:13px 18px;border-bottom:1px solid #EEF2F1;">
+    <div style="display:flex;align-items:center;gap:16px;padding:13px 18px;border-bottom:${adding ? 'none' : '1px solid #EEF2F1'};">
       <div style="width:220px;flex-shrink:0;min-width:0;">
         <div style="font-size:14px;font-weight:700;color:#00253D;">${esc(g.name)}</div>
         <div style="font-size:12px;color:#6D7C83;margin-top:2px;">${esc(g.venue || '')}</div>
       </div>
       <div style="flex:1;display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
-        ${assigned.map(uid => `<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#011220;background:#FFEDE0;border:1px solid #FFD3B5;border-radius:6px;padding:5px 8px;">${esc(refById[uid] || 'Ref #' + uid)}<button data-act="admRefRemove" data-gid="${esc(g.id)}" data-uid="${uid}" style="color:#C77B23;font-weight:800;font-size:14px;line-height:1;">×</button></span>`).join('')}
+        ${assigned.map(uid => `<span style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:#011220;background:#FFEDE0;border:1px solid #FFD3B5;border-radius:6px;padding:5px 8px;">${esc(nameById[uid] || 'Ref #' + uid)}<button data-act="admRefRemove" data-gid="${esc(g.id)}" data-uid="${uid}" style="color:#C77B23;font-weight:800;font-size:14px;line-height:1;">×</button></span>`).join('')}
         ${assigned.length === 0 ? '<span style="font-size:12px;color:#C77B23;font-weight:700;">No ref yet</span>' : ''}
-        ${addable.length ? `<select data-change="admRefAssign" data-gid="${esc(g.id)}" style="font-size:12px;font-weight:700;color:#FF5F00;background:#fff;border:1px dashed #FF5F00;border-radius:6px;padding:5px 8px;cursor:pointer;">
-          <option value="">+ Add ref</option>
-          ${addable.map(rf => `<option value="${rf.id}">${esc(rf.name)}</option>`).join('')}
-        </select>` : ''}
+        <button data-act="admRefAddOpen" data-gid="${esc(g.id)}" style="font-size:12px;font-weight:800;color:#FF5F00;background:#fff;border:1px dashed #FF5F00;border-radius:6px;padding:5px 10px;">+ Add ref</button>
       </div>
-    </div>`;
+    </div>${addPanel}`;
   }).join('');
   return `
   <div style="margin-bottom:16px;">
@@ -3527,10 +3568,15 @@ const ACTIONS = {
   }),
   refCreate: () => guarded(async () => {
     collectAuthErrorReset();
-    const u = (S.f.rcUser || '').trim(), p = S.f.rcPass || '', code = (S.f.rcCode || '').trim();
-    if (!u || !p) { S.inErr = true; render(); return; }
+    // Refs fill in the same profile fields as players (minus the tribe).
+    const first = (S.f.rcFirst || '').trim(), last = (S.f.rcLast || '').trim();
+    const email = (S.f.rcEmail || '').trim(), p = S.f.rcPass || '', code = (S.f.rcCode || '').trim();
+    if (!first || !last || !email || !p) { S.inErr = true; render(); return; }
     try {
-      const res = await api('/auth/ref-create', { method: 'POST', body: { username: u, password: p, joinCode: code } });
+      const res = await api('/auth/ref-create', { method: 'POST', body: {
+        firstName: first, lastName: last, email, password: p, joinCode: code,
+        shirtSize: S.f.rcShirt || 'M', years: S.f.rcYears || '1st', songRequest: (S.f.rcSong || '').trim(),
+      } });
       setToken(res.token); S.f.rcPass = '';
       location.hash = '#/home';
       await loadBoot();
@@ -3776,7 +3822,7 @@ const ACTIONS = {
   }),
 
   // ── admin ──
-  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; S.admSchedEdit = null; S.admIdolEdit = null; S.admIdolAward = null; S.admFillSlot = null; S.admAddSlot = null; S.admBracketEdit = null; render(); },
+  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; S.admSchedEdit = null; S.admIdolEdit = null; S.admIdolAward = null; S.admFillSlot = null; S.admAddSlot = null; S.admBracketEdit = null; S.admRefAdd = null; render(); },
   admMode: (el) => guarded(async () => {
     await api('/ac/settings', { method: 'POST', body: { eventMode: el.dataset.mode } });
     await afterAdminMutation();
@@ -4234,6 +4280,15 @@ const ACTIONS = {
     toast('Added to the slot');
   }),
   admAddCancel: () => { S.admAddSlot = null; render(); },
+  admRefAddOpen: (el) => { S.admRefAdd = el.dataset.gid; S.f.admRefAddSearch = ''; render(); },
+  admRefAddCancel: () => { S.admRefAdd = null; S.f.admRefAddSearch = ''; render(); },
+  admRefAddPick: (el) => guarded(async () => {
+    const wasRef = el.dataset.isref === '1';
+    const res = await api('/ac/ref-assign', { method: 'POST', body: { gameId: el.dataset.gid, userId: parseInt(el.dataset.uid, 10), op: 'add' } });
+    S.admRefAdd = null; S.f.admRefAddSearch = '';
+    await loadOverview(true);
+    toast((res && res.promoted) || !wasRef ? 'Added — and made a referee (they get the ref board on next sign-in)' : 'Ref added');
+  }),
   admRefRemove: (el) => guarded(async () => {
     await api('/ac/ref-assign', { method: 'POST', body: { gameId: el.dataset.gid, userId: parseInt(el.dataset.uid, 10), op: 'remove' } });
     await loadOverview(true);
@@ -4386,6 +4441,7 @@ document.addEventListener('input', (e) => {
   if (el.dataset && el.dataset.live === 'admFill') { S.f.admFillSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admIdolSearch') { S.f.admIdolSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admRefSearch') { S.f.admRefSearch = el.value; render(); }
+  if (el.dataset && el.dataset.live === 'admRefAddSearch') { S.f.admRefAddSearch = el.value; render(); }
   if (el.dataset && el.dataset.debounce === 'refCode') {
     S.f.refCodeDraft = el.value;
     const code = el.value.trim();
