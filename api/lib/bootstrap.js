@@ -105,6 +105,19 @@ async function loadSharedBootstrap(pool, fresh) {
     pool.request().query('SELECT ISNULL(SUM(pts_buffalo), 0) AS buffalo, ISNULL(SUM(pts_roadhouse), 0) AS roadhouse FROM bo_results'),
     pool.request().query('SELECT game_id, user_id FROM bo_ref_assignments'),
   ]);
+
+  // Leaderboard — points per scorer per tribe (drives top-10 + "your rank").
+  // Rows are grouped by the result's player_name, so team results ("A & B")
+  // rank as the pair — same matching rule as myResults. Kept outside the big
+  // Promise.all so a stale cached shared block (missing this key) stays valid.
+  let leaderboardR = { recordset: [] };
+  try {
+    leaderboardR = await pool.request().query(`
+      SELECT player_name, winner, SUM(pts) AS pts
+      FROM bo_results
+      WHERE player_name IS NOT NULL AND pts > 0 AND winner IN ('buffalo', 'roadhouse')
+      GROUP BY player_name, winner`);
+  } catch (e) { /* never fatal — leaderboard just stays empty */ }
   // Idols live in their own table (migration 003; found_by/points 010). Query
   // defensively so the app still boots if a migration hasn't been run yet.
   let idolsR = { recordset: [] };
@@ -188,6 +201,7 @@ async function loadSharedBootstrap(pool, fresh) {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
     legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, roundPointsById,
     schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup, slotBracketById,
+    leaderboardR,
   };
   cache.set(SHARED_KEY, shared, SHARED_TTL_MS);
   return shared;
@@ -204,6 +218,7 @@ async function buildBootstrap(pool, user, opts = {}) {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
     legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, roundPointsById,
     schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup, slotBracketById,
+    leaderboardR,
   } = shared;
   // Bracket payload for a game, or null. Undefined isBracket (pre-009) is left
   // for the frontend to resolve against its BRACKETS fallback.
@@ -433,6 +448,31 @@ async function buildBootstrap(pool, user, opts = {}) {
     announcements,
     myResults,
     scores,
+    leaderboard: (() => {
+      // Top-10 scorers per tribe + the caller's rank within their own tribe.
+      // Ranks use competition ranking (ties share a rank). A pair entry
+      // ("A & B") ranks as the pair, same as myResults matching.
+      const rows = (leaderboardR && leaderboardR.recordset) || [];
+      const byTeam = { buffalo: [], roadhouse: [] };
+      for (const r of rows) {
+        if (byTeam[r.winner]) byTeam[r.winner].push({ name: r.player_name, pts: r.pts });
+      }
+      for (const t of ['buffalo', 'roadhouse']) byTeam[t].sort((a, b) => b.pts - a.pts || a.name.localeCompare(b.name));
+      const rankIn = (list, name) => {
+        const me = list.find(x => x.name === name);
+        if (!me) return null;
+        return 1 + list.filter(x => x.pts > me.pts).length;
+      };
+      const mine = myTeam ? byTeam[myTeam] : null;
+      const myEntryRow = mine ? mine.find(x => x.name === myName) : null;
+      return {
+        buffalo: byTeam.buffalo.slice(0, 10),
+        roadhouse: byTeam.roadhouse.slice(0, 10),
+        myRank: mine ? rankIn(mine, myName) : null,
+        myPts: myEntryRow ? myEntryRow.pts : 0,
+        tribeCount: mine ? mine.length : 0,
+      };
+    })(),
   };
 
   // ── referees only (admins are NOT refs — they use the Admin Center) ──

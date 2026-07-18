@@ -421,7 +421,9 @@ Shipped since (all merged to `main`):
 - **Team colours:** Buffalo navy/orange, TXRH red/yellow everywhere (shared `teamPill`); "Captains"
   removed.
 - **Player app:** games search (mobile + desktop); removed the confusing "then walk-up"; game-day
-  "earn more points" walk-up prompt; **Bracket path** panels (Cornhole/Ping Pong); Schedule weaves the
+  "earn more points" walk-up prompt; **Score Room leaderboard** — top-10 scorers per tribe (from
+  `payload.leaderboard`, shared-cached; pair results rank as the pair) + a "#N Your rank in <tribe>"
+  chip for the caller; individual points only, team totals stay sealed; **Bracket path** panels (Cornhole/Ping Pong); Schedule weaves the
   player's own games into the shared blocks.
 - **Referees:** winner-picker scoring w/ admin-set per-game `win_points`; refs default ON; walk-up
   scored by typing any number; **ref experience rework** — Home shows only assigned games, self-assign

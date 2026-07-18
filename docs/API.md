@@ -138,6 +138,12 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
   "announcements": [ {"id":1,"title":"…","body":"…","createdAt":"…"} ],
   "myResults": [ {"game":"Penny Stacking","detail":"18 pennies, one hand","pts":5} ],
   "scores": { "revealed": false },       // same shape as GET /api/scores
+  // Leaderboard — top 10 scorers per tribe (SUM of bo_results.pts grouped by
+  // player_name+winner; pair entries rank as the pair) + the caller's own rank
+  // within their tribe (competition ranking; null = no points yet). Visible all
+  // game day — it shows individual points, NOT the sealed team totals.
+  "leaderboard": { "buffalo": [ {"name":"Dana W.","pts":45} ], "roadhouse": [ {"name":"Kate V.","pts":50} ],
+                   "myRank": 2, "myPts": 30, "tribeCount": 7 },
 
   // ── refs only (omitted for plain players) ──
   "refStations": [
