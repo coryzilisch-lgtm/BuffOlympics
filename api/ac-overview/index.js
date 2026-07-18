@@ -102,6 +102,26 @@ app.http('ac-overview', {
         for (const r of tsR.recordset) teamSizeById[r.id] = r.team_size;
       } catch (e) { /* column not present yet */ }
 
+      // Bracket-match placement on slots (migration 012) — defensive pre-012.
+      let slotBracketById = {};
+      try {
+        const sbR = await pool.request().query('SELECT id, round_no, lane FROM bo_game_slots');
+        for (const r of sbR.recordset) slotBracketById[r.id] = { roundNo: r.round_no, lane: r.lane || null };
+      } catch (e) { /* columns not present yet */ }
+
+      // Per-slot roster (ids + names) — powers the Games editor's slot roster
+      // view (see who's in each slot, remove/add anyone).
+      const slotPeople = {};
+      {
+        const rosterR = await pool.request().query(`
+          SELECT s.slot_id, u.id, u.first_name, u.last_name, u.username, u.team
+          FROM bo_signups s JOIN bo_users u ON u.id = s.user_id`);
+        for (const r of rosterR.recordset) {
+          if (!slotPeople[r.slot_id]) slotPeople[r.slot_id] = [];
+          slotPeople[r.slot_id].push({ id: r.id, name: formatName(r.first_name, r.last_name, r.username), team: r.team || null });
+        }
+      }
+
       // Schedule end times (migration 006) — defensive so admin loads pre-006.
       let schedEndById = {};
       try {
@@ -169,6 +189,9 @@ app.http('ac-overview', {
           capRoadhouse: s.cap_roadhouse,
           nBuffalo: s.n_buffalo || 0,
           nRoadhouse: s.n_roadhouse || 0,
+          roundNo: (slotBracketById[s.id] || {}).roundNo ?? null,   // migration 012
+          lane: (slotBracketById[s.id] || {}).lane || null,
+          people: slotPeople[s.id] || [],   // who's in the slot (id/name/team)
         });
       }
       const gamesCatalog = gamesR.recordset.map(g => {

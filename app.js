@@ -29,6 +29,8 @@ const S = {
   teamScores: {},          // variable-score entry: { buffalo: n, roadhouse: n }
   soloScores: {},          // per-person variable-score entry: { 'Alex R.': n, … }
   walkSearch: '', walkPick: null, walkScore: 0, walkLog: [],
+  // walk-up matchup builder (team walk-ups): picked names per side + scores
+  mu: { buffalo: [], roadhouse: [] }, muSearch: { buffalo: '', roadhouse: '' }, muScores: {}, muWinner: null,
   // admin UI
   adminSection: 'people', schedView: 'list',
   adminPeek: null, adminConfirmReveal: false,
@@ -275,6 +277,93 @@ function slotUnits(slot, team) {
   }
   const flat = (team === 'buffalo' ? slot.buffalo : slot.roadhouse) || [];
   return flat.map(nm => ({ team, teamNo: null, members: [nm], key: `${team}:${nm}`, name: nm, label: nm, empty: false }));
+}
+// Results that belong to ONE slot. Post-012 results carry slotId (exact match);
+// older rows fall back to the time label — which is ambiguous when two matches
+// share a time. That ambiguity is exactly what bo_results.slot_id fixes.
+function resultsForSlot(results, slot) {
+  return results.filter(r => r.slotId != null ? String(r.slotId) === String(slot.id) : r.slotLabel === slot.label);
+}
+
+/* ── bracket engine (migration 012) ──
+   A bracket game whose slots carry round_no becomes a STRUCTURED bracket: each
+   slot is a MATCH. The lowest round in a lane seeds from sign-ups; a later
+   round's match is fed by the winners of the lane's previous round (in slot
+   order, two per match); the championship (lane 'final') takes each tribe
+   lane's last winners. Unscored feeders → the match shows "waiting". */
+function slotLane(s) {
+  if (s.lane) return s.lane;
+  if ((s.capBuffalo || 0) > 0 && !(s.capRoadhouse || 0)) return 'buffalo';
+  if ((s.capRoadhouse || 0) > 0 && !(s.capBuffalo || 0)) return 'roadhouse';
+  return null;   // open to both tribes (legacy dual slot)
+}
+function bracketMatches(st, results) {
+  const structured = (st.slots || []).filter(s => s.roundNo != null)
+    .slice().sort((a, b) => (a.roundNo - b.roundNo) || (a.startMin - b.startMin) || (a.id - b.id));
+  if (!structured.length) return null;
+  const winnerOf = (slot) => {
+    const r = resultsForSlot(results, slot).filter(x => x.playerName);
+    return r.length ? { team: r[r.length - 1].winner, name: r[r.length - 1].playerName, key: (r[r.length - 1].winner || '?') + ':' + r[r.length - 1].playerName, members: [r[r.length - 1].playerName] } : null;
+  };
+  const laneKey = (s) => slotLane(s) || 'both';
+  const group = {};   // lane|round -> [slots]
+  for (const s of structured) {
+    const k = laneKey(s) + '|' + s.roundNo;
+    (group[k] = group[k] || []).push(s);
+  }
+  const laneRounds = (lane) => [...new Set(structured.filter(s => laneKey(s) === lane).map(s => s.roundNo))].sort((a, b) => a - b);
+  return structured.map(s => {
+    const lane = laneKey(s);
+    const scored = resultsForSlot(results, s);
+    let units = [], waiting = null, seeded = false;
+    if (lane === 'final') {
+      for (const tl of ['buffalo', 'roadhouse']) {
+        const prior = laneRounds(tl).filter(r => r < s.roundNo);
+        const srcs = prior.length ? (group[tl + '|' + prior[prior.length - 1]] || []) : [];
+        const ws = srcs.map(winnerOf).filter(Boolean);
+        if (ws.length) units.push(...ws);
+        if (!srcs.length || ws.length < srcs.length) {
+          waiting = waiting || `Waiting on the ${tl === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'} bracket winner`;
+        }
+      }
+    } else {
+      const prior = laneRounds(lane).filter(r => r < s.roundNo);
+      if (!prior.length) {
+        // Seed round — participants come from the slot's sign-ups.
+        seeded = true;
+        units = (lane === 'buffalo' || lane === 'roadhouse')
+          ? slotUnits(s, lane).filter(u => !u.empty)
+          : [...slotUnits(s, 'buffalo'), ...slotUnits(s, 'roadhouse')].filter(u => !u.empty);
+      } else {
+        const srcs = group[lane + '|' + prior[prior.length - 1]] || [];
+        const siblings = group[lane + '|' + s.roundNo] || [s];
+        const idx = Math.max(0, siblings.findIndex(x => x.id === s.id));
+        const mine = srcs.slice(idx * 2, idx * 2 + 2);   // two feeder matches per match
+        units = mine.map(winnerOf).filter(Boolean);
+        const missing = (mine.length ? mine.filter(x => !winnerOf(x)).length : 0) + Math.max(0, 2 - Math.max(mine.length, units.length));
+        if (units.length < 2) {
+          waiting = missing > 0
+            ? `Waiting on Round ${prior[prior.length - 1]} result${missing === 1 ? '' : 's'}`
+            : null;
+        }
+      }
+    }
+    return { slot: s, lane, roundNo: s.roundNo, units, waiting, seeded, scored,
+      roundLabel: lane === 'final' ? 'Championship' : `Round ${s.roundNo}` };
+  }).concat(
+    // Sign-up slots not yet placed in the bracket still need to be scoreable —
+    // list them as seeds so nothing disappears when a bracket is half-built.
+    (st.slots || []).filter(s => s.roundNo == null)
+      .slice().sort((a, b) => (a.startMin - b.startMin) || (a.id - b.id))
+      .map(s => {
+        const lane = slotLane(s) || 'both';
+        const units = (lane === 'buffalo' || lane === 'roadhouse')
+          ? slotUnits(s, lane).filter(u => !u.empty)
+          : [...slotUnits(s, 'buffalo'), ...slotUnits(s, 'roadhouse')].filter(u => !u.empty);
+        return { slot: s, lane, roundNo: null, units, waiting: null, seeded: true,
+          scored: resultsForSlot(results, s), roundLabel: null };
+      })
+  );
 }
 
 /* ════════════════════ auth screens ════════════════════ */
@@ -716,12 +805,20 @@ function refBoardScreen() {
   const stationHtml = stations.map(st => {
     const open = S.refOpen === st.gameId;
     const isVs = st.type === 'vs', isWalk = st.type === 'walk';
-    const typeLabel = isVs ? 'Head-to-head' : 'Score per team';
+    const typeLabel = isVs ? 'Head-to-head' : 'Score per player';
+    const green = '#3FBF87';
+    // Everything already logged for this game — powers the "Scored" marks,
+    // the logged-result panels, the bracket engine, and the all-scored state.
+    const results = (S.boot.refResults || []).filter(r => r.game === st.name);
+    // A fixed-time game whose every slot has at least one logged result is DONE
+    // — the whole box goes green so refs can see what's left at a glance.
+    const allSlots = st.slots || [];
+    const allScored = !st.openPlay && allSlots.length > 0 && allSlots.every(s => resultsForSlot(results, s).length > 0);
     // "Open all day" tracks walk-up scheduling (open_play), independent of scoring style.
-    const statusLabel = st.openPlay ? 'Open all day' : 'On station';
-    const statusColor = st.openPlay ? '#3FBF87' : T.A;
-    const rowBg = open ? th.panel : T.dim;
-    const rowBorder = T.A;
+    const statusLabel = allScored ? 'All slots scored' : (st.openPlay ? 'Open all day' : 'On station');
+    const statusColor = (allScored || st.openPlay) ? green : T.A;
+    const rowBg = allScored && !open ? 'rgba(63,191,135,0.10)' : (open ? th.panel : T.dim);
+    const rowBorder = allScored ? green : T.A;
 
     let body = '';
     if (open) {
@@ -734,10 +831,6 @@ function refBoardScreen() {
       const roundPts = st.roundPoints != null ? st.roundPoints : 0;
       const teamColor = (t) => t === 'buffalo' ? '#FF5F00' : '#E0322E';
       const teamLabel = (t) => t === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse';
-      const green = '#3FBF87';
-      // Everything already logged for this game — powers the "Scored" marks,
-      // the logged-result panels, and the bracket progress list.
-      const results = (S.boot.refResults || []).filter(r => r.game === st.name);
 
       // One logged result + its "Change" button (warns before removing).
       const resultRow = (r) => `
@@ -757,16 +850,56 @@ function refBoardScreen() {
           <div style="font-size:10.5px;color:${th.sub};margin-top:8px;line-height:1.45;">Need to fix it? Tap Change — the logged entry is removed so you can re-enter it.</div>
         </div>`;
 
+      // ── structured bracket? (migration 012) each slot is a MATCH with real
+      //    progression: seeds from sign-ups, later rounds fed by winners ──
+      const matches = (isVs && isBracket) ? bracketMatches(st, results) : null;
+      const matchById = {};
+      if (matches) for (const m of matches) matchById[m.slot.id] = m;
+
+      const matchRow = (m) => {
+        const s = m.slot;
+        const on = String(s.id) === String(selId);
+        const scored = m.scored.length > 0;
+        const laneBadge = m.lane === 'final'
+          ? `<span style="font-size:9px;font-weight:800;color:#F5C518;border:1px solid rgba(245,197,24,0.5);border-radius:4px;padding:1px 6px;">🏆 FINAL</span>`
+          : (m.lane === 'buffalo' || m.lane === 'roadhouse')
+            ? `<span style="font-size:9px;font-weight:800;text-transform:uppercase;color:${teamColor(m.lane)};border:1px solid ${teamColor(m.lane)};border-radius:4px;padding:1px 6px;">${m.lane === 'buffalo' ? 'BUFFALO' : 'TXRH'}</span>`
+            : '';
+        let line;
+        if (scored) line = `Winner: ${esc((m.scored[m.scored.length - 1].playerName || ''))}`;
+        else if (m.units.length >= 2) line = m.units.map(u => esc(u.name)).join('  vs  ');
+        else if (m.units.length === 1) line = `${esc(m.units[0].name)}  vs  ${m.waiting ? '⏳ ' + esc(m.waiting) : '—'}`;
+        else if (m.waiting) line = `⏳ ${esc(m.waiting)}`;
+        else line = m.seeded ? 'No sign-ups yet' : '⏳ Waiting on the previous round';
+        return `<button data-act="refSelectSlot" data-game="${esc(st.gameId)}" data-slot="${s.id}" style="text-align:left;border-radius:9px;padding:11px 12px;border:1px solid ${on ? T.A : (scored ? 'rgba(63,191,135,0.5)' : th.line)};background:${on ? T.dim : 'rgba(255,255,255,0.03)'};">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;"><span style="font-family:'BN Kragen';font-size:15px;color:${on ? T.A : th.text};">${esc(s.label)}</span>${laneBadge}${scored ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:800;color:${green};border:1px solid ${green};border-radius:4px;padding:1px 6px;">${checkSvg(green, 9, 3)}SCORED</span>` : ''}${on ? `<span style="font-size:9px;font-weight:800;color:${T.on};background:${T.A};border-radius:4px;padding:1px 6px;">SCORING</span>` : ''}</div>
+          <div style="font-size:11px;color:${m.waiting && !scored && m.units.length < 2 ? T.A2 : th.sub};margin-top:3px;">${line}</div>
+        </button>`;
+      };
+
       // ── timeslot picker — the ref chooses which slot they're scoring (games
       //    can be played out of order) and sees the players in each ──
-      const slotPicker = slots.length ? `
+      let slotPicker;
+      if (matches) {
+        // Group matches by round; the championship renders last.
+        const groups = [];
+        for (const m of matches) {
+          const label = m.roundNo == null ? 'Sign-up slots' : (m.lane === 'final' ? `Round ${m.roundNo} · Championship` : `Round ${m.roundNo}`);
+          let grp = groups.find(x => x.label === label);
+          if (!grp) { grp = { label, rows: [] }; groups.push(grp); }
+          grp.rows.push(matchRow(m));
+        }
+        slotPicker = `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Bracket — pick the match you're scoring</div>` +
+          groups.map(gp => `<div style="font-size:10px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:${th.sub};margin:10px 0 6px;">${esc(gp.label)}</div><div style="display:flex;flex-direction:column;gap:7px;">${gp.rows.join('')}</div>`).join('');
+      } else {
+        slotPicker = slots.length ? `
         <div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">Which timeslot are you scoring?</div>
         <div style="display:flex;flex-direction:column;gap:7px;">
           ${slots.map(s => {
             const on = String(s.id) === String(selId);
             const buf = s.buffalo || [], road = s.roadhouse || [];
             const n = buf.length + road.length;
-            const scored = results.some(r => r.slotLabel === s.label);
+            const scored = resultsForSlot(results, s).length > 0;
             const summ = n ? [buf.length ? `Buffalo: ${esc(buf.join(', '))}` : '', road.length ? `TXRH: ${esc(road.join(', '))}` : ''].filter(Boolean).join('  ·  ') : 'No players signed up';
             return `<button data-act="refSelectSlot" data-game="${esc(st.gameId)}" data-slot="${s.id}" style="text-align:left;border-radius:9px;padding:11px 12px;border:1px solid ${on ? T.A : (scored ? 'rgba(63,191,135,0.5)' : th.line)};background:${on ? T.dim : 'rgba(255,255,255,0.03)'};">
               <div style="display:flex;align-items:center;gap:8px;"><span style="font-family:'BN Kragen';font-size:15px;color:${on ? T.A : th.text};">${esc(s.label)}</span>${scored ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:800;color:${green};border:1px solid ${green};border-radius:4px;padding:1px 6px;">${checkSvg(green, 9, 3)}SCORED</span>` : ''}${on ? `<span style="font-size:9px;font-weight:800;color:${T.on};background:${T.A};border-radius:4px;padding:1px 6px;">SCORING</span>` : ''}</div>
@@ -774,6 +907,7 @@ function refBoardScreen() {
             </button>`;
           }).join('')}
         </div>` : '';
+      }
 
       // ── walk-on add (walk-up games): score anyone not on the slot list ──
       const walkOnBlock = () => {
@@ -789,12 +923,36 @@ function refBoardScreen() {
       };
 
       // ── scoring panel, scoped to the selected slot ──
-      const slotResults = selSlot ? results.filter(r => r.slotLabel === selSlot.label) : [];
+      const slotResults = selSlot ? resultsForSlot(results, selSlot) : [];
       let scorer;
       if (!slots.length && isWalk) {
         scorer = walkOnBlock();                          // pure walk-up, no slots
       } else if (!selSlot && slots.length) {
-        scorer = `<div style="margin-top:14px;font-size:12.5px;color:${th.sub};font-style:italic;">Pick a timeslot above to score it.</div>`;
+        scorer = `<div style="margin-top:14px;font-size:12.5px;color:${th.sub};font-style:italic;">${matches ? 'Pick a match above to score it.' : 'Pick a timeslot above to score it.'}</div>`;
+      } else if (matches && selSlot && matchById[selSlot.id]) {
+        // ── structured bracket match ──
+        const m = matchById[selSlot.id];
+        const isFinal = m.lane === 'final';
+        const pts = isFinal ? winPts : roundPts;
+        const sel = S.refWinner;
+        const unitBtnB = (u) => {
+          const picked = sel && sel.key === u.key;
+          const c = teamColor(u.team);
+          return `<button data-act="refPickWinner" data-team="${u.team}" data-name="${esc(u.name)}" data-key="${esc(u.key)}" data-scores="${isFinal ? '1' : '0'}" style="flex:1;min-width:132px;text-align:left;border-radius:10px;padding:12px;border:2px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};"><div style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};">${teamLabel(u.team)}${u.label && u.label !== u.name ? ' · ' + esc(u.label) : ''}</div><div style="font-size:13px;font-weight:700;color:${th.text};margin-top:4px;line-height:1.25;">${esc(u.name)}</div>${picked ? `<div style="margin-top:6px;font-size:10.5px;font-weight:800;color:${c};display:flex;align-items:center;gap:5px;">${checkSvg(c, 12)}Winner</div>` : ''}</button>`;
+        };
+        scorer = `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>`;
+        if (m.scored.length) {
+          scorer += scoredPanel(m.scored);
+        } else if (m.waiting && m.units.length < 2) {
+          scorer += `<div style="display:flex;gap:9px;align-items:flex-start;background:rgba(255,255,255,0.04);border:1px dashed ${th.line};border-radius:10px;padding:13px 14px;"><span>⏳</span><div><div style="font-size:13px;font-weight:700;color:${th.text};">${esc(m.waiting)}</div><div style="font-size:11.5px;color:${th.sub};margin-top:3px;">This match fills in automatically once the earlier round is scored.</div></div></div>`;
+          if (m.units.length === 1) scorer += `<div style="margin-top:9px;font-size:11.5px;color:${th.sub};">Already in: <strong style="color:${th.text};">${esc(m.units[0].name)}</strong></div>`;
+        } else if (!m.units.length) {
+          scorer += `<div style="margin-top:2px;font-size:12.5px;color:${th.sub};font-style:italic;">No one signed up for this match yet.</div>`;
+        } else {
+          scorer += `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">${esc(m.roundLabel || selSlot.label)} · tap the winner${pts > 0 ? ` — earns ${pts} pts` : ''}</div>
+            <div style="display:flex;flex-wrap:wrap;gap:9px;">${m.units.map(unitBtnB).join('')}</div>
+            <button data-act="refBracketSubmit" data-game="${esc(st.gameId)}" data-slot="${selSlot.id}" data-stage="${isFinal ? 'champ' : 'round'}" data-roundlabel="${esc(m.roundLabel || '')}" style="width:100%;margin-top:14px;background:${sel ? T.A : 'rgba(255,255,255,0.08)'};color:${sel ? T.on : th.sub};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">${!sel ? 'Tap the winner first' : (isFinal ? `Log ${esc(sel.name)} — Champion · +${winPts} pts` : (roundPts > 0 ? `Log ${esc(sel.name)} — advances · +${roundPts} pts` : `Log ${esc(sel.name)} — advances`))}</button>`;
+        }
       } else if (isWalk) {
         // Not head-to-head → variable score, one number PER PERSON. Two people in
         // a slot are scored separately (each is its own logged result). Already-
@@ -823,7 +981,9 @@ function refBoardScreen() {
         }
         // The "score anyone not on the list" walk-on search is only for true
         // walk-up (open_play) games — a fixed-roster game scores its slot only.
-        if (st.openPlay) scorer += `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>${walkOnBlock()}`;
+        // Team walk-ups use the matchup builder (below) instead: one name would
+        // just be duplicated across the team spots.
+        if (st.openPlay && (st.teamSize || 1) < 2) scorer += `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>${walkOnBlock()}`;
       } else {
         // Head-to-head — the ref taps the WINNING UNIT (a whole team for team
         // games, a single player otherwise) and can log several matchups in the
@@ -865,7 +1025,31 @@ function refBoardScreen() {
       }
 
       // ── bracket progress — logged winners flow into the next round ──
-      const bracketProgress = (isVs && isBracket && brData) ? (() => {
+      // Structured brackets (migration 012) build progress from the real
+      // matches; legacy brackets fall back to the display rounds.
+      const bracketProgress = matches ? (() => {
+        const byRound = [];
+        for (const m of matches) {
+          const label = m.roundNo == null ? 'Sign-up slots' : (m.lane === 'final' ? 'Championship' : `Round ${m.roundNo}`);
+          let grp = byRound.find(x => x.label === label);
+          if (!grp) { grp = { label, isFinal: m.lane === 'final', ms: [] }; byRound.push(grp); }
+          grp.ms.push(m);
+        }
+        const rows = byRound.map(gp => {
+          const winners = gp.ms.flatMap(m => m.scored.map(r => r.playerName)).filter(Boolean);
+          const doneN = gp.ms.filter(m => m.scored.length).length;
+          const accent = gp.isFinal ? '#F5C518' : T.A;
+          return `
+          <div style="display:flex;gap:10px;padding:9px 0;border-top:1px solid ${th.line};">
+            <div style="width:88px;flex-shrink:0;font-family:'BN Kragen';font-size:12.5px;color:${accent};padding-top:2px;line-height:1.15;">${esc(gp.label)}</div>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:12px;font-weight:700;color:${th.sub};">${doneN}/${gp.ms.length} match${gp.ms.length === 1 ? '' : 'es'} scored</div>
+              ${winners.length ? `<div style="display:flex;align-items:center;gap:5px;font-size:11px;font-weight:700;color:${green};margin-top:2px;">${checkSvg(green, 11)} ${gp.isFinal ? 'Champion' : 'Advancing'}: ${esc(winners.join(', '))}</div>` : `<div style="font-size:11px;color:${th.sub};margin-top:2px;">No winners logged yet.</div>`}
+            </div>
+          </div>`;
+        }).join('');
+        return `<div style="margin-top:16px;"><div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A2};margin-bottom:6px;">🏆 Bracket progress</div>${rows}</div>`;
+      })() : (isVs && isBracket && brData) ? (() => {
         const rows = brData.rounds.map((r, i) => {
           const winners = results.filter(x => x.roundLabel === r.name).map(x => x.playerName).filter(Boolean);
           const prevWinners = i > 0 ? results.filter(x => x.roundLabel === brData.rounds[i - 1].name).map(x => x.playerName).filter(Boolean) : [];
@@ -889,14 +1073,58 @@ function refBoardScreen() {
       // Walk-up head-to-head — remind the ref how matchups form.
       const walkH2HNote = (st.openPlay && isVs) ? `<div style="margin-bottom:12px;display:flex;gap:8px;align-items:flex-start;background:rgba(245,197,24,0.08);border:1px solid rgba(245,197,24,0.4);border-radius:9px;padding:10px 12px;"><span style="flex-shrink:0;">🤝</span><span style="font-size:11.5px;color:${th.text};line-height:1.45;">Walk-up head-to-head — players find someone from the <strong>other tribe</strong> to face. Score whichever matchup shows up.</span></div>` : '';
 
-      body = walkH2HNote + slotPicker + scorer + bracketProgress;
+      // ── walk-up MATCHUP builder — for walk-up games played in teams (and any
+      // walk-up head-to-head): pick each spot with a UNIQUE player, Buffalo side
+      // vs TXRH side, then score the matchup. Replaces the one-name walk-on for
+      // team games (one name was just duplicated across the team spots).
+      const showMu = st.openPlay && (isVs || (st.teamSize || 1) >= 2);
+      const muBlock = () => {
+        const need = Math.max(1, st.teamSize || 1);
+        const sideBox = (team) => {
+          const c = teamColor(team);
+          const picked = (S.mu[team] || []);
+          const q = (S.muSearch[team] || '').trim().toLowerCase();
+          const takenEverywhere = new Set([...(S.mu.buffalo || []), ...(S.mu.roadhouse || [])]);
+          const opts = q ? allPlayers.filter(p => p.team === team && !takenEverywhere.has(p.name) && p.name.toLowerCase().includes(q)).slice(0, 4) : [];
+          return `<div style="flex:1;min-width:150px;border:1px solid ${th.line};border-radius:10px;padding:11px 12px;background:rgba(255,255,255,0.03);">
+            <div style="font-size:10.5px;font-weight:800;text-transform:uppercase;color:${c};">${teamLabel(team)} · ${picked.length}/${need}</div>
+            ${picked.length ? `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:8px;">${picked.map(nm => `<button data-act="muDrop" data-team="${team}" data-name="${esc(nm)}" style="display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;color:${th.text};background:rgba(255,255,255,0.07);border:1px solid ${th.line};border-radius:6px;padding:4px 8px;">${esc(nm)} <span style="color:${th.sub};">×</span></button>`).join('')}</div>` : ''}
+            ${picked.length < need ? `
+            <div style="display:flex;align-items:center;gap:8px;background:rgba(255,255,255,0.05);border:1px solid ${th.line};border-radius:8px;padding:8px 10px;margin-top:8px;">
+              ${searchSvg(th.sub)}
+              <input id="mu-in-${team}" data-live="${team === 'buffalo' ? 'muSearchB' : 'muSearchR'}" value="${esc(S.muSearch[team] || '')}" placeholder="Add player ${picked.length + 1} of ${need}…" style="flex:1;min-width:0;background:transparent;border:none;outline:none;color:${th.text};font-size:13px;font-family:'Montserrat';"/>
+            </div>
+            ${opts.length ? `<div style="display:flex;flex-direction:column;gap:5px;margin-top:6px;">${opts.map(p => `<button data-act="muPick" data-team="${team}" data-name="${esc(p.name)}" style="text-align:left;font-size:12.5px;font-weight:700;color:${th.text};background:rgba(255,255,255,0.04);border:1px solid ${th.line};border-radius:7px;padding:8px 10px;">${esc(p.name)}</button>`).join('')}</div>` : ''}` : ''}
+          </div>`;
+        };
+        const full = (S.mu.buffalo || []).length >= need && (S.mu.roadhouse || []).length >= need;
+        let action = '';
+        if (full && isVs) {
+          const winBtn = (team) => {
+            const picked = S.muWinner === team;
+            const c = teamColor(team);
+            return `<button data-act="muWinner" data-team="${team}" style="flex:1;text-align:left;border-radius:10px;padding:12px;border:2px solid ${picked ? c : th.line};background:${picked ? 'rgba(255,255,255,0.06)' : 'rgba(255,255,255,0.03)'};"><div style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};">${teamLabel(team)}</div><div style="font-size:12.5px;font-weight:700;color:${th.text};margin-top:3px;">${esc((S.mu[team] || []).join(' & '))}</div>${picked ? `<div style="margin-top:5px;font-size:10.5px;font-weight:800;color:${c};">${checkSvg(c, 11)} Winner</div>` : ''}</button>`;
+          };
+          action = `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin:12px 0 8px;">Who won? Winner earns ${winPts} pts</div><div style="display:flex;gap:9px;">${winBtn('buffalo')}${winBtn('roadhouse')}</div><button data-act="muSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:12px;background:${S.muWinner ? T.A : 'rgba(255,255,255,0.08)'};color:${S.muWinner ? T.on : th.sub};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">${S.muWinner ? `Log ${S.muWinner === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'} win · +${winPts} pts` : 'Tap the winning side first'}</button>`;
+        } else if (full) {
+          action = `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin:12px 0 8px;">Enter each side's score</div><div style="display:flex;gap:9px;">${['buffalo', 'roadhouse'].map(tm => `<div style="flex:1;border:1px solid ${th.line};border-radius:10px;padding:10px;background:rgba(255,255,255,0.03);"><div style="font-size:10px;font-weight:800;text-transform:uppercase;color:${teamColor(tm)};">${teamLabel(tm)}</div><input data-muscore="${tm}" value="${S.muScores[tm] || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:100%;margin-top:7px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:8px;color:${th.text};font-family:'BN Kragen';font-size:18px;outline:none;"/></div>`).join('')}</div><button data-act="muSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:12px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Save matchup scores</button>`;
+        } else {
+          action = `<div style="margin-top:10px;font-size:11.5px;color:${th.sub};">Fill both sides (${need} per team) to score the matchup.</div>`;
+        }
+        return `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>
+          <div style="font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${T.A};margin-bottom:9px;">➕ New walk-up matchup${need > 1 ? ` · ${need} per team` : ''}</div>
+          <div style="display:flex;gap:9px;flex-wrap:wrap;">${sideBox('buffalo')}${sideBox('roadhouse')}</div>
+          ${action}`;
+      };
+
+      body = walkH2HNote + slotPicker + scorer + (showMu ? muBlock() : '') + bracketProgress;
     }
 
     return `
     <div style="background:${rowBg};border:1px solid ${rowBorder};border-radius:12px;overflow:hidden;transition:all .15s;">
       <button data-act="refToggle" data-id="${esc(st.gameId)}" style="width:100%;display:flex;align-items:center;gap:13px;padding:14px 15px;">
         <div style="flex:1;min-width:0;text-align:left;">
-          <div style="font-size:16px;font-weight:800;color:${th.text};line-height:1.05;">${esc(st.name)}</div>
+          <div style="display:flex;align-items:center;gap:8px;"><span style="font-size:16px;font-weight:800;color:${th.text};line-height:1.05;">${esc(st.name)}</span>${allScored ? `<span style="display:inline-flex;align-items:center;gap:4px;font-size:9.5px;font-weight:800;letter-spacing:0.04em;color:${green};border:1px solid ${green};border-radius:5px;padding:2px 7px;">${checkSvg(green, 10, 3)}COMPLETE</span>` : ''}</div>
           <div style="font-size:11.5px;color:${th.sub};margin-top:4px;">${esc(st.timeLabel || '')} · ${esc(st.venue || '')}</div>
           <div style="display:inline-flex;align-items:center;gap:6px;margin-top:7px;font-size:10px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:${statusColor};"><span style="width:6px;height:6px;border-radius:50%;background:${statusColor};"></span>${statusLabel} · ${typeLabel}</div>
         </div>
@@ -1225,7 +1453,10 @@ function gameDetailScreen() {
     </div>`;
   }
 
-  const slots = (g.slots || []).map(s => slotRowHtml(g, s)).join('');
+  // Zero-cap slots are bracket MATCH slots (later rounds / championship,
+  // migration 012) — refs score them, players can't sign up for them; they show
+  // in the Bracket path panel instead of the sign-up list.
+  const slots = (g.slots || []).filter(s => (s.capBuffalo || 0) + (s.capRoadhouse || 0) > 0).map(s => slotRowHtml(g, s)).join('');
   const intro = g.openPlay
     ? `Grab a time slot to lock your run for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong> — or just walk up during the window. After the window closes it's open walk-up for everyone. Walk-up slots may overlap another game you're in; that's OK, just leave yourself time to finish.`
     : `Reserve a time slot below for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong>. You can arrive anytime during the game's window — after it, it's open walk-up. Up to ${signupMax()} game slots, and no overlapping times.`;
@@ -2073,6 +2304,16 @@ function admGamesSection(ov) {
   const gameCard = (g) => {
     const slots = (g.slots || []).slice().sort((a, b) => a.startMin - b.startMin);
     const signed = slots.reduce((n, s) => n + (s.nBuffalo || 0) + (s.nRoadhouse || 0), 0);
+    // Name chips per slot — tap the × to pull that person out of the slot
+    // (admin override, reverse of + Fill).
+    const rosterChips = (s) => {
+      const ppl = s.people || [];
+      if (!ppl.length) return '';
+      return `<div style="display:flex;flex-wrap:wrap;gap:5px;padding:0 12px 9px 96px;">${ppl.map(p => `
+        <span style="display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;color:${p.team === 'roadhouse' ? '#B3241F' : '#B34700'};background:${p.team === 'roadhouse' ? '#FDEEEE' : '#FFF3E8'};border:1px solid ${p.team === 'roadhouse' ? '#F2CFCE' : '#F5DCC4'};border-radius:6px;padding:4px 5px 4px 9px;">${esc(p.name)}
+          <button data-act="admUnfill" data-slot="${s.id}" data-uid="${p.id}" data-name="${esc(p.name)}" data-label="${esc(s.label)}" title="Remove from this slot" style="width:16px;height:16px;border-radius:4px;background:rgba(0,0,0,0.06);color:inherit;font-size:11px;line-height:1;display:flex;align-items:center;justify-content:center;">×</button>
+        </span>`).join('')}</div>`;
+    };
     const slotRows = slots.length ? slots.map(s => `
       <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-top:1px solid #EEF2F1;">
         <span style="width:74px;flex-shrink:0;font-family:'BN Kragen';font-size:14px;color:#00253D;">${esc(s.label)}</span>
@@ -2083,7 +2324,7 @@ function admGamesSection(ov) {
         <button data-act="admFillOpen" data-slot="${s.id}" data-game="${esc(g.id)}" style="flex-shrink:0;font-size:11px;font-weight:700;color:#1F8A5B;border:1px solid #BFE3D0;border-radius:6px;padding:6px 10px;">+ Fill</button>
         <button data-act="admSlotEdit" data-game="${esc(g.id)}" data-slot="${s.id}" style="flex-shrink:0;font-size:11px;font-weight:700;color:#00253D;border:1px solid #DCE3E2;border-radius:6px;padding:6px 10px;">Edit</button>
         <button data-act="admSlotDelete" data-slot="${s.id}" data-signed="${(s.nBuffalo || 0) + (s.nRoadhouse || 0)}" data-label="${esc(s.label)}" style="flex-shrink:0;width:28px;height:28px;border-radius:6px;border:1px solid #F0CDB3;color:#C77B23;font-size:15px;display:flex;align-items:center;justify-content:center;">×</button>
-      </div>${fillPanel(s)}`).join('') : `<div style="padding:11px 12px;border-top:1px solid #EEF2F1;font-size:12px;color:#9AA7A5;font-style:italic;">No time slots yet${g.openPlay ? ' — pure walk-up.' : '.'}</div>`;
+      </div>${rosterChips(s)}${fillPanel(s)}`).join('') : `<div style="padding:11px 12px;border-top:1px solid #EEF2F1;font-size:12px;color:#9AA7A5;font-style:italic;">No time slots yet${g.openPlay ? ' — pure walk-up.' : '.'}</div>`;
     return `
     <div style="background:#fff;border:1px solid #E0E6E5;border-left:3px solid ${g.openPlay ? '#00253D' : '#FF5F00'};border-radius:10px;overflow:hidden;">
       <div style="padding:13px 15px;display:flex;align-items:flex-start;justify-content:space-between;gap:12px;">
@@ -2219,6 +2460,83 @@ function admGamesModals() {
   return html;
 }
 
+// ── Bracket Builder (migration 012) — the MATCH structure refs score ──
+// Each match is a bo_game_slots row with round_no + lane. Round 1 matches take
+// sign-ups (caps = 2 teams × team size for that tribe); later rounds and the
+// championship are cap-0 slots that auto-fill with the previous round's winners.
+function admBracketBuilder(g) {
+  const ts = (g.teamSize && g.teamSize >= 2) ? g.teamSize : 1;
+  const slots = (g.slots || []).slice().sort((a, b) =>
+    ((a.roundNo ?? 99) - (b.roundNo ?? 99)) || (a.startMin - b.startMin) || (a.id - b.id));
+  const laneOpt = [
+    { k: 'buffalo', label: 'Buffalo', c: '#FF5F00' },
+    { k: 'roadhouse', label: 'TXRH', c: '#E0322E' },
+    { k: 'final', label: '🏆 Championship', c: '#C79A1E' },
+  ];
+  const laneBadge = (lane) => {
+    if (lane === 'final') return `<span style="font-size:9.5px;font-weight:800;color:#fff;background:#C79A1E;border-radius:4px;padding:2px 7px;">🏆 FINAL</span>`;
+    if (lane === 'buffalo') return `<span style="font-size:9.5px;font-weight:800;color:#fff;background:#FF5F00;border-radius:4px;padding:2px 7px;">BUFFALO</span>`;
+    if (lane === 'roadhouse') return `<span style="font-size:9.5px;font-weight:800;color:#fff;background:#E0322E;border-radius:4px;padding:2px 7px;">TXRH</span>`;
+    return `<span style="font-size:9.5px;font-weight:800;color:#46545B;background:#EEF2F1;border-radius:4px;padding:2px 7px;">BOTH</span>`;
+  };
+  const row = (s) => {
+    if (S.admMatchEdit === s.id) {
+      const laneBtn = (o) => `<button data-act="admMatchLanePick" data-lane="${o.k}" style="flex:1;padding:7px 4px;border-radius:6px;font-size:10.5px;font-weight:700;background:${S.f.bmLane === o.k ? o.c : '#fff'};color:${S.f.bmLane === o.k ? '#fff' : '#46545B'};border:1px solid ${S.f.bmLane === o.k ? o.c : '#DCE3E2'};">${o.label}</button>`;
+      return `
+      <div style="padding:12px 13px;border:1px solid #FFD3B5;border-radius:9px;background:#FFF9F4;margin-bottom:8px;">
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <div style="width:120px;">${admFieldLabel('Time')}${admTextInput('bm-time', 'bmTime', S.f.bmTime || '', 'e.g. 2:30 PM')}</div>
+          <div style="width:80px;">${admFieldLabel('Round #')}${admTextInput('bm-round', 'bmRound', S.f.bmRound || '', '1')}</div>
+        </div>
+        <div style="margin-top:10px;">${admFieldLabel('Whose match?')}<div style="display:flex;gap:6px;">${laneOpt.map(laneBtn).join('')}</div></div>
+        <div style="display:flex;gap:8px;margin-top:12px;">
+          <button data-act="admMatchSave" data-slot="${s.id}" style="background:#FF5F00;color:#011220;font-weight:800;font-size:12.5px;padding:9px 15px;border-radius:8px;">Save match</button>
+          <button data-act="admMatchCancel" style="color:#6D7C83;font-weight:700;font-size:12.5px;padding:9px 12px;border-radius:8px;border:1px solid #DCE3E2;">Cancel</button>
+        </div>
+      </div>`;
+    }
+    const seats = (s.capBuffalo || 0) + (s.capRoadhouse || 0);
+    const detail = seats > 0
+      ? `sign-ups · B ${s.nBuffalo}/${s.capBuffalo} · TXRH ${s.nRoadhouse}/${s.capRoadhouse}`
+      : 'auto-fills with the previous round’s winners';
+    return `
+    <div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #E0E6E5;border-radius:9px;margin-bottom:7px;">
+      <span style="width:74px;flex-shrink:0;font-family:'BN Kragen';font-size:14px;color:#C77B23;">${esc(s.label)}</span>
+      ${laneBadge(s.lane || null)}
+      <span style="flex:1;min-width:0;font-size:11px;color:#6D7C83;">${detail}</span>
+      <button data-act="admMatchEditStart" data-slot="${s.id}" data-time="${esc(s.label)}" data-round="${s.roundNo ?? ''}" data-lane="${esc(s.lane || '')}" style="flex-shrink:0;font-size:11px;font-weight:700;color:#00253D;border:1px solid #DCE3E2;border-radius:6px;padding:6px 10px;">Edit</button>
+      <button data-act="admMatchRemove" data-slot="${s.id}" data-signed="${(s.nBuffalo || 0) + (s.nRoadhouse || 0)}" style="flex-shrink:0;width:26px;height:26px;border-radius:6px;border:1px solid #F0CDB3;color:#C77B23;font-size:14px;">×</button>
+    </div>`;
+  };
+  // Group by round for display.
+  const groups = [];
+  for (const s of slots) {
+    const label = s.roundNo == null ? 'Unassigned sign-up slots' : (s.lane === 'final' ? `Round ${s.roundNo} · Championship` : `Round ${s.roundNo}`);
+    let grp = groups.find(x => x.label === label);
+    if (!grp) { grp = { label, roundNo: s.roundNo, rows: [] }; groups.push(grp); }
+    grp.rows.push(row(s));
+  }
+  const maxRound = Math.max(0, ...slots.map(s => s.roundNo || 0));
+  const addBtn = (label, round, lane) =>
+    `<button data-act="admMatchAdd" data-game="${esc(g.id)}" data-round="${round}" data-lane="${lane}" style="font-size:11.5px;font-weight:700;color:#FF5F00;border:1px dashed #FF5F00;border-radius:7px;padding:7px 11px;background:#FCFBF7;">${label}</button>`;
+  const groupHtml = groups.map(gp => `
+    <div style="display:flex;align-items:center;gap:8px;margin:12px 0 7px;">
+      <span style="font-size:10.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:#6D7C83;">${esc(gp.label)}</span>
+      ${gp.roundNo != null && !gp.label.includes('Championship') ? `<span style="flex:1;"></span>${addBtn('+ Buffalo', gp.roundNo, 'buffalo')}${addBtn('+ TXRH', gp.roundNo, 'roadhouse')}` : ''}
+    </div>
+    ${gp.rows.join('')}`).join('');
+  const hasFinal = slots.some(s => s.lane === 'final');
+  return `
+    <div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#6D7C83;margin-bottom:4px;">Bracket matches (what refs score)</div>
+    <div style="font-size:11px;color:#9AA7A5;line-height:1.5;margin-bottom:4px;">Every time slot below is one match. <strong>Round 1</strong> matches take sign-ups${ts >= 2 ? ` (teams of ${ts})` : ''}; later rounds and the championship fill in automatically as refs log winners. Two same-time matches (one per tribe) are separate rows.</div>
+    ${groupHtml || '<div style="font-size:12px;color:#9AA7A5;font-style:italic;margin:8px 0;">No time slots yet — add Round 1 matches below.</div>'}
+    <div style="display:flex;gap:7px;flex-wrap:wrap;margin:10px 0 16px;">
+      ${maxRound === 0 ? addBtn('+ Round 1 Buffalo match', 1, 'buffalo') + addBtn('+ Round 1 TXRH match', 1, 'roadhouse') : ''}
+      ${maxRound > 0 ? addBtn(`+ Round ${maxRound + 1} Buffalo`, maxRound + 1, 'buffalo') + addBtn(`+ Round ${maxRound + 1} TXRH`, maxRound + 1, 'roadhouse') : ''}
+      ${!hasFinal && maxRound > 0 ? addBtn('+ Championship', maxRound + 1, 'final') : ''}
+    </div>`;
+}
+
 // Fully-editable bracket editor (migration 009). Toggle whether a game is a
 // bracket, edit its intro, and add / edit / remove rounds — this is also how you
 // "see the bracket" from the Admin Center.
@@ -2276,11 +2594,12 @@ function admBracketModal() {
       <button data-act="admBracketPointsSave" style="font-size:12px;font-weight:700;color:#FF5F00;border:1px solid #FFD3B5;border-radius:7px;padding:9px 13px;margin-bottom:1px;">Save points</button>
     </div>
     <div style="font-size:11px;color:#9AA7A5;margin:0 0 16px;line-height:1.5;">Each within-tribe round win awards these points to the winner's tribe (0 = advancement only). The overall champion earns the game's "Points for a win" — currently <strong>${g.winPoints != null ? g.winPoints : 10}</strong>, set in the game editor.</div>
+    ${admBracketBuilder(g)}
     ${admFieldLabel('Intro blurb (optional)')}
     <textarea id="br-intro" data-field="brIntro" placeholder="One line explaining how the bracket works…" style="width:100%;min-height:64px;font-size:13.5px;color:#00253D;border:1px solid #DCE3E2;border-radius:8px;padding:10px 11px;font-family:'Montserrat';outline:none;resize:vertical;">${esc(S.f.brIntro !== undefined ? S.f.brIntro : (g.bracketIntro || ''))}</textarea>
     <div style="margin-top:8px;"><button data-act="admBracketIntroSave" style="font-size:12px;font-weight:700;color:#FF5F00;border:1px solid #FFD3B5;border-radius:7px;padding:8px 13px;">Save intro</button></div>
     <div style="height:1px;background:#EEF2F1;margin:18px 0 14px;"></div>
-    <div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#6D7C83;margin-bottom:10px;">Rounds</div>
+    <div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#6D7C83;margin-bottom:10px;">Bracket path (shown to players)</div>
     ${rounds.length ? rounds.map(roundRow).join('') : '<div style="font-size:12.5px;color:#9AA7A5;font-style:italic;margin-bottom:8px;">No rounds yet.</div>'}
     <button data-act="admRoundAdd" data-game="${esc(g.id)}" style="width:100%;padding:10px;border:1px dashed #FF5F00;border-radius:8px;font-size:12.5px;font-weight:700;color:#FF5F00;background:#FCFBF7;">+ Add round</button>`;
   return `
@@ -2600,6 +2919,13 @@ function admScoresSection(ov) {
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="#011220" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="#011220" stroke-width="2"/></svg>
         Reveal scores to everyone
       </button>
+    </div>`;
+  } else {
+    // Already revealed — offer the undo (for "I pressed it to test it").
+    revealCtl = `
+    <div style="margin-top:16px;display:flex;align-items:center;gap:12px;background:#F6F8F7;border:1px solid #E6ECEA;border-radius:10px;padding:13px 15px;">
+      <span style="flex:1;font-size:12px;color:#6D7C83;line-height:1.45;">Pressed Reveal by mistake? Re-sealing hides the standings again on every phone (within their next refresh).</span>
+      <button data-act="admUnreveal" style="flex-shrink:0;background:#fff;border:1px solid #DCE3E2;color:#00253D;font-weight:700;font-size:12.5px;padding:10px 14px;border-radius:8px;">🔒 Re-seal scores</button>
     </div>`;
   }
   const log = (ov.results || []).map(r => {
@@ -3214,10 +3540,69 @@ const ACTIONS = {
       S.refOpen = id;
       S.entryB = 0; S.entryR = 0; S.walkSearch = ''; S.walkPick = null; S.walkScore = 0;
       S.refWinner = null; S.refRound = 'round'; S.refRoundSel = null; S.teamScores = {}; S.soloScores = {};
+      S.mu = { buffalo: [], roadhouse: [] }; S.muSearch = { buffalo: '', roadhouse: '' }; S.muScores = {}; S.muWinner = null;
     }
     render();
   },
   refSelectSlot: (el) => { S.refSlot[el.dataset.game] = parseInt(el.dataset.slot, 10); S.refWinner = null; S.teamScores = {}; S.soloScores = {}; render(); },
+  // ── walk-up matchup builder ──
+  muPick: (el) => {
+    const t = el.dataset.team;
+    if (!S.mu[t]) S.mu[t] = [];
+    if (!S.mu[t].includes(el.dataset.name)) S.mu[t].push(el.dataset.name);
+    S.muSearch[t] = '';
+    render();
+  },
+  muDrop: (el) => {
+    const t = el.dataset.team;
+    S.mu[t] = (S.mu[t] || []).filter(n => n !== el.dataset.name);
+    S.muWinner = null;
+    render();
+  },
+  muWinner: (el) => { S.muWinner = el.dataset.team; render(); },
+  muSubmit: (el) => guarded(async () => {
+    const st = (S.boot.refStations || []).find(x => x.gameId === el.dataset.game);
+    if (!st) return;
+    const bufNames = (S.mu.buffalo || []).join(' & ');
+    const roadNames = (S.mu.roadhouse || []).join(' & ');
+    if (st.type === 'vs') {
+      if (!S.muWinner) { toast('Tap the winning side first'); return; }
+      await api('/results', { method: 'POST', body: {
+        type: 'winner', gameName: st.name,
+        winnerTeam: S.muWinner, winnerName: S.muWinner === 'buffalo' ? bufNames : roadNames,
+        scores: true, slotLabel: 'Walk-up',
+      } });
+    } else {
+      const entries = [
+        { name: bufNames, team: 'buffalo', score: S.muScores.buffalo || 0 },
+        { name: roadNames, team: 'roadhouse', score: S.muScores.roadhouse || 0 },
+      ].filter(e => e.name && e.score > 0);
+      if (!entries.length) { toast('Enter a score for at least one side'); return; }
+      await api('/results', { method: 'POST', body: { type: 'solo', gameName: st.name, entries, slotLabel: 'Walk-up' } });
+    }
+    S.mu = { buffalo: [], roadhouse: [] }; S.muSearch = { buffalo: '', roadhouse: '' }; S.muScores = {}; S.muWinner = null;
+    toast('Matchup logged');
+    loadBoot(true);
+  }),
+  // ── structured bracket match (migration 012) ──
+  refBracketSubmit: (el) => guarded(async () => {
+    const w = S.refWinner;
+    if (!w) { toast('Tap the winner first'); return; }
+    const st = (S.boot.refStations || []).find(x => x.gameId === el.dataset.game);
+    const slotId = parseInt(el.dataset.slot, 10);
+    const slot = st ? (st.slots || []).find(s => s.id === slotId) : null;
+    const isFinal = el.dataset.stage === 'champ';
+    await api('/results', { method: 'POST', body: {
+      type: 'winner', gameName: st ? st.name : el.dataset.game,
+      winnerTeam: w.team, winnerName: w.name,
+      scores: isFinal, stage: isFinal ? 'champ' : 'round',
+      slotId, slotLabel: slot ? slot.label : null,
+      roundLabel: el.dataset.roundlabel || null,
+    } });
+    S.refWinner = null;
+    toast(isFinal ? 'Champion logged & scored' : 'Winner logged — the next round fills in');
+    loadBoot(true);
+  }),
   refClaim: (el) => guarded(async () => {
     const claim = el.dataset.claim === '1';
     const res = await api('/ref-claim', { method: 'POST', body: { gameId: el.dataset.game, claim } });
@@ -3258,7 +3643,7 @@ const ACTIONS = {
       type: 'winner', gameName: st ? st.name : el.dataset.game,
       winnerTeam: w.team, winnerName: w.name, scores: !!w.scores,
       stage: round === 'round' ? 'round' : 'champ',
-      slotLabel: slot ? slot.label : null, roundLabel,
+      slotId: slot ? slot.id : null, slotLabel: slot ? slot.label : null, roundLabel,
     } });
     S.refWinner = null;
     toast(round === 'round' ? 'Winner logged — they advance' : 'Winner logged & scored');
@@ -3273,7 +3658,7 @@ const ACTIONS = {
     const slot = (st.slots || []).find(s => String(s.id) === String(selId));
     await api('/results', { method: 'POST', body: {
       type: 'vs', gameName: st.name, ptsBuffalo: b, ptsRoadhouse: r,
-      slotLabel: slot ? slot.label : null,
+      slotId: slot ? slot.id : null, slotLabel: slot ? slot.label : null,
     } });
     S.teamScores = {};
     toast('Team scores logged');
@@ -3295,7 +3680,7 @@ const ACTIONS = {
       .filter(e => e.score > 0);
     if (!entries.length) { toast('Enter a score for at least one player'); return; }
     await api('/results', { method: 'POST', body: {
-      type: 'solo', gameName: st.name, entries, slotLabel: slot.label,
+      type: 'solo', gameName: st.name, entries, slotId: slot.id, slotLabel: slot.label,
     } });
     S.soloScores = {};
     toast('Scores logged');
@@ -3530,6 +3915,63 @@ const ACTIONS = {
     S.f.gmTeamSize = String(g.teamSize != null ? g.teamSize : 1);
     render();
   },
+  // ── Bracket Builder matches (migration 012) ──
+  admMatchEditStart: (el) => {
+    S.admMatchEdit = parseInt(el.dataset.slot, 10);
+    S.f.bmTime = el.dataset.time || '';
+    S.f.bmRound = el.dataset.round || '';
+    S.f.bmLane = el.dataset.lane || '';
+    render();
+  },
+  admMatchLanePick: (el) => { S.f.bmLane = S.f.bmLane === el.dataset.lane ? '' : el.dataset.lane; render(); },
+  admMatchCancel: () => { S.admMatchEdit = null; render(); },
+  admMatchSave: (el) => guarded(async () => {
+    const slotId = parseInt(el.dataset.slot, 10);
+    const startMin = parseTimeLabel(S.f.bmTime || '');
+    if (startMin === null) { toast('Enter a time like 2:30 PM'); return; }
+    const rn = parseInt(S.f.bmRound, 10);
+    await api('/ac/games', { method: 'POST', body: {
+      action: 'updateSlot', slotId,
+      startMin, label: minToLabel(startMin),
+      roundNo: Number.isInteger(rn) && rn > 0 ? rn : null,
+      lane: S.f.bmLane || null,
+    } });
+    S.admMatchEdit = null;
+    await loadOverview(true);
+    toast('Match updated');
+  }),
+  admMatchAdd: (el) => guarded(async () => {
+    const gameId = el.dataset.game;
+    const round = parseInt(el.dataset.round, 10) || 1;
+    const lane = el.dataset.lane;
+    const g = (S.overview.gamesCatalog || []).find(x => x.id === gameId) || {};
+    const ts = (g.teamSize && g.teamSize >= 2) ? g.teamSize : 1;
+    // Round-1 matches take sign-ups (2 units of team size); later rounds and
+    // the championship auto-fill from winners, so they hold no sign-up seats.
+    const seed = round === 1 && lane !== 'final';
+    const capBuffalo = seed && lane === 'buffalo' ? ts * 2 : 0;
+    const capRoadhouse = seed && lane === 'roadhouse' ? ts * 2 : 0;
+    const slots = (g.slots || []).slice().sort((a, b) => a.startMin - b.startMin);
+    const startMin = slots.length ? slots[slots.length - 1].startMin + 30 : 720;
+    await api('/ac/games', { method: 'POST', body: {
+      action: 'addSlot', gameId, startMin, label: minToLabel(startMin),
+      capBuffalo, capRoadhouse, roundNo: round, lane,
+    } });
+    await loadOverview(true);
+    toast(lane === 'final' ? 'Championship added — set its time via Edit' : `Round ${round} match added — set its time via Edit`);
+  }),
+  admMatchRemove: (el) => {
+    const signed = parseInt(el.dataset.signed, 10) || 0;
+    const msg = signed > 0
+      ? `Remove this match? ${signed} sign-up${signed === 1 ? '' : 's'} will be removed with it.`
+      : 'Remove this match?';
+    if (!window.confirm(msg)) return;
+    guarded(async () => {
+      await api('/ac/games', { method: 'POST', body: { action: 'removeSlot', slotId: parseInt(el.dataset.slot, 10) } });
+      await loadOverview(true);
+      toast('Match removed');
+    });
+  },
   admGameFlagRef: () => { if (S.admGameEdit) { S.admGameEdit.needsRef = !S.admGameEdit.needsRef; render(); } },
   admGameFlagWalk: () => { if (S.admGameEdit) { S.admGameEdit.openPlay = !S.admGameEdit.openPlay; render(); } },
   admGameFlagH2H: () => { if (S.admGameEdit) { S.admGameEdit.headToHead = !S.admGameEdit.headToHead; render(); } },
@@ -3537,6 +3979,7 @@ const ACTIONS = {
   admBracketOpen: (el) => {
     S.admBracketEdit = { gameId: el.dataset.id };
     S.admRoundEdit = null;
+    S.admMatchEdit = null;
     const g = (S.overview.gamesCatalog || []).find(x => x.id === el.dataset.id);
     S.f.brIntro = g ? (g.bracketIntro || '') : '';
     S.f.brRoundPts = g ? String(g.roundPoints || 0) : '0';
@@ -3709,6 +4152,14 @@ const ACTIONS = {
       toast('Slot deleted');
     });
   },
+  admUnfill: (el) => {
+    if (!window.confirm(`Remove ${el.dataset.name} from the ${el.dataset.label} slot?`)) return;
+    guarded(async () => {
+      await api('/ac/people', { method: 'POST', body: { action: 'unfillSlot', userId: parseInt(el.dataset.uid, 10), slotId: parseInt(el.dataset.slot, 10) } });
+      await loadOverview(true);
+      toast('Removed from the slot');
+    });
+  },
   admFillOpen: (el) => { S.admFillSlot = { slotId: parseInt(el.dataset.slot, 10), gameId: el.dataset.game }; S.f.admFillSearch = ''; render(); },
   admFillCancel: () => { S.admFillSlot = null; S.f.admFillSearch = ''; render(); },
   admFillPick: (el) => guarded(async () => {
@@ -3744,6 +4195,14 @@ const ACTIONS = {
   admHidePeek: () => { S.adminPeek = null; render(); },
   admAskReveal: () => { S.adminConfirmReveal = true; render(); },
   admCancelReveal: () => { S.adminConfirmReveal = false; render(); },
+  admUnreveal: () => {
+    if (!window.confirm('Re-seal the scores? The standings disappear from every phone until you Reveal again.')) return;
+    guarded(async () => {
+      await api('/ac/settings', { method: 'POST', body: { scoresRevealed: false } });
+      await loadOverview(true);
+      toast('Scores re-sealed');
+    });
+  },
   admConfirmReveal: () => guarded(async () => {
     await api('/ac/settings', { method: 'POST', body: { scoresRevealed: true } });
     S.adminConfirmReveal = false;
@@ -3846,12 +4305,19 @@ document.addEventListener('input', (e) => {
     const v = parseInt(el.value, 10);
     S.soloScores[el.dataset.soloscore] = Number.isFinite(v) && v > 0 ? v : 0;
   }
+  // Walk-up matchup builder — per-side score entry. No re-render.
+  if (el.dataset && el.dataset.muscore !== undefined) {
+    const v = parseInt(el.value, 10);
+    S.muScores[el.dataset.muscore] = Number.isFinite(v) && v > 0 ? v : 0;
+  }
   if (el.dataset && el.dataset.walkscore !== undefined) {
     const v = parseInt(el.value, 10);
     S.walkScore = Number.isFinite(v) && v > 0 ? v : 0;
   }
   if (el.dataset && el.dataset.live === 'gameSearch') { S.gameSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'walkSearch') { S.walkSearch = el.value; S.walkPick = null; render(); }
+  if (el.dataset && el.dataset.live === 'muSearchB') { S.muSearch.buffalo = el.value; render(); }
+  if (el.dataset && el.dataset.live === 'muSearchR') { S.muSearch.roadhouse = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admFill') { S.f.admFillSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admIdolSearch') { S.f.admIdolSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admRefSearch') { S.f.admRefSearch = el.value; render(); }
