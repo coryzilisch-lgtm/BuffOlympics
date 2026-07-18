@@ -109,12 +109,50 @@ async function handlePeople(pool, body) {
   if (action === 'fillSlot') {
     // Admin drops a specific person into a specific time slot (ignores caps /
     // overlap / event mode). Powers "Fill slot" in the Games editor and the
-    // slot picker when adding someone to a game from the People tab.
+    // slot picker when adding someone to a game from the People tab. For TEAM
+    // games (migration 011) the person lands in the first team with room, so a
+    // slot builds up as Team 1 / Team 2 … per tribe (BCI-vs-BCI matchups).
     const slotId = parseInt(body.slotId, 10);
     if (!Number.isInteger(slotId)) return json({ error: 'slotId is required' }, 400);
     const sR = await pool.request().input('sid', sql.Int, slotId)
-      .query('SELECT id FROM bo_game_slots WHERE id = @sid');
+      .query('SELECT id, game_id, cap_buffalo, cap_roadhouse FROM bo_game_slots WHERE id = @sid');
     if (!sR.recordset.length) return json({ error: 'That time slot no longer exists' }, 404);
+    const slot = sR.recordset[0];
+
+    // Work out which team to place them in (defensive — pre-011 the columns
+    // don't exist, so teamNo stays null and we do the plain 2-column insert).
+    let teamNo = null;
+    try {
+      const tsR = await pool.request().input('gid', sql.NVarChar, slot.game_id)
+        .query('SELECT TOP 1 team_size FROM bo_games WHERE id = @gid');
+      const ts = tsR.recordset[0] && tsR.recordset[0].team_size;
+      if (ts && ts >= 2) {
+        const uR = await pool.request().input('id', sql.Int, userId)
+          .query('SELECT team FROM bo_users WHERE id = @id');
+        const team = uR.recordset[0] && uR.recordset[0].team;
+        if (team === 'buffalo' || team === 'roadhouse') {
+          const cap = team === 'buffalo' ? slot.cap_buffalo : slot.cap_roadhouse;
+          const numTeams = Math.max(1, Math.floor((cap || 0) / ts));
+          const cR = await pool.request().input('sid', sql.Int, slotId).input('team', sql.NVarChar, team)
+            .query(`SELECT s.team_no AS tn, COUNT(*) AS c
+                    FROM bo_signups s JOIN bo_users u ON u.id = s.user_id
+                    WHERE s.slot_id = @sid AND u.team = @team GROUP BY s.team_no`);
+          const counts = {};
+          for (const r of cR.recordset) counts[(r.tn && r.tn > 0) ? r.tn : 1] = r.c;
+          teamNo = numTeams;   // default to the last team if every team is full
+          for (let t = 1; t <= numTeams; t++) { if ((counts[t] || 0) < ts) { teamNo = t; break; } }
+        }
+      }
+    } catch (e) { teamNo = null; /* pre-011 — no team_size column */ }
+
+    if (teamNo != null) {
+      try {
+        await pool.request().input('uid', sql.Int, userId).input('sid', sql.Int, slotId).input('tn', sql.Int, teamNo)
+          .query(`IF NOT EXISTS (SELECT 1 FROM bo_signups WHERE user_id = @uid AND slot_id = @sid)
+                    INSERT INTO bo_signups (user_id, slot_id, team_no) VALUES (@uid, @sid, @tn);`);
+        return json({ ok: true });
+      } catch (e) { /* team_no column missing — fall through to the plain insert */ }
+    }
     await pool.request()
       .input('uid', sql.Int, userId)
       .input('sid', sql.Int, slotId)
@@ -489,14 +527,17 @@ async function handleGames(pool, body) {
       } catch (e) { /* pre-010 — round points stay dormant */ }
     }
     // team_size is migration 011 — its own defensive UPDATE, same reasoning.
-    // 1 (or blank) = individual game; ≥2 = teams of that size.
+    // 1 (or blank) = individual game; ≥2 = teams of that size. We report whether
+    // it actually persisted so the admin UI can warn "run migration 011" instead
+    // of silently no-op'ing (the column doesn't exist pre-011).
+    let teamSizeSaved = true;
     if (body.teamSize !== undefined) {
       try {
         const ts = parseInt(body.teamSize, 10);
         await pool.request().input('gid', sql.NVarChar, gameId)
           .input('ts', sql.Int, Number.isInteger(ts) && ts >= 1 ? ts : 1)
           .query('UPDATE bo_games SET team_size = @ts WHERE id = @gid');
-      } catch (e) { /* pre-011 — team size stays dormant */ }
+      } catch (e) { teamSizeSaved = false; /* pre-011 — team size can't be stored yet */ }
     }
 
     if (!sets.length && !typeSets.length && body.roundPoints === undefined && body.teamSize === undefined) return json({ error: 'Nothing to update' }, 400);
@@ -508,7 +549,7 @@ async function handleGames(pool, body) {
       try { await typeReq.query(`UPDATE bo_games SET ${typeSets.join(', ')} WHERE id = @gid`); }
       catch (e) { /* migration 009 not run yet — head_to_head / bracket stay dormant */ }
     }
-    return json({ ok: true });
+    return json({ ok: true, ...(body.teamSize !== undefined ? { teamSizeSaved } : {}) });
   }
 
   if (action === 'removeGame') {
