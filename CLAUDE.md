@@ -302,8 +302,9 @@ Refs have **no tribe**, so they skip the pick-your-tribe gate (`render()` guards
     as `type:'solo'`); already-scored people drop off until Changed. The "score anyone not on the
     list" walk-on search now shows **only for walk-up (`open_play`) games**, not every variable game.
 
-Admin still adds/removes refs in **Admin → Referees** (`ref-assign` `{gameId,userId,op}` — chips per
-game); both paths write `bo_ref_assignments`.
+Admin still adds/removes refs in **Admin → Referees** — every game row has a **"+ Add ref"** button
+opening a search over ALL people (not just existing refs); picking a non-ref **auto-promotes** them
+to `is_ref=1` server-side (`ref-assign` `{gameId,userId,op}`). Both paths write `bo_ref_assignments`.
 
 ---
 
@@ -315,8 +316,10 @@ header. `api/lib/auth.js`: `requireUser` (verifies token → user row), `require
 
 - Players: `POST /api/auth/signup {firstName,lastName,email,password,team,...}` (team required) /
   `signin {email,password}`.
-- Refs: `ref-create {username,password,joinCode}` (default code `txrhbuff2026`, admin-editable) /
-  `ref-login`.
+- Refs: `ref-create` takes the SAME profile fields as a player signup minus the tribe
+  ({firstName,lastName,email,password,joinCode,shirtSize,…}; default code `txrhbuff2026`,
+  admin-editable) — the account then signs in via the normal email `signin`. Legacy
+  username-only ref accounts still work via `ref-login`.
 - `ADMIN_EMAILS` app setting = comma-separated emails that get `is_admin` on sign-in.
 - **Admins are NOT refs.** `isRefUser()` in app.js = `!!(u && u.isRef)` only. Admins use the desktop
   Admin Center; refs use the ref board on their phone. Keep them distinct.
