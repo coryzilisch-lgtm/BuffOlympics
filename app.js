@@ -679,6 +679,39 @@ function homeScreen() {
         ${chevR(T.A)}
       </button>`;
 
+  // Game-day "Top scorers" teaser — the leaderboard's top 3 per tribe, right on
+  // Home once results start landing. Taps through to the full Score Room.
+  // Individual points only; team totals stay sealed.
+  const lb = boot.leaderboard || { buffalo: [], roadhouse: [] };
+  const hasLb = (lb.buffalo || []).length || (lb.roadhouse || []).length;
+  const lbTeaser = (isGameDay && hasLb) ? (() => {
+    const col = (team, title, accent) => {
+      const rows = (lb[team] || []).slice(0, 3);
+      return `<div style="flex:1;min-width:0;">
+        <div style="font-size:9.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:${accent};margin-bottom:6px;">${title}</div>
+        ${rows.length ? rows.map((p, i) => `
+        <div style="display:flex;align-items:center;gap:7px;padding:3px 0;">
+          <span style="width:14px;flex-shrink:0;font-family:'BN Kragen';font-size:12px;color:${i === 0 ? accent : th.sub};">${i + 1}</span>
+          <span style="flex:1;min-width:0;font-size:11.5px;font-weight:700;color:${th.text};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(p.name)}</span>
+          <span style="flex-shrink:0;font-family:'BN Kragen';font-size:12.5px;color:${accent};">${p.pts}</span>
+        </div>`).join('') : `<div style="font-size:11px;color:${th.sub};font-style:italic;">No points yet</div>`}
+      </div>`;
+    };
+    return `
+    <div style="padding:12px 18px 0;">
+      <button data-act="go" data-to="score" style="width:100%;background:${th.panel};border:1px solid ${th.panelBorder};border-radius:10px;padding:13px 15px;text-align:left;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:9px;">
+          <span style="font-size:10.5px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:${T.A2};">🏆 Top scorers</span>
+          <span style="display:flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;color:${th.sub};">${lb.myRank ? `You're #${lb.myRank}` : 'Full board'} ${chevR(T.A)}</span>
+        </div>
+        <div style="display:flex;gap:14px;">
+          ${col('buffalo', 'Buffalo', '#FF7F2E')}
+          ${col('roadhouse', 'Texas Roadhouse', '#E0322E')}
+        </div>
+      </button>
+    </div>`;
+  })() : '';
+
   return `
   <div>
     <div style="display:flex;align-items:center;gap:10px;padding:11px 18px;background:${T.dim};border-bottom:1px solid rgba(255,255,255,0.07);">
@@ -779,6 +812,7 @@ function homeScreen() {
     </div>`}
 
     <div style="padding:20px 18px 0;">${scoresCard}</div>
+    ${lbTeaser}
 
     <div style="padding:14px 18px 0;">
       <div style="background:${th.panel};border:1px solid ${th.panelBorder};border-radius:10px;overflow:hidden;">
