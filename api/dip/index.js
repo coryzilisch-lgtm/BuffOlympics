@@ -57,7 +57,8 @@ app.http('dip', {
               END
             COMMIT TRANSACTION;
             SELECT @inserted AS inserted;`);
-        if (!(ins.recordset[0] || {}).inserted) {
+        const dipSets = ins.recordsets && ins.recordsets.length ? ins.recordsets[ins.recordsets.length - 1] : ins.recordset;
+        if (!((dipSets && dipSets[0]) || {}).inserted) {
           return json({ error: `Your tribe already has ${MAX_COOKS_PER_TRIBE} cooks in the Dip Off` }, 409);
         }
       } else {

@@ -98,7 +98,13 @@ async function handleSignup(pool, user, slotId, teamNoRaw) {
         SET NOCOUNT ON;
         SET XACT_ABORT ON;
         BEGIN TRANSACTION;
-          SELECT id FROM bo_game_slots WITH (UPDLOCK, HOLDLOCK) WHERE id = @sid;
+          -- Assignment SELECT: takes the slot-row lock WITHOUT emitting a
+          -- recordset. A bare SELECT here becomes result set #1 and the
+          -- driver's .recordset then reads the LOCK ROW instead of the
+          -- inserted/already flags — every join answered "filled up" even
+          -- though the INSERT committed.
+          DECLARE @lockId INT;
+          SELECT @lockId = id FROM bo_game_slots WITH (UPDLOCK, HOLDLOCK) WHERE id = @sid;
           -- Count with the SAME normalization the display uses: NULL team_no
           -- (admin fills / pre-migration rows) reads as Team 1, and an
           -- out-of-range team_no (cap lowered after sign-ups) clamps into the
@@ -118,7 +124,10 @@ async function handleSignup(pool, user, slotId, teamNoRaw) {
           END
         COMMIT TRANSACTION;
         SELECT @insertedT AS inserted, @alreadyT AS already;`);
-    const rowT = insT.recordset[0] || {};
+    // Read the LAST result set — belt-and-braces against any statement above
+    // accidentally emitting one.
+    const setsT = insT.recordsets && insT.recordsets.length ? insT.recordsets[insT.recordsets.length - 1] : insT.recordset;
+    const rowT = (setsT && setsT[0]) || {};
     if (!rowT.inserted && !rowT.already) {
       return json({ error: `Team ${teamNo} in the ${slot.label} slot just filled up — pick another team or time` }, 409);
     }
@@ -159,7 +168,8 @@ async function handleSignup(pool, user, slotId, teamNoRaw) {
       COMMIT TRANSACTION;
       SELECT @inserted AS inserted, @already AS already;`);
 
-  const row = ins.recordset[0] || {};
+  const setsI = ins.recordsets && ins.recordsets.length ? ins.recordsets[ins.recordsets.length - 1] : ins.recordset;
+  const row = (setsI && setsI[0]) || {};
   if (!row.inserted && !row.already) {
     // Lost the race — someone else took the last spot between our read and write.
     return json({ error: `That ${slot.label} slot just filled up for your tribe — grab another time` }, 409);

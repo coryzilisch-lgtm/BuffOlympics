@@ -65,7 +65,10 @@ app.http('relay', {
           SET NOCOUNT ON;
           SET XACT_ABORT ON;
           BEGIN TRANSACTION;
-            SELECT id FROM bo_relay_legs WITH (UPDLOCK, HOLDLOCK) WHERE id = @lid;
+            -- Assignment SELECT — a bare SELECT would emit result set #1 and
+            -- .recordset would read the lock row instead of the inserted flag.
+            DECLARE @lockId NVARCHAR(10);
+            SELECT @lockId = id FROM bo_relay_legs WITH (UPDLOCK, HOLDLOCK) WHERE id = @lid;
             DECLARE @n INT = (
               SELECT COUNT(*) FROM bo_relay_signups r JOIN bo_users u ON u.id = r.user_id
               WHERE r.leg_id = @lid AND u.team = @team AND r.user_id <> @uid
@@ -79,7 +82,8 @@ app.http('relay', {
             END
           COMMIT TRANSACTION;
           SELECT @inserted AS inserted;`);
-      if (!(ins.recordset[0] || {}).inserted) {
+      const legSets = ins.recordsets && ins.recordsets.length ? ins.recordsets[ins.recordsets.length - 1] : ins.recordset;
+      if (!((legSets && legSets[0]) || {}).inserted) {
         return json({ error: `${leg.name} is full for your tribe` }, 409);
       }
 
