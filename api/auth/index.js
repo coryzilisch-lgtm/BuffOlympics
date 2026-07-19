@@ -60,7 +60,7 @@ async function signup(pool, body) {
     `);
   const user = r.recordset[0];
   if (!user) return json({ error: 'An account with that email already exists' }, 409);
-  return json({ token: signToken(user.id), user: userToJson(user) });
+  return json({ token: signToken(user.id, user.token_version), user: userToJson(user) });
 }
 
 async function signin(pool, body) {
@@ -76,7 +76,7 @@ async function signin(pool, body) {
       .query('UPDATE bo_users SET is_admin = 1 WHERE id = @id');
     user.is_admin = true;
   }
-  return json({ token: signToken(user.id), user: userToJson(user) });
+  return json({ token: signToken(user.id, user.token_version), user: userToJson(user) });
 }
 
 async function refLogin(pool, body) {
@@ -86,7 +86,7 @@ async function refLogin(pool, body) {
   if (!user || !verifyPassword(password, user.password_hash)) {
     return json({ error: 'Invalid username or password' }, 401);
   }
-  return json({ token: signToken(user.id), user: userToJson(user) });
+  return json({ token: signToken(user.id, user.token_version), user: userToJson(user) });
 }
 
 async function refCreate(pool, body) {
@@ -131,7 +131,7 @@ async function refCreate(pool, body) {
       `);
     const user = r.recordset[0];
     if (!user) return json({ error: 'An account with that email already exists' }, 409);
-    return json({ token: signToken(user.id), user: userToJson(user) });
+    return json({ token: signToken(user.id, user.token_version), user: userToJson(user) });
   }
 
   // Legacy username-only path (pre-existing ref accounts sign in via ref-login).
@@ -149,7 +149,7 @@ async function refCreate(pool, body) {
       VALUES (@username, @password_hash, 1, 0);
     `);
   const user = r.recordset[0];
-  return json({ token: signToken(user.id), user: userToJson(user) });
+  return json({ token: signToken(user.id, user.token_version), user: userToJson(user) });
 }
 
 app.http('auth', {

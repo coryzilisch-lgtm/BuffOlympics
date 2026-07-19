@@ -47,7 +47,11 @@ function timingSafeEqualStr(a, b) {
 
 // ── session tokens ─────────────────────────────────────────────────────────
 // base64url(payloadJson) + "." + base64url(hmacSha256(payloadJson, SESSION_SECRET))
-// payload = { uid: <int>, exp: <unix seconds> }
+// payload = { uid: <int>, exp: <unix seconds>, tv: <int token_version> }
+// `tv` (migration 013) must match bo_users.token_version — an admin password
+// reset bumps the column, killing every session issued before the reset.
+// Old tokens carry no tv (reads as 0) and pre-013 rows have no column (also
+// 0), so everything already issued stays valid until a reset touches it.
 
 function getSecret() {
   const secret = process.env.SESSION_SECRET;
@@ -55,8 +59,12 @@ function getSecret() {
   return secret;
 }
 
-function signToken(uid) {
-  const payloadJson = JSON.stringify({ uid, exp: Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS });
+function signToken(uid, tokenVersion) {
+  const payloadJson = JSON.stringify({
+    uid,
+    exp: Math.floor(Date.now() / 1000) + TOKEN_TTL_SECONDS,
+    tv: tokenVersion || 0,
+  });
   const body = Buffer.from(payloadJson, 'utf8').toString('base64url');
   const sig = crypto.createHmac('sha256', getSecret()).update(payloadJson).digest('base64url');
   return `${body}.${sig}`;
@@ -93,7 +101,13 @@ async function identityFromRequest(request) {
   const r = await pool.request()
     .input('id', sql.Int, payload.uid)
     .query('SELECT * FROM bo_users WHERE id = @id');
-  return r.recordset[0] || null;
+  const row = r.recordset[0] || null;
+  // Token-version check (migration 013): a password reset bumps the row's
+  // token_version, so tokens minted before the reset stop matching → 401.
+  // Pre-013 the column is absent (undefined → 0) and old tokens have no tv
+  // (→ 0), so nothing already issued breaks.
+  if (row && (payload.tv || 0) !== (row.token_version || 0)) return null;
+  return row;
 }
 
 // Convenience alias — handlers call this and 401 on null.

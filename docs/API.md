@@ -11,7 +11,7 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 - Auth token is sent in the **`X-Auth-Token`** custom header (NOT `Authorization` — SWA managed
   Functions rewrite the Authorization header).
 - Token format: `base64url(payloadJson) + "." + base64url(hmacSha256(payloadJson, SESSION_SECRET))`
-  where payload = `{ "uid": <int>, "exp": <unix seconds> }`. 30-day expiry. `SESSION_SECRET` is an
+  where payload = `{ "uid": <int>, "exp": <unix seconds>, "tv": <int> }`. 30-day expiry. `tv` must match `bo_users.token_version` (migration 013) — an admin password reset bumps it, invalidating every earlier session; old tokens without `tv` read as 0. `SESSION_SECRET` is an
   SWA app setting.
 - Passwords: PBKDF2-SHA256, 100k iterations, 16-byte random salt, stored as `pbkdf2$100000$<saltB64>$<hashB64>`.
   Use `crypto.timingSafeEqual` for comparisons (including the ref join code).

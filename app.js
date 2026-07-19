@@ -846,13 +846,22 @@ function refBoardScreen() {
     // per-person (non-head-to-head) games that means every signed-up player
     // has a result, not just one of them; head-to-head slots need ≥1 result.
     // Empty slots (nobody signed up) don't block completion.
+    // Count-based (not set-based): two players who RENDER the same ("John S."
+    // twins) each need their own result — one result must not mark both done.
+    const scoredCountsFor = (rs) => {
+      const m = {};
+      for (const r of rs) { const n = (r.playerName || '').trim(); if (n) m[n] = (m[n] || 0) + 1; }
+      return m;
+    };
     const slotDone = (s) => {
       const rs = resultsForSlot(results, s);
       if (st.type !== 'walk') return rs.length > 0;
       const roster = [...(s.buffalo || []), ...(s.roadhouse || [])];
       if (!roster.length) return true;
-      const names = new Set(rs.map(r => (r.playerName || '').trim()).filter(Boolean));
-      return roster.every(n => names.has(n));
+      const sc = scoredCountsFor(rs);
+      const rc = {};
+      for (const n of roster) rc[n] = (rc[n] || 0) + 1;
+      return Object.keys(rc).every(n => (sc[n] || 0) >= rc[n]);
     };
     const allSlots = st.slots || [];
     const nonEmpty = allSlots.filter(s => ((s.buffalo || []).length + (s.roadhouse || []).length) > 0 || resultsForSlot(results, s).length > 0);
@@ -1014,17 +1023,30 @@ function refBoardScreen() {
         // Not head-to-head → variable score, one number PER PERSON. Two people in
         // a slot are scored separately (each is its own logged result). Already-
         // scored people drop off the list until their result is Changed.
+        // Occurrence-based: each PERSON gets a row even when two players render
+        // the same display name — the k-th "John S." is scored once k results
+        // for that name exist. (Results store names, so attribution between
+        // twins is by order — but each still gets their own score.)
         const people = [
           ...((selSlot.buffalo || []).map(n => ({ name: n, team: 'buffalo' }))),
           ...((selSlot.roadhouse || []).map(n => ({ name: n, team: 'roadhouse' }))),
         ];
-        const scoredNames = new Set(slotResults.map(r => (r.playerName || '').trim()).filter(Boolean));
-        const todo = people.filter(p => !scoredNames.has(p.name));
-        const personRow = (p, i) => {
+        const scOcc = scoredCountsFor(slotResults);
+        const rcAll = {};
+        for (const p of people) rcAll[p.name] = (rcAll[p.name] || 0) + 1;
+        const seenOcc = {};
+        const todo = people.filter(p => {
+          seenOcc[p.name] = (seenOcc[p.name] || 0) + 1;
+          p.occ = seenOcc[p.name];
+          p.key = `${p.name}#${p.occ}`;
+          p.dup = rcAll[p.name] > 1;
+          return p.occ > (scOcc[p.name] || 0);
+        });
+        const personRow = (p) => {
           const c = teamColor(p.team);
           return `<div style="display:flex;align-items:center;gap:12px;background:rgba(255,255,255,0.03);border:1px solid ${th.line};border-radius:9px;padding:11px 13px;">
-            <div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}</div><div style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};margin-top:2px;">${teamLabel(p.team)}</div></div>
-            <input id="solo-${selSlot.id}-${esc(p.name).replace(/[^a-z0-9]/gi, '_')}" data-soloscore="${esc(p.name)}" data-team="${esc(p.team)}" value="${S.soloScores[p.name] || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:74px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:9px 8px;color:${th.text};font-family:'BN Kragen';font-size:18px;outline:none;"/>
+            <div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}${p.dup ? ` <span style="font-size:10px;color:${th.sub};">(${p.occ} of ${rcAll[p.name]} with this name)</span>` : ''}</div><div style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};margin-top:2px;">${teamLabel(p.team)}</div></div>
+            <input id="solo-${selSlot.id}-${esc(p.key).replace(/[^a-z0-9]/gi, '_')}" data-soloscore="${esc(p.key)}" data-team="${esc(p.team)}" value="${S.soloScores[p.key] || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:74px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:9px 8px;color:${th.text};font-family:'BN Kragen';font-size:18px;outline:none;"/>
           </div>`;
         };
         scorer = `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>`;
@@ -3812,12 +3834,22 @@ const ACTIONS = {
     ];
     // Submit only people who are still UNSCORED — another ref may have logged
     // someone since this screen rendered, and a leftover S.soloScores value
-    // for them would silently double-score.
+    // for them would silently double-score. Occurrence-keyed (name#k) so
+    // display-name twins each carry their own score.
     const st2 = (S.boot.refResults || []).filter(r => r.game === st.name);
-    const doneNames = new Set(resultsForSlot(st2, slot).map(r => (r.playerName || '').trim()).filter(Boolean));
+    const doneCounts = {};
+    for (const r of resultsForSlot(st2, slot)) {
+      const n = (r.playerName || '').trim();
+      if (n) doneCounts[n] = (doneCounts[n] || 0) + 1;
+    }
+    const occ = {};
     const entries = people
-      .filter(p => !doneNames.has(p.name))
-      .map(p => ({ name: p.name, team: p.team, score: S.soloScores[p.name] || 0 }))
+      .filter(p => {
+        occ[p.name] = (occ[p.name] || 0) + 1;
+        p.key = `${p.name}#${occ[p.name]}`;
+        return occ[p.name] > (doneCounts[p.name] || 0);
+      })
+      .map(p => ({ name: p.name, team: p.team, score: S.soloScores[p.key] || 0 }))
       .filter(e => e.score > 0);
     if (!entries.length) { toast('Enter a score for at least one player'); return; }
     await api('/results', { method: 'POST', body: {

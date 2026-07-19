@@ -60,6 +60,13 @@ async function handlePeople(pool, body) {
       .input('id', sql.Int, userId)
       .input('pw', sql.NVarChar, hashPassword(pw))
       .query('UPDATE bo_users SET password_hash = @pw WHERE id = @id');
+    // Kick every existing session for this account (migration 013): tokens
+    // carry the old token_version and stop matching. Defensive pre-013 —
+    // the reset still works, old sessions just aren't invalidated yet.
+    try {
+      await pool.request().input('id', sql.Int, userId)
+        .query('UPDATE bo_users SET token_version = ISNULL(token_version, 0) + 1 WHERE id = @id');
+    } catch (e) { /* pre-013 — no token_version column */ }
     return json({ ok: true });
   }
 
