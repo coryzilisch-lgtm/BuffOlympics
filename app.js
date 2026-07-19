@@ -550,7 +550,7 @@ function authScreen() {
   <div class="scrl" style="min-height:100vh;min-height:100dvh;background:#00141F;overflow-y:auto;overflow-x:hidden;position:relative;">
     <img src="/assets/logos/buffalo-white.png" alt="" style="position:absolute;right:-70px;top:30px;width:300px;opacity:0.05;pointer-events:none;"/>
     <div style="position:absolute;inset:0;background:radial-gradient(420px 300px at 50% 6%, rgba(255,95,0,0.16), transparent 70%);pointer-events:none;"></div>
-    <div style="position:relative;min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;padding:58px 24px 32px;max-width:440px;margin:0 auto;">
+    <div style="position:relative;min-height:100vh;min-height:100dvh;display:flex;flex-direction:column;padding:calc(34px + env(safe-area-inset-top, 24px)) 24px 32px;max-width:440px;margin:0 auto;">
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:22px;">
         <img src="/assets/logos/buffalo-orange.png" alt="" style="height:24px;width:auto;"/>
         <div style="line-height:1;">
@@ -3313,7 +3313,7 @@ function topBar() {
   const T = theme();
   const back = BACK_ROUTES[S.route];
   return `
-  <div style="height:54px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:0 18px;border-bottom:1px solid rgba(255,255,255,0.07);position:relative;z-index:20;background:${T.th.bar};">
+  <div style="min-height:54px;flex-shrink:0;display:flex;align-items:center;justify-content:space-between;padding:env(safe-area-inset-top, 0px) 18px 0;border-bottom:1px solid rgba(255,255,255,0.07);position:relative;z-index:20;background:${T.th.bar};">
     ${back ? `
     <button data-act="go" data-to="${back}" style="display:flex;align-items:center;gap:6px;color:#8AA7B9;font-size:13px;font-weight:600;">
       ${chevL(T.A)}
@@ -3334,7 +3334,7 @@ function tabBar() {
   const activeTab = S.route === 'game' ? 'games' : (['dip', 'dip-vote', 'relay'].includes(S.route) ? 'home' : S.route);
   const tc = k => k === activeTab ? T.A : th.tabIdle;
   return `
-  <div style="height:74px;flex-shrink:0;background:${th.bar};border-top:1px solid rgba(255,255,255,0.09);display:flex;align-items:flex-start;padding:9px 6px 0;position:relative;z-index:20;">
+  <div style="min-height:74px;flex-shrink:0;background:${th.bar};border-top:1px solid rgba(255,255,255,0.09);display:flex;align-items:flex-start;padding:9px 6px env(safe-area-inset-bottom, 0px);position:relative;z-index:20;">
     <button data-act="go" data-to="home" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;color:${tc('home')};">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M3 11l9-7 9 7M5 9.5V20h5v-6h4v6h5V9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span style="font-size:10px;font-weight:700;">Home</span>
