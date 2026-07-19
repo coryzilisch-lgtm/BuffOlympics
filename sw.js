@@ -1,5 +1,5 @@
 /* Buff Olympics service worker — precache the app shell, network-first for API. */
-const CACHE = 'buffolympics-v16';
+const CACHE = 'buffolympics-v17';   // v17: bigger-buffalo home-screen icons
 const SHELL = [
   '/',
   '/index.html',
