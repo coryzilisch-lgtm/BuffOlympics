@@ -232,7 +232,13 @@ async function buildBootstrap(pool, user, opts = {}) {
     pool.request().input('uid', sql.Int, uid)
       .query('SELECT dip_entry_id FROM bo_dip_votes WHERE user_id = @uid'),
     pool.request().input('pname', sql.NVarChar, myName)
-      .query('SELECT game_name, detail, pts FROM bo_results WHERE player_name = @pname ORDER BY created_at DESC, id DESC'),
+      .query(`
+        SELECT game_name, detail, pts FROM bo_results
+        WHERE player_name = @pname
+           OR player_name LIKE @pname + ' & %'
+           OR player_name LIKE '% & ' + @pname
+           OR player_name LIKE '% & ' + @pname + ' & %'
+        ORDER BY created_at DESC, id DESC`),
   ]);
 
   const settings = settingsFromRows(settingsR.recordset);
@@ -278,7 +284,10 @@ async function buildBootstrap(pool, user, opts = {}) {
   // buffalo/roadhouse name arrays are kept unchanged for back-compat.
   const buildTeams = (names, nos, cap, ts) => {
     if (!ts || ts < 2) return null;
-    const numTeams = Math.max(1, Math.floor((cap || 0) / ts));
+    // No seats for this tribe → no teams (a 0-cap lane slot must not render a
+    // phantom "Team 1" for the tribe that isn't in it).
+    if (!cap || cap <= 0) return [];
+    const numTeams = Math.max(1, Math.floor(cap / ts));
     const teams = Array.from({ length: numTeams }, () => []);
     names.forEach((nm, i) => {
       let no = nos && nos[i] > 0 ? nos[i] : 1;
@@ -308,6 +317,9 @@ async function buildBootstrap(pool, user, opts = {}) {
       roundNo: (slotBracketById[s.id] || {}).roundNo ?? null,   // migration 012 — bracket match round
       lane: (slotBracketById[s.id] || {}).lane || null,         // 'buffalo' | 'roadhouse' | 'final' | null
       mine: mySlotIds.has(s.id),
+      // Which team (1-based) the CALLER joined in this slot — identity-based,
+      // so display-name twins can't make the UI think you're on their team.
+      myTeamNo: mySlotIds.has(s.id) ? (teamNoBySignup[`${s.id}:${uid}`] || 1) : null,
     });
   }
 
@@ -324,6 +336,20 @@ async function buildBootstrap(pool, user, opts = {}) {
     } : null;
   }).filter(Boolean).sort((a, b) => a.startMin - b.startMin);
 
+  // Tribe privacy is enforced SERVER-side: plain players never receive the
+  // other tribe's slot rosters (the UI hides them, but the payload must not
+  // leak them either — dev tools would show every pick). Refs and admins need
+  // both sides (scoring / admin views), so they get the full slots.
+  const isRefOrAdmin = !!(user.is_ref || user.is_admin);
+  const stripOtherTribe = (s) => {
+    if (isRefOrAdmin || !myTeam) return s;
+    const other = myTeam === 'buffalo' ? 'roadhouse' : 'buffalo';
+    return {
+      ...s,
+      [other]: [],
+      [other + 'Teams']: s[other + 'Teams'] ? s[other + 'Teams'].map(() => []) : s[other + 'Teams'],
+    };
+  };
   const games = gamesR.recordset.map(g => {
     const gt = gameTypeById[g.id] || {};
     return {
@@ -344,7 +370,7 @@ async function buildBootstrap(pool, user, opts = {}) {
       descr: g.descr || '',
       inventory: g.inventory || '',
       videoUrl: g.video_url || '',
-      slots: slotsByGame[g.id] || [],
+      slots: (slotsByGame[g.id] || []).map(stripOtherTribe),
       mySlotId: (slotsByGame[g.id] || []).find(s => s.mine)?.id ?? null,
       mine: (slotsByGame[g.id] || []).some(s => s.mine),
     };
@@ -458,18 +484,23 @@ async function buildBootstrap(pool, user, opts = {}) {
         if (byTeam[r.winner]) byTeam[r.winner].push({ name: r.player_name, pts: r.pts });
       }
       for (const t of ['buffalo', 'roadhouse']) byTeam[t].sort((a, b) => b.pts - a.pts || a.name.localeCompare(b.name));
-      const rankIn = (list, name) => {
-        const me = list.find(x => x.name === name);
-        if (!me) return null;
-        return 1 + list.filter(x => x.pts > me.pts).length;
-      };
+      // A pair entry ("A & B") involves both members — team-game winners see
+      // their pair points as their own instead of "No points yet".
+      const involves = (entryName, name) => entryName === name || entryName.split(' & ').includes(name);
       const mine = myTeam ? byTeam[myTeam] : null;
-      const myEntryRow = mine ? mine.find(x => x.name === myName) : null;
+      let myRank = null, myPts = 0;
+      if (mine) {
+        const myRows = mine.filter(x => involves(x.name, myName));
+        if (myRows.length) {
+          myPts = myRows.reduce((a, x) => a + x.pts, 0);
+          myRank = 1 + mine.filter(x => !involves(x.name, myName) && x.pts > myPts).length;
+        }
+      }
       return {
         buffalo: byTeam.buffalo.slice(0, 10),
         roadhouse: byTeam.roadhouse.slice(0, 10),
-        myRank: mine ? rankIn(mine, myName) : null,
-        myPts: myEntryRow ? myEntryRow.pts : 0,
+        myRank,
+        myPts,
         tribeCount: mine ? mine.length : 0,
       };
     })(),
@@ -547,18 +578,18 @@ async function buildBootstrap(pool, user, opts = {}) {
     let refResultsR;
     try {
       refResultsR = await pool.request().query(`
-        SELECT TOP 300 id, game_name, detail, winner, pts, player_name,
+        SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
                entered_by, entered_by_id, slot_label, round_label, slot_id, created_at
         FROM bo_results ORDER BY created_at DESC, id DESC`);
     } catch (e012) {
       try {
         refResultsR = await pool.request().query(`
-          SELECT TOP 300 id, game_name, detail, winner, pts, player_name,
+          SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
                  entered_by, entered_by_id, slot_label, round_label, created_at
           FROM bo_results ORDER BY created_at DESC, id DESC`);
       } catch (e) {
         refResultsR = await pool.request().query(`
-          SELECT TOP 300 id, game_name, detail, winner, pts, player_name,
+          SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
                  entered_by, entered_by_id, created_at
           FROM bo_results ORDER BY created_at DESC, id DESC`);
       }

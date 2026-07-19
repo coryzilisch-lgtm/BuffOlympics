@@ -14,6 +14,12 @@ app.http('relay', {
       const pool = await getPool();
 
       if (request.method === 'DELETE') {
+        // Leaving is a sign-up-phase action too — on game day the roster is
+        // locked BOTH ways (a leave can't be undone once joins are locked).
+        const delSettings = await getSettings(pool);
+        if (delSettings.eventMode !== 'signup') {
+          return json({ error: 'The relay roster is locked on game day' }, 409);
+        }
         await pool.request()
           .input('uid', sql.Int, user.id)
           .query('DELETE FROM bo_relay_signups WHERE user_id = @uid');
@@ -46,23 +52,36 @@ app.http('relay', {
         return json({ bootstrap: await buildBootstrap(pool, user, { fresh: true }) });
       }
 
-      const countR = await pool.request()
-        .input('lid', sql.NVarChar, leg.id)
-        .input('team', sql.NVarChar, user.team)
-        .query(`
-          SELECT COUNT(*) AS n
-          FROM bo_relay_signups r JOIN bo_users u ON u.id = r.user_id
-          WHERE r.leg_id = @lid AND u.team = @team`);
-      if (countR.recordset[0].n >= leg.cap) {
-        return json({ error: `${leg.name} is full for your tribe` }, 409);
-      }
-
-      await pool.request()
+      // ATOMIC capacity guard — same discipline as game-slot sign-ups: lock the
+      // leg row, recount under the lock, insert only if there's room. A plain
+      // count-then-insert lets two simultaneous joins both see cap-1 and both
+      // land (oversold leg).
+      const ins = await pool.request()
         .input('uid', sql.Int, user.id)
         .input('lid', sql.NVarChar, leg.id)
+        .input('team', sql.NVarChar, user.team)
+        .input('cap', sql.Int, leg.cap)
         .query(`
-          DELETE FROM bo_relay_signups WHERE user_id = @uid;
-          INSERT INTO bo_relay_signups (user_id, leg_id) VALUES (@uid, @lid);`);
+          SET NOCOUNT ON;
+          SET XACT_ABORT ON;
+          BEGIN TRANSACTION;
+            SELECT id FROM bo_relay_legs WITH (UPDLOCK, HOLDLOCK) WHERE id = @lid;
+            DECLARE @n INT = (
+              SELECT COUNT(*) FROM bo_relay_signups r JOIN bo_users u ON u.id = r.user_id
+              WHERE r.leg_id = @lid AND u.team = @team AND r.user_id <> @uid
+            );
+            DECLARE @inserted INT = 0;
+            IF @n < @cap
+            BEGIN
+              DELETE FROM bo_relay_signups WHERE user_id = @uid;
+              INSERT INTO bo_relay_signups (user_id, leg_id) VALUES (@uid, @lid);
+              SET @inserted = 1;
+            END
+          COMMIT TRANSACTION;
+          SELECT @inserted AS inserted;`);
+      if (!(ins.recordset[0] || {}).inserted) {
+        return json({ error: `${leg.name} is full for your tribe` }, 409);
+      }
 
       return json({ bootstrap: await buildBootstrap(pool, user, { fresh: true }) });
     } catch (err) {

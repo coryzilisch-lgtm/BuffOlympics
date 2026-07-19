@@ -84,6 +84,8 @@ infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
                              winners, lane 'final' = championship) + bo_results.slot_id (results pin
                              to ONE slot — fixes two same-time matches both marking Scored). RUN IN
                              TWO STEPS like 009; Part 2 backfills round 1 lanes from caps.
+  013_token_version.sql    — bo_users.token_version: admin password reset bumps it, killing every
+                             session token issued before the reset (tokens carry `tv`). One step.
 scripts/
   concurrency-loadtest.js  — proves the atomic slot guard against a live deploy (Node 18+, no deps)
   loadtest-crowd.js        — realistic crowd load test: read stampede + sign-up burst + sustained
@@ -453,6 +455,21 @@ marks), bracket rounds stay advancement-only, and idol points stay dormant; **pr
 an individual game** (`team_size` defaults to 1, `team_no` ignored) — the team sign-up/scoring UI
 only appears once a game's `team_size` is set to ≥2 (run 011, then set it in the Games editor). Edit
 the game lineup only via the admin editor — never re-run 002 (it wipes sign-ups).
+
+Bug-sweep invariants (July 2026 audit — don't regress): game NAMES are unique and a rename carries
+`bo_results.game_name` along (results/ref state key on name; points lookups prefer `gameId`);
+tribe privacy is enforced SERVER-side (players' bootstrap strips the other tribe's slot rosters);
+game-day locks cancels/leaves too (signups DELETE, relay DELETE); dip/relay joins use the same
+atomic UPDLOCK guard as slots; `refResults` caps at TOP 2000 (never lower it — absent rows read as
+"unscored" and refs re-log points); `insertResult` falls back ONLY on SQL error 207 (missing
+column); per-person games count a slot Scored only when EVERY player is scored; pair results
+("A & B") credit both members in myResults/leaderboard; team membership in the sign-up UI comes
+from `slot.myTeamNo` (identity), not display-name matching; **resetPassword bumps
+`bo_users.token_version` (migration 013)** — tokens carry `tv` and every session from before the
+reset dies (defensive pre-013: reset works, old sessions just survive); **namesake twins** each get
+their own occurrence-keyed (`name#k`) score row on the per-person ref board and completeness is
+count-based, so one result can't mark two same-named players done (result rows still store names,
+so attribution between twins is by order — totals stay right).
 
 Open ideas / not built: overlap indicator on the games list (grey out games that clash with an
 existing pick — scoped but not built); email/notifications; richer mobile polish. Nothing blocking.

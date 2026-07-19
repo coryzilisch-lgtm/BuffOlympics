@@ -251,14 +251,18 @@ function slotState(slot, g) {
 function gameSummary(g) {
   const team = myTeamKey();
   const slots = g.slots || [];
-  let cap = 0, filled = 0, mineLabel = null;
+  let cap = 0, filled = 0, mineLabel = null, mySlotCount = 0;
   for (const s of slots) {
-    cap += team === 'buffalo' ? s.capBuffalo : s.capRoadhouse;
+    const myCap = team === 'buffalo' ? s.capBuffalo : s.capRoadhouse;
+    if (myCap > 0) mySlotCount++;
+    cap += myCap;
     filled += (team === 'buffalo' ? s.buffalo : s.roadhouse).length;
     if (s.mine) mineLabel = s.label;
   }
   return {
-    openPlay: !!g.openPlay, hasSlots: slots.length > 0,
+    // hasSlots / the card's slot count reflect MY tribe's slots only — the
+    // other tribe's lanes aren't shown to me anywhere in the player app.
+    openPlay: !!g.openPlay, hasSlots: mySlotCount > 0, mySlotCount,
     cap, filled, open: Math.max(0, cap - filled), mine: !!mineLabel, mineLabel,
   };
 }
@@ -319,11 +323,17 @@ function bracketMatches(st, results) {
     let units = [], waiting = null, seeded = false;
     if (lane === 'final') {
       for (const tl of ['buffalo', 'roadhouse']) {
-        const prior = laneRounds(tl).filter(r => r < s.roundNo);
-        const srcs = prior.length ? (group[tl + '|' + prior[prior.length - 1]] || []) : [];
-        const ws = srcs.map(winnerOf).filter(Boolean);
+        // A tribe's feeder round can be its own lane OR a lane-less "both"
+        // round (legacy dual slots) — take the latest of either and, for a
+        // "both" source, keep only this tribe's winners.
+        const prior = [...laneRounds(tl), ...laneRounds('both')].filter(r => r < s.roundNo).sort((a, b) => a - b);
+        const last = prior.length ? prior[prior.length - 1] : null;
+        const srcs = last != null
+          ? [...(group[tl + '|' + last] || []), ...(group['both|' + last] || [])]
+          : [];
+        const ws = srcs.map(winnerOf).filter(Boolean).filter(w => w.team === tl);
         if (ws.length) units.push(...ws);
-        if (!srcs.length || ws.length < srcs.length) {
+        if (!srcs.length || !ws.length) {
           waiting = waiting || `Waiting on the ${tl === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'} bracket winner`;
         }
       }
@@ -832,10 +842,30 @@ function refBoardScreen() {
     // Everything already logged for this game — powers the "Scored" marks,
     // the logged-result panels, the bracket engine, and the all-scored state.
     const results = (S.boot.refResults || []).filter(r => r.game === st.name);
-    // A fixed-time game whose every slot has at least one logged result is DONE
-    // — the whole box goes green so refs can see what's left at a glance.
+    // A fixed-time game is DONE when every slot is FULLY scored — for
+    // per-person (non-head-to-head) games that means every signed-up player
+    // has a result, not just one of them; head-to-head slots need ≥1 result.
+    // Empty slots (nobody signed up) don't block completion.
+    // Count-based (not set-based): two players who RENDER the same ("John S."
+    // twins) each need their own result — one result must not mark both done.
+    const scoredCountsFor = (rs) => {
+      const m = {};
+      for (const r of rs) { const n = (r.playerName || '').trim(); if (n) m[n] = (m[n] || 0) + 1; }
+      return m;
+    };
+    const slotDone = (s) => {
+      const rs = resultsForSlot(results, s);
+      if (st.type !== 'walk') return rs.length > 0;
+      const roster = [...(s.buffalo || []), ...(s.roadhouse || [])];
+      if (!roster.length) return true;
+      const sc = scoredCountsFor(rs);
+      const rc = {};
+      for (const n of roster) rc[n] = (rc[n] || 0) + 1;
+      return Object.keys(rc).every(n => (sc[n] || 0) >= rc[n]);
+    };
     const allSlots = st.slots || [];
-    const allScored = !st.openPlay && allSlots.length > 0 && allSlots.every(s => resultsForSlot(results, s).length > 0);
+    const nonEmpty = allSlots.filter(s => ((s.buffalo || []).length + (s.roadhouse || []).length) > 0 || resultsForSlot(results, s).length > 0);
+    const allScored = !st.openPlay && nonEmpty.length > 0 && allSlots.every(slotDone);
     // "Open all day" tracks walk-up scheduling (open_play), independent of scoring style.
     const statusLabel = allScored ? 'All slots scored' : (st.openPlay ? 'Open all day' : 'On station');
     const statusColor = (allScored || st.openPlay) ? green : T.A;
@@ -921,8 +951,11 @@ function refBoardScreen() {
             const on = String(s.id) === String(selId);
             const buf = s.buffalo || [], road = s.roadhouse || [];
             const n = buf.length + road.length;
-            const scored = resultsForSlot(results, s).length > 0;
-            const summ = n ? [buf.length ? `Buffalo: ${esc(buf.join(', '))}` : '', road.length ? `TXRH: ${esc(road.join(', '))}` : ''].filter(Boolean).join('  ·  ') : 'No players signed up';
+            // Per-person stations only earn the SCORED badge when EVERYONE in
+            // the slot is scored (one result out of four isn't "scored").
+            const scored = isWalk ? (n > 0 && slotDone(s)) : resultsForSlot(results, s).length > 0;
+            const partial = isWalk && !scored ? resultsForSlot(results, s).filter(r => r.playerName).length : 0;
+            const summ = n ? [buf.length ? `Buffalo: ${esc(buf.join(', '))}` : '', road.length ? `TXRH: ${esc(road.join(', '))}` : ''].filter(Boolean).join('  ·  ') + (partial ? `  ·  ${partial}/${n} scored` : '') : 'No players signed up';
             return `<button data-act="refSelectSlot" data-game="${esc(st.gameId)}" data-slot="${s.id}" style="text-align:left;border-radius:9px;padding:11px 12px;border:1px solid ${on ? T.A : (scored ? 'rgba(63,191,135,0.5)' : th.line)};background:${on ? T.dim : 'rgba(255,255,255,0.03)'};">
               <div style="display:flex;align-items:center;gap:8px;"><span style="font-family:'BN Kragen';font-size:15px;color:${on ? T.A : th.text};">${esc(s.label)}</span>${scored ? `<span style="display:inline-flex;align-items:center;gap:3px;font-size:9px;font-weight:800;color:${green};border:1px solid ${green};border-radius:4px;padding:1px 6px;">${checkSvg(green, 9, 3)}SCORED</span>` : ''}${on ? `<span style="font-size:9px;font-weight:800;color:${T.on};background:${T.A};border-radius:4px;padding:1px 6px;">SCORING</span>` : ''}</div>
               <div style="font-size:11px;color:${th.sub};margin-top:3px;">${summ}</div>
@@ -990,17 +1023,30 @@ function refBoardScreen() {
         // Not head-to-head → variable score, one number PER PERSON. Two people in
         // a slot are scored separately (each is its own logged result). Already-
         // scored people drop off the list until their result is Changed.
+        // Occurrence-based: each PERSON gets a row even when two players render
+        // the same display name — the k-th "John S." is scored once k results
+        // for that name exist. (Results store names, so attribution between
+        // twins is by order — but each still gets their own score.)
         const people = [
           ...((selSlot.buffalo || []).map(n => ({ name: n, team: 'buffalo' }))),
           ...((selSlot.roadhouse || []).map(n => ({ name: n, team: 'roadhouse' }))),
         ];
-        const scoredNames = new Set(slotResults.map(r => (r.playerName || '').trim()).filter(Boolean));
-        const todo = people.filter(p => !scoredNames.has(p.name));
-        const personRow = (p, i) => {
+        const scOcc = scoredCountsFor(slotResults);
+        const rcAll = {};
+        for (const p of people) rcAll[p.name] = (rcAll[p.name] || 0) + 1;
+        const seenOcc = {};
+        const todo = people.filter(p => {
+          seenOcc[p.name] = (seenOcc[p.name] || 0) + 1;
+          p.occ = seenOcc[p.name];
+          p.key = `${p.name}#${p.occ}`;
+          p.dup = rcAll[p.name] > 1;
+          return p.occ > (scOcc[p.name] || 0);
+        });
+        const personRow = (p) => {
           const c = teamColor(p.team);
           return `<div style="display:flex;align-items:center;gap:12px;background:rgba(255,255,255,0.03);border:1px solid ${th.line};border-radius:9px;padding:11px 13px;">
-            <div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}</div><div style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};margin-top:2px;">${teamLabel(p.team)}</div></div>
-            <input id="solo-${i}" data-soloscore="${esc(p.name)}" data-team="${esc(p.team)}" value="${S.soloScores[p.name] || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:74px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:9px 8px;color:${th.text};font-family:'BN Kragen';font-size:18px;outline:none;"/>
+            <div style="flex:1;min-width:0;"><div style="font-size:13.5px;font-weight:700;color:${th.text};">${esc(p.name)}${p.dup ? ` <span style="font-size:10px;color:${th.sub};">(${p.occ} of ${rcAll[p.name]} with this name)</span>` : ''}</div><div style="font-size:10px;font-weight:800;text-transform:uppercase;color:${c};margin-top:2px;">${teamLabel(p.team)}</div></div>
+            <input id="solo-${selSlot.id}-${esc(p.key).replace(/[^a-z0-9]/gi, '_')}" data-soloscore="${esc(p.key)}" data-team="${esc(p.team)}" value="${S.soloScores[p.key] || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:74px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:9px 8px;color:${th.text};font-family:'BN Kragen';font-size:18px;outline:none;"/>
           </div>`;
         };
         scorer = `<div style="height:1px;background:${th.line};margin:16px 0 14px;"></div>`;
@@ -1152,7 +1198,7 @@ function refBoardScreen() {
           };
           action = `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin:12px 0 8px;">Who won? Winner earns ${winPts} pts</div><div style="display:flex;gap:9px;">${winBtn('buffalo')}${winBtn('roadhouse')}</div><button data-act="muSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:12px;background:${S.muWinner ? T.A : 'rgba(255,255,255,0.08)'};color:${S.muWinner ? T.on : th.sub};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">${S.muWinner ? `Log ${S.muWinner === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'} win · +${winPts} pts` : 'Tap the winning side first'}</button>`;
         } else if (full) {
-          action = `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin:12px 0 8px;">Enter each side's score</div><div style="display:flex;gap:9px;">${['buffalo', 'roadhouse'].map(tm => `<div style="flex:1;border:1px solid ${th.line};border-radius:10px;padding:10px;background:rgba(255,255,255,0.03);"><div style="font-size:10px;font-weight:800;text-transform:uppercase;color:${teamColor(tm)};">${teamLabel(tm)}</div><input data-muscore="${tm}" value="${S.muScores[tm] || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:100%;margin-top:7px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:8px;color:${th.text};font-family:'BN Kragen';font-size:18px;outline:none;"/></div>`).join('')}</div><button data-act="muSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:12px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Save matchup scores</button>`;
+          action = `<div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:${T.A};margin:12px 0 8px;">Enter each side's score</div><div style="display:flex;gap:9px;">${['buffalo', 'roadhouse'].map(tm => `<div style="flex:1;border:1px solid ${th.line};border-radius:10px;padding:10px;background:rgba(255,255,255,0.03);"><div style="font-size:10px;font-weight:800;text-transform:uppercase;color:${teamColor(tm)};">${teamLabel(tm)}</div><input id="mu-score-${tm}" data-muscore="${tm}" value="${S.muScores[tm] || ''}" inputmode="numeric" pattern="[0-9]*" placeholder="0" style="width:100%;margin-top:7px;text-align:center;background:rgba(255,255,255,0.06);border:1px solid ${th.line};border-radius:8px;padding:8px;color:${th.text};font-family:'BN Kragen';font-size:18px;outline:none;"/></div>`).join('')}</div><button data-act="muSubmit" data-game="${esc(st.gameId)}" style="width:100%;margin-top:12px;background:${T.A};color:${T.on};font-weight:800;font-size:14px;text-align:center;padding:13px;border-radius:8px;">Save matchup scores</button>`;
         } else {
           action = `<div style="margin-top:10px;font-size:11.5px;color:${th.sub};">Fill both sides (${need} per team) to score the matchup.</div>`;
         }
@@ -1259,7 +1305,7 @@ function gamesScreen() {
         <div style="display:flex;gap:10px;margin-top:7px;flex-wrap:wrap;align-items:center;">
           <span style="font-size:11.5px;color:${T.A};font-weight:700;">${esc(g.runtimeLabel || '')}</span>
           ${g.venue ? `<span style="font-size:11.5px;color:${th.sub};">${esc(g.venue)}</span>` : ''}
-          ${gm.hasSlots ? `<span style="font-size:11.5px;color:${th.sub};">${g.slots.length} slots</span>` : ''}
+          ${gm.hasSlots ? `<span style="font-size:11.5px;color:${th.sub};">${gm.mySlotCount} slots</span>` : ``}
           ${bracketFor(g) ? `<span style="font-size:10px;font-weight:800;letter-spacing:0.03em;text-transform:uppercase;color:#F5C518;border:1px solid rgba(245,197,24,0.5);border-radius:5px;padding:2px 6px;">🏆 Bracket</span>` : ''}
         </div>
       </div>
@@ -1310,8 +1356,6 @@ function slotRowHtml(g, slot) {
   const ss = slotState(slot, g);
   const team = myTeamKey();
   const myLabel = team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse';
-  const otherLabel = team === 'buffalo' ? 'Texas Roadhouse' : 'Buffalo';
-  const otherColor = team === 'buffalo' ? '#E0322E' : '#FF7F2E';
 
   // Team games (migration 011): the slot is split into Team 1 / Team 2 … per
   // tribe. The player joins a SPECIFIC team — that's how partners are chosen.
@@ -1320,10 +1364,18 @@ function slotRowHtml(g, slot) {
     const mode = S.boot.settings.eventMode;
     const myName = (S.boot.user && S.boot.user.name) || '';
     const myTeams = slotUnits(slot, team);
-    const otherTeams = slotUnits(slot, team === 'buffalo' ? 'roadhouse' : 'buffalo');
-    const mineIdx = myTeams.findIndex(u => u.members.includes(myName));
-    const myTeamNo = mineIdx >= 0 ? myTeams[mineIdx].teamNo : null;
-    const inThisSlot = myTeamNo != null || ss.st === 'signed';
+    // My team number comes from the payload (identity-based) — matching by
+    // display name would confuse two players who render the same "First L."
+    let myTeamNo = null;
+    if (slot.mine) {
+      myTeamNo = slot.myTeamNo || null;
+      if (myTeamNo != null && myTeamNo > myTeams.length) myTeamNo = myTeams.length || null;
+      if (myTeamNo == null) {   // older payload — name-match fallback
+        const mineIdx = myTeams.findIndex(u => u.members.includes(myName));
+        myTeamNo = mineIdx >= 0 ? myTeams[mineIdx].teamNo : null;
+      }
+    }
+    const inThisSlot = slot.mine || ss.st === 'signed';
     const gateLabel = ss.st === 'max' ? `Your ${signupMax()} slots are full`
       : ss.st === 'conflict' ? 'Overlaps a pick'
       : mode === 'gameday' ? 'Locked'
@@ -1344,13 +1396,10 @@ function slotRowHtml(g, slot) {
         </div>
       </div>`;
     };
-    const otherFilled = otherTeams.reduce((a, u) => a + u.members.length, 0);
+    // Only MY tribe's teams show — the other tribe's selections stay theirs.
     return `
     <div style="background:${slot.mine ? T.dim : 'rgba(255,255,255,0.04)'};border:1px solid ${slot.mine ? T.A : th.line};border-radius:10px;padding:12px 14px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-        <div style="font-family:'BN Kragen';font-size:17px;color:${th.text};line-height:1;">${esc(slot.label)}</div>
-        <span style="font-size:10.5px;font-weight:700;color:${otherColor};">${otherLabel} ${otherFilled}/${ss.otherCap}</span>
-      </div>
+      <div style="font-family:'BN Kragen';font-size:17px;color:${th.text};line-height:1;">${esc(slot.label)}</div>
       <div style="font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${th.sub};margin:9px 0 7px;">${myLabel} · pick your team (${ts} per team)</div>
       <div style="display:flex;flex-direction:column;gap:7px;">${myTeams.map(teamRow).join('')}</div>
       ${ss.overlap ? `<div style="margin-top:9px;display:flex;align-items:center;gap:7px;font-size:10.5px;font-weight:600;color:#F5C518;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><path d="M12 3 2 20h20L12 3z" stroke="#F5C518" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4M12 16.5v.5" stroke="#F5C518" stroke-width="2" stroke-linecap="round"/></svg>Overlaps another pick — fine for a walk-up, just finish inside the window.</div>` : ''}
@@ -1374,7 +1423,6 @@ function slotRowHtml(g, slot) {
         <div style="font-family:'BN Kragen';font-size:17px;color:${th.text};line-height:1;">${esc(slot.label)}</div>
         <div style="display:flex;gap:12px;margin-top:6px;">
           <span style="font-size:11.5px;font-weight:700;color:${T.A};">${myLabel} ${ss.roster.length}/${ss.cap}</span>
-          <span style="font-size:11.5px;font-weight:700;color:${otherColor};">${otherLabel} ${ss.otherRoster.length}/${ss.otherCap}</span>
         </div>
       </div>
       ${action}
@@ -1498,13 +1546,17 @@ function gameDetailScreen() {
     </div>`;
   }
 
-  // Zero-cap slots are bracket MATCH slots (later rounds / championship,
-  // migration 012) — refs score them, players can't sign up for them; they show
-  // in the Bracket path panel instead of the sign-up list.
-  const slots = (g.slots || []).filter(s => (s.capBuffalo || 0) + (s.capRoadhouse || 0) > 0).map(s => slotRowHtml(g, s)).join('');
+  // Players only see slots THEIR tribe can sign up for: zero-cap slots are
+  // bracket MATCH slots (refs score those; they live in the Bracket path), and
+  // a slot capped 0 for MY tribe is the other tribe's lane — showing it (or the
+  // other tribe's counts) just reads as confusing noise.
+  const myCapOf = (s) => (myTeamKey() === 'roadhouse' ? s.capRoadhouse : s.capBuffalo) || 0;
+  // s.mine keeps a slot visible even at cap 0 — an admin fill or cap edit must
+  // never hide a player's OWN sign-up (they'd lose their only Cancel button).
+  const slots = (g.slots || []).filter(s => myCapOf(s) > 0 || s.mine).map(s => slotRowHtml(g, s)).join('');
   const intro = g.openPlay
     ? `Grab a time slot to lock your run for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong> — or just walk up during the window. After the window closes it's open walk-up for everyone. Walk-up slots may overlap another game you're in; that's OK, just leave yourself time to finish.`
-    : `Reserve a time slot below for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong>. You can arrive anytime during the game's window — after it, it's open walk-up. Up to ${signupMax()} game slots, and no overlapping times.`;
+    : `Reserve a time slot below for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong> — this game runs on its scheduled times. Up to ${signupMax()} game slots, and no overlapping times.`;
   return `<div style="padding:0 0 28px;">${header}
     ${info}
     <div style="padding:16px 18px 0;">
@@ -1688,7 +1740,8 @@ function scoreScreen() {
     <div style="flex:1;min-width:0;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.09);border-radius:10px;padding:12px 12px 8px;">
       <div style="font-size:10.5px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:${accent};margin-bottom:8px;">${title}</div>
       ${rows.length ? rows.map((p, i) => {
-        const mine = team === myTeam && p.name === myName;
+        // Pair entries ("A & B") belong to both members.
+        const mine = team === myTeam && (p.name === myName || p.name.split(' & ').includes(myName));
         return `
         <div style="display:flex;align-items:center;gap:8px;padding:6px 6px;margin:0 -6px;border-radius:7px;${mine ? `background:${T.dim};border:1px solid ${T.A};` : ''}">
           <span style="width:20px;flex-shrink:0;font-family:'BN Kragen';font-size:13px;color:${i < 3 ? accent : th.sub};">${i + 1}</span>
@@ -2001,7 +2054,9 @@ function relayScreen() {
     const full = mineList.length >= l.cap;
     const rosterNames = mineList.length ? mineList.join(' · ') : 'No one yet — be first';
     let btn = '';
-    if (iAmHere) btn = `<button data-act="relayLeave" style="flex-shrink:0;background:${T.A};color:${T.on};font-weight:800;font-size:12px;padding:8px 14px;border-radius:8px;display:flex;align-items:center;gap:5px;">${checkSvg(T.on, 13, 2.6)}You're in</button>`;
+    if (iAmHere) btn = isGameDay
+      ? `<span style="flex-shrink:0;background:${T.A};color:${T.on};font-weight:800;font-size:12px;padding:8px 14px;border-radius:8px;display:flex;align-items:center;gap:5px;">${checkSvg(T.on, 13, 2.6)}You're in</span>`
+      : `<button data-act="relayLeave" style="flex-shrink:0;background:${T.A};color:${T.on};font-weight:800;font-size:12px;padding:8px 14px;border-radius:8px;display:flex;align-items:center;gap:5px;">${checkSvg(T.on, 13, 2.6)}You're in</button>`;
     else if (full) btn = `<span style="flex-shrink:0;font-size:11.5px;font-weight:700;color:${th.sub};">Leg full</span>`;
     else if (isGameDay) btn = `<span style="flex-shrink:0;font-size:11.5px;font-weight:700;color:${th.sub};">Locked</span>`;
     else btn = `<button data-act="relayJoin" data-id="${esc(l.id)}" style="flex-shrink:0;background:rgba(255,255,255,0.06);border:1px solid ${T.A};color:${T.A};font-weight:800;font-size:12px;padding:8px 14px;border-radius:8px;">${hasPick ? 'Switch here' : 'Sign up'}</button>`;
@@ -2067,7 +2122,7 @@ function deskGamesScreen() {
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
         <div style="min-width:0;">
           <div style="font-size:15.5px;font-weight:800;color:#00253D;line-height:1.2;">${esc(g.name)}</div>
-          <div style="font-size:12px;color:#6D7C83;margin-top:3px;">${esc(g.runtimeLabel || '')}${g.venue ? ' · ' + esc(g.venue) : ''}${gm.hasSlots ? ' · ' + g.slots.length + ' slots' : ''}</div>
+          <div style="font-size:12px;color:#6D7C83;margin-top:3px;">${esc(g.runtimeLabel || '')}${g.venue ? ' · ' + esc(g.venue) : ''}${gm.hasSlots ? ' · ' + gm.mySlotCount + ' slots' : ''}</div>
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0;">
           ${bracketFor(g) ? `<span style="font-size:9.5px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:#8A5A12;background:#FCEFDD;border:1px solid #F0D9BB;border-radius:5px;padding:2px 7px;">🏆 Bracket</span>` : ''}
@@ -2525,7 +2580,7 @@ function admGamesModals() {
         <div style="flex:1;">${admFieldLabel('# Buffalo teams')}${admTextInput('sl-tb', 'slTeamsB', S.f.slTeamsB || '', '0')}</div>
         <div style="flex:1;">${admFieldLabel('# TXRH teams')}${admTextInput('sl-tr', 'slTeamsR', S.f.slTeamsR || '', '0')}</div>
       </div>
-      <div style="font-size:11px;color:#9AA7A5;margin-top:8px;line-height:1.5;">${esc(sg.name || 'This game')} plays in teams of <strong>${sts}</strong>. Each tribe's cap = (# teams) × ${sts}, so players sign up as Team 1 / Team 2. 0 teams = that tribe isn't in this slot.</div>`
+      <div style="font-size:11px;color:#9AA7A5;margin-top:8px;line-height:1.5;">${esc(sg.name || 'This game')} plays in teams of <strong>${sts}</strong>. Saving sets each tribe's cap to (# teams) × ${sts} — currently <strong>${Math.max(0, parseInt(S.f.slTeamsB, 10) || 0) * sts}</strong> Buffalo / <strong>${Math.max(0, parseInt(S.f.slTeamsR, 10) || 0) * sts}</strong> TXRH seats. 0 teams = that tribe isn't in this slot.</div>`
       : `
       <div style="display:flex;gap:12px;">
         <div style="flex:1;">${admFieldLabel('Buffalo cap')}${admTextInput('sl-cb', 'slCapB', S.f.slCapB || '', '0')}</div>
@@ -2923,7 +2978,7 @@ function admRelaySection(ov) {
     return `
     <div style="background:#fff;border:1px solid #E0E6E5;border-left:3px solid #FF5F00;border-radius:10px;padding:15px 16px;">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-        <input data-leg="${esc(l.id)}" data-debounce="legName" value="${esc(l.name)}" style="flex:1;min-width:180px;font-family:'Montserrat';font-size:15px;font-weight:700;color:#00253D;border:1px solid #DCE3E2;border-radius:7px;padding:9px 12px;outline:none;"/>
+        <input id="leg-name-${esc(l.id)}" data-leg="${esc(l.id)}" data-debounce="legName" value="${esc(S.f['legDraft:' + l.id] !== undefined ? S.f['legDraft:' + l.id] : l.name)}" style="flex:1;min-width:180px;font-family:'Montserrat';font-size:15px;font-weight:700;color:#00253D;border:1px solid #DCE3E2;border-radius:7px;padding:9px 12px;outline:none;"/>
         <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
           <span style="font-size:11px;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;color:#6D7C83;">Per team</span>
           <button data-act="admLegCap" data-id="${esc(l.id)}" data-d="-1" style="width:30px;height:30px;border-radius:7px;border:1px solid #DCE3E2;color:#00253D;font-size:17px;display:flex;align-items:center;justify-content:center;">−</button>
@@ -3599,8 +3654,16 @@ const ACTIONS = {
   joinSlot: (el) => guarded(async () => {
     const body = { slotId: parseInt(el.dataset.slot, 10) };
     if (el.dataset.teamno) body.teamNo = parseInt(el.dataset.teamno, 10);   // team games (migration 011)
-    const res = await api('/signups', { method: 'POST', body });
-    applyBoot(res); toast("You're in!");
+    try {
+      const res = await api('/signups', { method: 'POST', body });
+      applyBoot(res); toast("You're in!");
+    } catch (e) {
+      // A failed join means our view was stale (slot filled, or we're already
+      // in) — re-sync immediately so the screen shows the true state instead
+      // of an "open" slot that errors on every tap.
+      loadBoot(true);
+      throw e;
+    }
   }),
   leaveSlot: (el) => guarded(async () => {
     const res = await api('/signups/' + encodeURIComponent(el.dataset.slot), { method: 'DELETE' });
@@ -3677,7 +3740,7 @@ const ACTIONS = {
     if (st.type === 'vs') {
       if (!S.muWinner) { toast('Tap the winning side first'); return; }
       await api('/results', { method: 'POST', body: {
-        type: 'winner', gameName: st.name,
+        type: 'winner', gameName: st.name, gameId: st.gameId,
         winnerTeam: S.muWinner, winnerName: S.muWinner === 'buffalo' ? bufNames : roadNames,
         scores: true, slotLabel: 'Walk-up',
       } });
@@ -3702,7 +3765,7 @@ const ACTIONS = {
     const slot = st ? (st.slots || []).find(s => s.id === slotId) : null;
     const isFinal = el.dataset.stage === 'champ';
     await api('/results', { method: 'POST', body: {
-      type: 'winner', gameName: st ? st.name : el.dataset.game,
+      type: 'winner', gameName: st ? st.name : el.dataset.game, gameId: el.dataset.game,
       winnerTeam: w.team, winnerName: w.name,
       scores: isFinal, stage: isFinal ? 'champ' : 'round',
       slotId, slotLabel: slot ? slot.label : null,
@@ -3749,28 +3812,13 @@ const ACTIONS = {
       }
     }
     await api('/results', { method: 'POST', body: {
-      type: 'winner', gameName: st ? st.name : el.dataset.game,
+      type: 'winner', gameName: st ? st.name : el.dataset.game, gameId: el.dataset.game,
       winnerTeam: w.team, winnerName: w.name, scores: !!w.scores,
       stage: round === 'round' ? 'round' : 'champ',
       slotId: slot ? slot.id : null, slotLabel: slot ? slot.label : null, roundLabel,
     } });
     S.refWinner = null;
     toast(round === 'round' ? 'Winner logged — they advance' : 'Winner logged & scored');
-    loadBoot(true);
-  }),
-  refVsSubmit: (el) => guarded(async () => {
-    const st = (S.boot.refStations || []).find(x => x.gameId === el.dataset.game);
-    if (!st) return;
-    const b = S.teamScores.buffalo || 0, r = S.teamScores.roadhouse || 0;
-    if (!b && !r) { toast('Enter a score for at least one team'); return; }
-    const selId = S.refSlot[el.dataset.game];
-    const slot = (st.slots || []).find(s => String(s.id) === String(selId));
-    await api('/results', { method: 'POST', body: {
-      type: 'vs', gameName: st.name, ptsBuffalo: b, ptsRoadhouse: r,
-      slotId: slot ? slot.id : null, slotLabel: slot ? slot.label : null,
-    } });
-    S.teamScores = {};
-    toast('Team scores logged');
     loadBoot(true);
   }),
   refSoloSubmit: (el) => guarded(async () => {
@@ -3784,8 +3832,24 @@ const ACTIONS = {
       ...((slot.buffalo || []).map(n => ({ name: n, team: 'buffalo' }))),
       ...((slot.roadhouse || []).map(n => ({ name: n, team: 'roadhouse' }))),
     ];
+    // Submit only people who are still UNSCORED — another ref may have logged
+    // someone since this screen rendered, and a leftover S.soloScores value
+    // for them would silently double-score. Occurrence-keyed (name#k) so
+    // display-name twins each carry their own score.
+    const st2 = (S.boot.refResults || []).filter(r => r.game === st.name);
+    const doneCounts = {};
+    for (const r of resultsForSlot(st2, slot)) {
+      const n = (r.playerName || '').trim();
+      if (n) doneCounts[n] = (doneCounts[n] || 0) + 1;
+    }
+    const occ = {};
     const entries = people
-      .map(p => ({ name: p.name, team: p.team, score: S.soloScores[p.name] || 0 }))
+      .filter(p => {
+        occ[p.name] = (occ[p.name] || 0) + 1;
+        p.key = `${p.name}#${occ[p.name]}`;
+        return occ[p.name] > (doneCounts[p.name] || 0);
+      })
+      .map(p => ({ name: p.name, team: p.team, score: S.soloScores[p.key] || 0 }))
       .filter(e => e.score > 0);
     if (!entries.length) { toast('Enter a score for at least one player'); return; }
     await api('/results', { method: 'POST', body: {
@@ -4039,6 +4103,9 @@ const ACTIONS = {
     const startMin = parseTimeLabel(S.f.bmTime || '');
     if (startMin === null) { toast('Enter a time like 2:30 PM'); return; }
     const rn = parseInt(S.f.bmRound, 10);
+    // A bracket match must know whose match it is — a lane-less later round
+    // would leave the championship waiting forever.
+    if (Number.isInteger(rn) && rn > 0 && !S.f.bmLane) { toast('Pick whose match this is (Buffalo / TXRH / Championship)'); return; }
     await api('/ac/games', { method: 'POST', body: {
       action: 'updateSlot', slotId,
       startMin, label: minToLabel(startMin),
@@ -4222,7 +4289,9 @@ const ACTIONS = {
     const ts = (g.teamSize && g.teamSize >= 2) ? g.teamSize : 1;
     S.admSlotEdit = { mode: 'edit', gameId: el.dataset.game, slotId: s.id };
     S.f.slTime = s.label; S.f.slCapB = String(s.capBuffalo); S.f.slCapR = String(s.capRoadhouse);
-    S.f.slTeamsB = String(Math.round((s.capBuffalo || 0) / ts)); S.f.slTeamsR = String(Math.round((s.capRoadhouse || 0) / ts));
+    // floor, not round — a cap-3 slot on a teams-of-2 game holds 1 full team;
+    // rounding up would silently REWRITE the cap to 4 on save.
+    S.f.slTeamsB = String(Math.floor((s.capBuffalo || 0) / ts)); S.f.slTeamsR = String(Math.floor((s.capRoadhouse || 0) / ts));
     render();
   },
   admSlotCancel: () => { S.admSlotEdit = null; render(); },
@@ -4416,10 +4485,6 @@ document.addEventListener('input', (e) => {
   if (el.dataset && el.dataset.field) S.f[el.dataset.field] = el.value;
   // Ref score entry — one number per TEAM. No re-render (keeps the caret in
   // the field); the value is read from state on submit.
-  if (el.dataset && el.dataset.teamscore !== undefined) {
-    const v = parseInt(el.value, 10);
-    S.teamScores[el.dataset.teamscore] = Number.isFinite(v) && v > 0 ? v : 0;
-  }
   // Ref score entry — one number per PERSON (non-head-to-head). No re-render.
   if (el.dataset && el.dataset.soloscore !== undefined) {
     const v = parseInt(el.value, 10);
@@ -4452,6 +4517,9 @@ document.addEventListener('input', (e) => {
   }
   if (el.dataset && el.dataset.debounce === 'legName') {
     const legId = el.dataset.leg;
+    // Draft survives the 60s overview poll — without it the re-render snaps
+    // the field back to the stale server value mid-typing.
+    S.f['legDraft:' + legId] = el.value;
     const name = el.value.trim();
     if (name) debounceSave('legName:' + legId, () => guarded(async () => {
       await api('/ac/relay-legs', { method: 'POST', body: { legId, name } });

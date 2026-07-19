@@ -36,17 +36,30 @@ app.http('dip', {
           return json({ error: "You're already entered in the Dip Off" }, 409);
         }
 
-        const countR = await pool.request()
-          .input('team', sql.NVarChar, user.team)
-          .query('SELECT COUNT(*) AS n FROM bo_dip_entries WHERE team = @team');
-        if (countR.recordset[0].n >= MAX_COOKS_PER_TRIBE) {
-          return json({ error: `Your tribe already has ${MAX_COOKS_PER_TRIBE} cooks in the Dip Off` }, 409);
-        }
-
-        await pool.request()
+        // ATOMIC per-tribe cap — recount under a range lock so two simultaneous
+        // "enter" taps can't both see 4 < 5 and make 6 cooks.
+        const ins = await pool.request()
           .input('uid', sql.Int, user.id)
           .input('team', sql.NVarChar, user.team)
-          .query('INSERT INTO bo_dip_entries (user_id, team) VALUES (@uid, @team)');
+          .input('cap', sql.Int, MAX_COOKS_PER_TRIBE)
+          .query(`
+            SET NOCOUNT ON;
+            SET XACT_ABORT ON;
+            BEGIN TRANSACTION;
+              DECLARE @n INT = (
+                SELECT COUNT(*) FROM bo_dip_entries WITH (UPDLOCK, HOLDLOCK) WHERE team = @team
+              );
+              DECLARE @inserted INT = 0;
+              IF @n < @cap AND NOT EXISTS (SELECT 1 FROM bo_dip_entries WHERE user_id = @uid)
+              BEGIN
+                INSERT INTO bo_dip_entries (user_id, team) VALUES (@uid, @team);
+                SET @inserted = 1;
+              END
+            COMMIT TRANSACTION;
+            SELECT @inserted AS inserted;`);
+        if (!(ins.recordset[0] || {}).inserted) {
+          return json({ error: `Your tribe already has ${MAX_COOKS_PER_TRIBE} cooks in the Dip Off` }, 409);
+        }
       } else {
         // leave — drop any votes pointing at my entry, then the entry itself.
         await pool.request()
