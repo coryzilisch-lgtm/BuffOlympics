@@ -20,13 +20,20 @@
  *   node scripts/concurrency-loadtest.js
  *
  * Optional env: N (default 20 racers), CAP (default 3 seats).
+ *   TEAM_SIZE — set ≥2 to test the TEAM sign-up path (migration 011): the
+ *   throwaway game gets that team size, every racer joins Team 1 of a
+ *   one-team slot, and exactly TEAM_SIZE must land. This exercises the team
+ *   guard's result handling too (a driver-level recordset bug once made every
+ *   team join answer "filled up" while still inserting).
  */
 
 const BASE_URL = (process.env.BASE_URL || '').replace(/\/+$/, '');
 const ADMIN_EMAIL = process.env.ADMIN_EMAIL || '';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
 const N = parseInt(process.env.N || '20', 10);
-const CAP = parseInt(process.env.CAP || '3', 10);
+const TEAM_SIZE = parseInt(process.env.TEAM_SIZE || '0', 10);
+// Team mode: one team of TEAM_SIZE — the cap IS the team size.
+const CAP = TEAM_SIZE >= 2 ? TEAM_SIZE : parseInt(process.env.CAP || '3', 10);
 
 if (!BASE_URL || !ADMIN_EMAIL || !ADMIN_PASSWORD) {
   console.error('Set BASE_URL, ADMIN_EMAIL and ADMIN_PASSWORD env vars. See the header of this file.');
@@ -76,6 +83,13 @@ async function main() {
     gameId = addG.json.id;
     console.log(`  ✓ created test game "${gName}" (${gameId})`);
 
+    if (TEAM_SIZE >= 2) {
+      const up = await api('/ac/games', { method: 'POST', token: adminToken, body: { action: 'updateGame', gameId, teamSize: TEAM_SIZE } });
+      if (up.status !== 200) throw new Error(`updateGame teamSize failed (${up.status}): ${JSON.stringify(up.json)}`);
+      if (up.json && up.json.teamSizeSaved === false) throw new Error('team_size did not save — run migration 011 first, then retry TEAM_SIZE mode.');
+      console.log(`  ✓ team mode: teams of ${TEAM_SIZE} (racers all join Team 1)`);
+    }
+
     const addS = await api('/ac/games', { method: 'POST', token: adminToken, body: { action: 'addSlot', gameId, startMin: 720, label: '12:00 PM', capBuffalo: CAP, capRoadhouse: 0 } });
     if (addS.status !== 200) throw new Error(`addSlot failed (${addS.status}): ${JSON.stringify(addS.json)}`);
 
@@ -102,7 +116,8 @@ async function main() {
 
     // 5) THE RACE — fire every Join in one synchronous burst.
     console.log(`  ⚡ firing ${N} simultaneous Join requests at slot ${slotId}…`);
-    const promises = testUsers.map(u => api('/signups', { method: 'POST', token: u.token, body: { slotId } }));
+    const joinBody = TEAM_SIZE >= 2 ? { slotId, teamNo: 1 } : { slotId };
+    const promises = testUsers.map(u => api('/signups', { method: 'POST', token: u.token, body: joinBody }));
     const results = await Promise.allSettled(promises);
 
     // 6) Tally.
