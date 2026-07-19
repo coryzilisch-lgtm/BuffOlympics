@@ -69,6 +69,10 @@ async function handlePeople(pool, body) {
     // clearing out test/bogus accounts — e.g. after a concurrency load test.
     await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_signups WHERE user_id = @id');
     await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_dip_votes WHERE user_id = @id');
+    // Other people's votes pointing at this user's dip entry would dangle
+    // (no FKs in the schema) and inflate totalVotes — drop them first.
+    await pool.request().input('id', sql.Int, userId).query(
+      'DELETE FROM bo_dip_votes WHERE dip_entry_id IN (SELECT id FROM bo_dip_entries WHERE user_id = @id)');
     await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_dip_entries WHERE user_id = @id');
     await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_relay_signups WHERE user_id = @id');
     await pool.request().input('id', sql.Int, userId).query('DELETE FROM bo_ref_assignments WHERE user_id = @id');
@@ -484,6 +488,10 @@ async function handleGames(pool, body) {
   if (action === 'addGame') {
     const name = String(body.name || '').trim();
     if (!name) return json({ error: 'Game name is required' }, 400);
+    // Names must be unique — results/ref state are keyed by game name.
+    const dupR = await pool.request().input('n', sql.NVarChar, name)
+      .query('SELECT TOP 1 id FROM bo_games WHERE name = @n');
+    if (dupR.recordset.length) return json({ error: 'A game with that name already exists — names must be unique' }, 409);
     // Derive a unique id from the name (append -2, -3, … on collision).
     const base = slugify(name);
     const existR = await pool.request().query('SELECT id FROM bo_games');
@@ -522,6 +530,23 @@ async function handleGames(pool, body) {
         if (col === 'name' && !v) return json({ error: 'Game name cannot be empty' }, 400);
         sets.push(`${col} = @${col}`);
         req.input(col, sql.NVarChar, v || null);
+      }
+    }
+    // Renames: results + ref-board state are keyed by game NAME, so (a) two
+    // games must never share a name, and (b) a rename must carry the logged
+    // results along — otherwise every Scored mark for the game vanishes and
+    // refs re-log points.
+    if (body.name !== undefined) {
+      const newName = String(body.name).trim();
+      const dupR = await pool.request().input('gid', sql.NVarChar, gameId).input('n', sql.NVarChar, newName)
+        .query('SELECT TOP 1 id FROM bo_games WHERE name = @n AND id <> @gid');
+      if (dupR.recordset.length) return json({ error: 'Another game already has that name — names must be unique' }, 409);
+      const oldR = await pool.request().input('gid', sql.NVarChar, gameId)
+        .query('SELECT name FROM bo_games WHERE id = @gid');
+      const oldName = oldR.recordset.length ? oldR.recordset[0].name : null;
+      if (oldName && oldName !== newName) {
+        await pool.request().input('o', sql.NVarChar, oldName).input('n', sql.NVarChar, newName)
+          .query('UPDATE bo_results SET game_name = @n WHERE game_name = @o');
       }
     }
     if (body.needsRef !== undefined) { sets.push('needs_ref = @needs_ref'); req.input('needs_ref', sql.Bit, body.needsRef ? 1 : 0); }

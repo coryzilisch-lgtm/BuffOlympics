@@ -1,6 +1,7 @@
 const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
 const { json, requireUser, requireAdmin } = require('../lib/auth');
+const { bustSharedBootstrap } = require('../lib/bootstrap');
 
 app.http('ac-dip', {
   methods: ['DELETE'],
@@ -27,6 +28,7 @@ app.http('ac-dip', {
           DELETE FROM bo_dip_votes WHERE dip_entry_id = @eid;
           DELETE FROM bo_dip_entries WHERE id = @eid;`);
 
+      bustSharedBootstrap();   // dip entries/ballot live in the shared cache
       return json({ ok: true });
     } catch (err) {
       context.error('admin-dip error:', err);

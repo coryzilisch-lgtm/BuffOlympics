@@ -38,6 +38,11 @@ async function insertResult(pool, row) {
            @player_name, @entered_by, @entered_by_id, @slot_label, @round_label, @slot_id);
       `);
   } catch (e0) {
+    // The fallbacks exist ONLY for pre-migration schemas (missing column =
+    // SQL error 207). Any other failure (timeout, deadlock, connection blip)
+    // must surface — falling through would silently strip the slot/label tags,
+    // or even double-insert if the first INSERT actually committed.
+    if (!e0 || e0.number !== 207) throw e0;
     try {
       // Pre-012 (slot_id missing) — store with the 010 label tags only.
       await base(pool.request())
@@ -52,6 +57,7 @@ async function insertResult(pool, row) {
              @player_name, @entered_by, @entered_by_id, @slot_label, @round_label);
         `);
     } catch (e) {
+      if (!e || e.number !== 207) throw e;
       // Pre-010 (columns missing) — store the row without the tags.
       await base(pool.request()).query(`
         INSERT INTO bo_results
@@ -139,19 +145,29 @@ app.http('results', {
         const winnerName = String(body.winnerName || '').trim()
           || (winnerTeam === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse');
         const isRound = body.stage === 'round';
+        // Points are looked up by game ID when the client sends one (names are
+        // NOT unique and can be edited); the name lookup is only a fallback
+        // for older clients.
+        const gameId = String(body.gameId || '').trim();
+        const ptsCol = async (col, dflt) => {
+          try {
+            let pr;
+            if (gameId) {
+              pr = await pool.request().input('gid', sql.NVarChar, gameId)
+                .query(`SELECT TOP 1 ${col} AS v FROM bo_games WHERE id = @gid`);
+            }
+            if (!pr || !pr.recordset.length) {
+              pr = await pool.request().input('n', sql.NVarChar, gameName)
+                .query(`SELECT TOP 1 ${col} AS v FROM bo_games WHERE name = @n`);
+            }
+            return pr.recordset.length && pr.recordset[0].v != null ? pr.recordset[0].v : dflt;
+          } catch (e) { return dflt; /* pre-migration column */ }
+        };
         let pts = 0;
         if (isRound) {
-          try {
-            const pr = await pool.request().input('n', sql.NVarChar, gameName)
-              .query('SELECT TOP 1 round_points AS rp FROM bo_games WHERE name = @n');
-            pts = pr.recordset.length && pr.recordset[0].rp != null ? pr.recordset[0].rp : 0;
-          } catch (e) { pts = 0; /* pre-010 — rounds stay advancement-only */ }
+          pts = await ptsCol('round_points', 0);
         } else if (body.scores) {
-          try {
-            const pr = await pool.request().input('n', sql.NVarChar, gameName)
-              .query('SELECT TOP 1 win_points AS wp FROM bo_games WHERE name = @n');
-            pts = pr.recordset.length && pr.recordset[0].wp != null ? pr.recordset[0].wp : 10;
-          } catch (e) { pts = 10; }
+          pts = await ptsCol('win_points', 10);
         }
         const detail = isRound
           ? (pts > 0 ? `${winnerName} won the round (+${pts}) — advances` : `${winnerName} won — advances`)

@@ -34,10 +34,9 @@ async function signup(pool, body) {
   if (!password) return json({ error: 'Password is required' }, 400);
   if (!TEAMS.includes(team)) return json({ error: 'Pick a tribe — buffalo or roadhouse' }, 400);
 
-  if (await findByEmail(pool, email)) {
-    return json({ error: 'An account with that email already exists' }, 409);
-  }
-
+  // Uniqueness is enforced IN the insert batch (no separate check-then-insert
+  // window): a double-tapped signup form must not create two accounts with the
+  // same email — signin would then pick one arbitrarily.
   const r = await pool.request()
     .input('email', sql.NVarChar, email)
     .input('password_hash', sql.NVarChar, hashPassword(password))
@@ -49,13 +48,18 @@ async function signup(pool, body) {
     .input('song_request', sql.NVarChar, body.songRequest ? String(body.songRequest) : null)
     .input('is_admin', sql.Bit, isBootstrapAdmin(email) ? 1 : 0)
     .query(`
-      INSERT INTO bo_users
-        (email, password_hash, first_name, last_name, team, shirt_size, years, song_request, is_ref, is_admin)
-      OUTPUT INSERTED.*
-      VALUES
-        (@email, @password_hash, @first_name, @last_name, @team, @shirt_size, @years, @song_request, 0, @is_admin);
+      SET XACT_ABORT ON;
+      BEGIN TRANSACTION;
+        IF NOT EXISTS (SELECT 1 FROM bo_users WITH (UPDLOCK, HOLDLOCK) WHERE LOWER(email) = LOWER(@email))
+          INSERT INTO bo_users
+            (email, password_hash, first_name, last_name, team, shirt_size, years, song_request, is_ref, is_admin)
+          OUTPUT INSERTED.*
+          VALUES
+            (@email, @password_hash, @first_name, @last_name, @team, @shirt_size, @years, @song_request, 0, @is_admin);
+      COMMIT TRANSACTION;
     `);
   const user = r.recordset[0];
+  if (!user) return json({ error: 'An account with that email already exists' }, 409);
   return json({ token: signToken(user.id), user: userToJson(user) });
 }
 
@@ -105,9 +109,7 @@ async function refCreate(pool, body) {
   if (email || firstName || lastName) {
     if (!firstName || !lastName) return json({ error: 'First and last name are required' }, 400);
     if (!email) return json({ error: 'Email is required' }, 400);
-    if (await findByEmail(pool, email)) {
-      return json({ error: 'An account with that email already exists' }, 409);
-    }
+    // Same atomic email-uniqueness as the player signup.
     const r = await pool.request()
       .input('email', sql.NVarChar, email)
       .input('password_hash', sql.NVarChar, hashPassword(password))
@@ -117,13 +119,18 @@ async function refCreate(pool, body) {
       .input('years', sql.NVarChar, body.years ? String(body.years) : null)
       .input('song_request', sql.NVarChar, body.songRequest ? String(body.songRequest) : null)
       .query(`
-        INSERT INTO bo_users
-          (email, password_hash, first_name, last_name, shirt_size, years, song_request, is_ref, is_admin)
-        OUTPUT INSERTED.*
-        VALUES
-          (@email, @password_hash, @first_name, @last_name, @shirt_size, @years, @song_request, 1, 0);
+        SET XACT_ABORT ON;
+        BEGIN TRANSACTION;
+          IF NOT EXISTS (SELECT 1 FROM bo_users WITH (UPDLOCK, HOLDLOCK) WHERE LOWER(email) = LOWER(@email))
+            INSERT INTO bo_users
+              (email, password_hash, first_name, last_name, shirt_size, years, song_request, is_ref, is_admin)
+            OUTPUT INSERTED.*
+            VALUES
+              (@email, @password_hash, @first_name, @last_name, @shirt_size, @years, @song_request, 1, 0);
+        COMMIT TRANSACTION;
       `);
     const user = r.recordset[0];
+    if (!user) return json({ error: 'An account with that email already exists' }, 409);
     return json({ token: signToken(user.id), user: userToJson(user) });
   }
 

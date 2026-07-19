@@ -45,8 +45,9 @@ async function handleSignup(pool, user, slotId, teamNoRaw) {
   } catch (e) { /* pre-011 — individual game */ }
   const isTeam = teamSize >= 2;
   let teamNo = null;
+  let numTeams = 1;
   if (isTeam) {
-    const numTeams = Math.max(1, Math.floor(teamCap / teamSize));
+    numTeams = Math.max(1, Math.floor(teamCap / teamSize));
     teamNo = parseInt(teamNoRaw, 10);
     if (!Number.isInteger(teamNo) || teamNo < 1 || teamNo > numTeams) {
       return json({ error: 'Pick which team to join' }, 400);
@@ -92,17 +93,20 @@ async function handleSignup(pool, user, slotId, teamNoRaw) {
       .input('team', sql.NVarChar, team)
       .input('teamno', sql.Int, teamNo)
       .input('tsize', sql.Int, teamSize)
+      .input('numteams', sql.Int, numTeams)
       .query(`
         SET NOCOUNT ON;
         SET XACT_ABORT ON;
         BEGIN TRANSACTION;
           SELECT id FROM bo_game_slots WITH (UPDLOCK, HOLDLOCK) WHERE id = @sid;
-          -- ISNULL: rows with no team_no (admin fills / signups from before the
-          -- team migration) DISPLAY in Team 1, so they must COUNT as Team 1 too
-          -- — otherwise the guard and the UI disagree about who's full.
+          -- Count with the SAME normalization the display uses: NULL team_no
+          -- (admin fills / pre-migration rows) reads as Team 1, and an
+          -- out-of-range team_no (cap lowered after sign-ups) clamps into the
+          -- last team — otherwise the guard and the UI disagree about fullness.
           DECLARE @nt INT = (
             SELECT COUNT(*) FROM bo_signups s JOIN bo_users u ON u.id = s.user_id
-            WHERE s.slot_id = @sid AND u.team = @team AND ISNULL(s.team_no, 1) = @teamno
+            WHERE s.slot_id = @sid AND u.team = @team
+              AND (CASE WHEN ISNULL(s.team_no, 1) > @numteams THEN @numteams ELSE ISNULL(s.team_no, 1) END) = @teamno
           );
           DECLARE @alreadyT INT = CASE WHEN EXISTS
             (SELECT 1 FROM bo_signups WHERE user_id = @uid AND slot_id = @sid) THEN 1 ELSE 0 END;
@@ -167,6 +171,13 @@ async function handleSignup(pool, user, slotId, teamNoRaw) {
 async function handleCancel(pool, user, slotId) {
   const sid = parseInt(slotId, 10);
   if (!Number.isInteger(sid)) return json({ error: 'slotId is required' }, 400);
+  // Cancels are locked on game day too — vacating a roster spot when nobody
+  // can re-join it just shrinks the game. (The UI hides Cancel on game day;
+  // this makes the server agree with it.)
+  const settings = await getSettings(pool);
+  if (settings.eventMode !== 'signup') {
+    return json({ error: "The rosters are locked — it's game day!" }, 409);
+  }
   await pool.request()
     .input('uid', sql.Int, user.id)
     .input('sid', sql.Int, sid)

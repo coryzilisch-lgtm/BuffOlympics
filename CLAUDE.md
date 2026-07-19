@@ -454,5 +454,16 @@ an individual game** (`team_size` defaults to 1, `team_no` ignored) — the team
 only appears once a game's `team_size` is set to ≥2 (run 011, then set it in the Games editor). Edit
 the game lineup only via the admin editor — never re-run 002 (it wipes sign-ups).
 
+Bug-sweep invariants (July 2026 audit — don't regress): game NAMES are unique and a rename carries
+`bo_results.game_name` along (results/ref state key on name; points lookups prefer `gameId`);
+tribe privacy is enforced SERVER-side (players' bootstrap strips the other tribe's slot rosters);
+game-day locks cancels/leaves too (signups DELETE, relay DELETE); dip/relay joins use the same
+atomic UPDLOCK guard as slots; `refResults` caps at TOP 2000 (never lower it — absent rows read as
+"unscored" and refs re-log points); `insertResult` falls back ONLY on SQL error 207 (missing
+column); per-person games count a slot Scored only when EVERY player is scored; pair results
+("A & B") credit both members in myResults/leaderboard; team membership in the sign-up UI comes
+from `slot.myTeamNo` (identity), not display-name matching. Known deferred: resetPassword doesn't
+invalidate old session tokens; namesake players still share solo-score keys on the ref board.
+
 Open ideas / not built: overlap indicator on the games list (grey out games that clash with an
 existing pick — scoped but not built); email/notifications; richer mobile polish. Nothing blocking.
