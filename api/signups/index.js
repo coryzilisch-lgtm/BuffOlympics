@@ -97,9 +97,12 @@ async function handleSignup(pool, user, slotId, teamNoRaw) {
         SET XACT_ABORT ON;
         BEGIN TRANSACTION;
           SELECT id FROM bo_game_slots WITH (UPDLOCK, HOLDLOCK) WHERE id = @sid;
+          -- ISNULL: rows with no team_no (admin fills / signups from before the
+          -- team migration) DISPLAY in Team 1, so they must COUNT as Team 1 too
+          -- — otherwise the guard and the UI disagree about who's full.
           DECLARE @nt INT = (
             SELECT COUNT(*) FROM bo_signups s JOIN bo_users u ON u.id = s.user_id
-            WHERE s.slot_id = @sid AND u.team = @team AND s.team_no = @teamno
+            WHERE s.slot_id = @sid AND u.team = @team AND ISNULL(s.team_no, 1) = @teamno
           );
           DECLARE @alreadyT INT = CASE WHEN EXISTS
             (SELECT 1 FROM bo_signups WHERE user_id = @uid AND slot_id = @sid) THEN 1 ELSE 0 END;

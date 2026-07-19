@@ -251,14 +251,18 @@ function slotState(slot, g) {
 function gameSummary(g) {
   const team = myTeamKey();
   const slots = g.slots || [];
-  let cap = 0, filled = 0, mineLabel = null;
+  let cap = 0, filled = 0, mineLabel = null, mySlotCount = 0;
   for (const s of slots) {
-    cap += team === 'buffalo' ? s.capBuffalo : s.capRoadhouse;
+    const myCap = team === 'buffalo' ? s.capBuffalo : s.capRoadhouse;
+    if (myCap > 0) mySlotCount++;
+    cap += myCap;
     filled += (team === 'buffalo' ? s.buffalo : s.roadhouse).length;
     if (s.mine) mineLabel = s.label;
   }
   return {
-    openPlay: !!g.openPlay, hasSlots: slots.length > 0,
+    // hasSlots / the card's slot count reflect MY tribe's slots only — the
+    // other tribe's lanes aren't shown to me anywhere in the player app.
+    openPlay: !!g.openPlay, hasSlots: mySlotCount > 0, mySlotCount,
     cap, filled, open: Math.max(0, cap - filled), mine: !!mineLabel, mineLabel,
   };
 }
@@ -1259,7 +1263,7 @@ function gamesScreen() {
         <div style="display:flex;gap:10px;margin-top:7px;flex-wrap:wrap;align-items:center;">
           <span style="font-size:11.5px;color:${T.A};font-weight:700;">${esc(g.runtimeLabel || '')}</span>
           ${g.venue ? `<span style="font-size:11.5px;color:${th.sub};">${esc(g.venue)}</span>` : ''}
-          ${gm.hasSlots ? `<span style="font-size:11.5px;color:${th.sub};">${g.slots.length} slots</span>` : ''}
+          ${gm.hasSlots ? `<span style="font-size:11.5px;color:${th.sub};">${gm.mySlotCount} slots</span>` : ``}
           ${bracketFor(g) ? `<span style="font-size:10px;font-weight:800;letter-spacing:0.03em;text-transform:uppercase;color:#F5C518;border:1px solid rgba(245,197,24,0.5);border-radius:5px;padding:2px 6px;">🏆 Bracket</span>` : ''}
         </div>
       </div>
@@ -1310,8 +1314,6 @@ function slotRowHtml(g, slot) {
   const ss = slotState(slot, g);
   const team = myTeamKey();
   const myLabel = team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse';
-  const otherLabel = team === 'buffalo' ? 'Texas Roadhouse' : 'Buffalo';
-  const otherColor = team === 'buffalo' ? '#E0322E' : '#FF7F2E';
 
   // Team games (migration 011): the slot is split into Team 1 / Team 2 … per
   // tribe. The player joins a SPECIFIC team — that's how partners are chosen.
@@ -1320,7 +1322,6 @@ function slotRowHtml(g, slot) {
     const mode = S.boot.settings.eventMode;
     const myName = (S.boot.user && S.boot.user.name) || '';
     const myTeams = slotUnits(slot, team);
-    const otherTeams = slotUnits(slot, team === 'buffalo' ? 'roadhouse' : 'buffalo');
     const mineIdx = myTeams.findIndex(u => u.members.includes(myName));
     const myTeamNo = mineIdx >= 0 ? myTeams[mineIdx].teamNo : null;
     const inThisSlot = myTeamNo != null || ss.st === 'signed';
@@ -1344,13 +1345,10 @@ function slotRowHtml(g, slot) {
         </div>
       </div>`;
     };
-    const otherFilled = otherTeams.reduce((a, u) => a + u.members.length, 0);
+    // Only MY tribe's teams show — the other tribe's selections stay theirs.
     return `
     <div style="background:${slot.mine ? T.dim : 'rgba(255,255,255,0.04)'};border:1px solid ${slot.mine ? T.A : th.line};border-radius:10px;padding:12px 14px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;">
-        <div style="font-family:'BN Kragen';font-size:17px;color:${th.text};line-height:1;">${esc(slot.label)}</div>
-        <span style="font-size:10.5px;font-weight:700;color:${otherColor};">${otherLabel} ${otherFilled}/${ss.otherCap}</span>
-      </div>
+      <div style="font-family:'BN Kragen';font-size:17px;color:${th.text};line-height:1;">${esc(slot.label)}</div>
       <div style="font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${th.sub};margin:9px 0 7px;">${myLabel} · pick your team (${ts} per team)</div>
       <div style="display:flex;flex-direction:column;gap:7px;">${myTeams.map(teamRow).join('')}</div>
       ${ss.overlap ? `<div style="margin-top:9px;display:flex;align-items:center;gap:7px;font-size:10.5px;font-weight:600;color:#F5C518;"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" style="flex-shrink:0;"><path d="M12 3 2 20h20L12 3z" stroke="#F5C518" stroke-width="2" stroke-linejoin="round"/><path d="M12 10v4M12 16.5v.5" stroke="#F5C518" stroke-width="2" stroke-linecap="round"/></svg>Overlaps another pick — fine for a walk-up, just finish inside the window.</div>` : ''}
@@ -1374,7 +1372,6 @@ function slotRowHtml(g, slot) {
         <div style="font-family:'BN Kragen';font-size:17px;color:${th.text};line-height:1;">${esc(slot.label)}</div>
         <div style="display:flex;gap:12px;margin-top:6px;">
           <span style="font-size:11.5px;font-weight:700;color:${T.A};">${myLabel} ${ss.roster.length}/${ss.cap}</span>
-          <span style="font-size:11.5px;font-weight:700;color:${otherColor};">${otherLabel} ${ss.otherRoster.length}/${ss.otherCap}</span>
         </div>
       </div>
       ${action}
@@ -1498,13 +1495,15 @@ function gameDetailScreen() {
     </div>`;
   }
 
-  // Zero-cap slots are bracket MATCH slots (later rounds / championship,
-  // migration 012) — refs score them, players can't sign up for them; they show
-  // in the Bracket path panel instead of the sign-up list.
-  const slots = (g.slots || []).filter(s => (s.capBuffalo || 0) + (s.capRoadhouse || 0) > 0).map(s => slotRowHtml(g, s)).join('');
+  // Players only see slots THEIR tribe can sign up for: zero-cap slots are
+  // bracket MATCH slots (refs score those; they live in the Bracket path), and
+  // a slot capped 0 for MY tribe is the other tribe's lane — showing it (or the
+  // other tribe's counts) just reads as confusing noise.
+  const myCapOf = (s) => (myTeamKey() === 'roadhouse' ? s.capRoadhouse : s.capBuffalo) || 0;
+  const slots = (g.slots || []).filter(s => myCapOf(s) > 0).map(s => slotRowHtml(g, s)).join('');
   const intro = g.openPlay
     ? `Grab a time slot to lock your run for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong> — or just walk up during the window. After the window closes it's open walk-up for everyone. Walk-up slots may overlap another game you're in; that's OK, just leave yourself time to finish.`
-    : `Reserve a time slot below for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong>. You can arrive anytime during the game's window — after it, it's open walk-up. Up to ${signupMax()} game slots, and no overlapping times.`;
+    : `Reserve a time slot below for <strong style="color:${th.text};">${esc(T.myTeamName)}</strong> — this game runs on its scheduled times. Up to ${signupMax()} game slots, and no overlapping times.`;
   return `<div style="padding:0 0 28px;">${header}
     ${info}
     <div style="padding:16px 18px 0;">
@@ -2067,7 +2066,7 @@ function deskGamesScreen() {
       <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
         <div style="min-width:0;">
           <div style="font-size:15.5px;font-weight:800;color:#00253D;line-height:1.2;">${esc(g.name)}</div>
-          <div style="font-size:12px;color:#6D7C83;margin-top:3px;">${esc(g.runtimeLabel || '')}${g.venue ? ' · ' + esc(g.venue) : ''}${gm.hasSlots ? ' · ' + g.slots.length + ' slots' : ''}</div>
+          <div style="font-size:12px;color:#6D7C83;margin-top:3px;">${esc(g.runtimeLabel || '')}${g.venue ? ' · ' + esc(g.venue) : ''}${gm.hasSlots ? ' · ' + gm.mySlotCount + ' slots' : ''}</div>
         </div>
         <div style="display:flex;gap:6px;flex-shrink:0;">
           ${bracketFor(g) ? `<span style="font-size:9.5px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:#8A5A12;background:#FCEFDD;border:1px solid #F0D9BB;border-radius:5px;padding:2px 7px;">🏆 Bracket</span>` : ''}
@@ -3599,8 +3598,16 @@ const ACTIONS = {
   joinSlot: (el) => guarded(async () => {
     const body = { slotId: parseInt(el.dataset.slot, 10) };
     if (el.dataset.teamno) body.teamNo = parseInt(el.dataset.teamno, 10);   // team games (migration 011)
-    const res = await api('/signups', { method: 'POST', body });
-    applyBoot(res); toast("You're in!");
+    try {
+      const res = await api('/signups', { method: 'POST', body });
+      applyBoot(res); toast("You're in!");
+    } catch (e) {
+      // A failed join means our view was stale (slot filled, or we're already
+      // in) — re-sync immediately so the screen shows the true state instead
+      // of an "open" slot that errors on every tap.
+      loadBoot(true);
+      throw e;
+    }
   }),
   leaveSlot: (el) => guarded(async () => {
     const res = await api('/signups/' + encodeURIComponent(el.dataset.slot), { method: 'DELETE' });

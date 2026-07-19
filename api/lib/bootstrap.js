@@ -278,7 +278,10 @@ async function buildBootstrap(pool, user, opts = {}) {
   // buffalo/roadhouse name arrays are kept unchanged for back-compat.
   const buildTeams = (names, nos, cap, ts) => {
     if (!ts || ts < 2) return null;
-    const numTeams = Math.max(1, Math.floor((cap || 0) / ts));
+    // No seats for this tribe → no teams (a 0-cap lane slot must not render a
+    // phantom "Team 1" for the tribe that isn't in it).
+    if (!cap || cap <= 0) return [];
+    const numTeams = Math.max(1, Math.floor(cap / ts));
     const teams = Array.from({ length: numTeams }, () => []);
     names.forEach((nm, i) => {
       let no = nos && nos[i] > 0 ? nos[i] : 1;
