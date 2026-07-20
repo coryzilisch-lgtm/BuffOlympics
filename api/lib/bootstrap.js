@@ -3,19 +3,31 @@ const { formatName, userToJson } = require('./auth');
 const cache = require('./cache');
 
 // The shared (identical-for-everyone) half of the bootstrap payload is cached
-// per host instance for a few seconds so a game-day crowd doesn't re-run the
-// same dozen queries against the shared Fabric F4 capacity. Writes pass
-// { fresh:true } (or call bustSharedBootstrap) so the mutator sees their change
-// immediately and every other player picks it up on their next poll.
-const SHARED_KEY = 'bootstrap:shared';
-// Players poll every 60s and writers bypass the cache (fresh:true), so a 45s
-// TTL is invisible to any single user while cutting crowd DB refills further —
-// this also trims the cold-fill cost when Static Web Apps scales out to several
-// Function instances under a burst (each keeps its own copy). Headcounts stay
-// near-live regardless: every successful signup refreshes the shared copy, so
-// the TTL is just a backstop for pure readers between writes.
-const SHARED_TTL_MS = 45000;
-function bustSharedBootstrap() { cache.bust(SHARED_KEY); }
+// per host instance so a game-day crowd doesn't re-run the same queries against
+// the shared Fabric F4 capacity. It's split into TWO independently-busted blocks
+// so a write only invalidates the half it actually changed:
+//   • ROSTER  — games/slots/rosters/dip/relay/schedule/config. Changes on
+//               sign-up / dip / relay / admin edits. A SCORE write leaves it be.
+//   • RESULTS — scores/leaderboard/refResults. Changes on score writes. A
+//               SIGN-UP write leaves it be, and it's SKIPPED ENTIRELY in sign-up
+//               mode (nothing has been scored yet — zero result queries).
+// Net: during the sign-up rush every signup rebuilds only rosters; during game
+// day every score rebuilds only the small results block, not the whole roster.
+const SHARED_ROSTER_KEY = 'bootstrap:roster';
+const SHARED_RESULTS_KEY = 'bootstrap:results';
+// Players poll every ~90s and writers bypass the cache (fresh:true), so a TTL
+// LONGER than the poll interval lets a lone foregrounded reader's next poll hit
+// the cache (0 shared queries) instead of refilling every time — the single
+// biggest lever against idle-tab CU burn on our F4. Headcounts stay near-live
+// regardless: every successful signup/score refreshes the relevant block, so
+// the TTL is only a backstop for pure readers between writes. During a sign-up
+// rush or active scoring, frequent writes keep it fresh; in quiet periods a
+// ~2-minute staleness backstop is harmless.
+const SHARED_TTL_MS = 120000;
+// Roster edits + admin actions bust BOTH (safe default). Score writes call
+// bustResultsBootstrap so they DON'T needlessly rebuild the roster half.
+function bustSharedBootstrap() { cache.bust(SHARED_ROSTER_KEY); cache.bust(SHARED_RESULTS_KEY); }
+function bustResultsBootstrap() { cache.bust(SHARED_RESULTS_KEY); }
 
 // Per-tribe sign-up cap (relay + dip are separate). Texas Roadhouse brings
 // more people, so each Roadie takes fewer slots to spread them around.
@@ -70,15 +82,16 @@ function stationType(g) {
 // Used by GET /api/bootstrap AND returned (wrapped as { bootstrap }) by every
 // mutation endpoint per the contract.
 
-// The 12 queries whose results are identical for every player — cached.
-async function loadSharedBootstrap(pool, fresh) {
+// ── ROSTER block ──  games/slots/rosters/dip/relay/schedule + all game config.
+// Identical for every viewer; changes only on sign-up / dip / relay / admin edits.
+async function loadRosterBlock(pool, fresh) {
   if (!fresh) {
-    const cached = cache.get(SHARED_KEY);
+    const cached = cache.get(SHARED_ROSTER_KEY);
     if (cached) return cached;
   }
   const [
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
-    legsR, relayR, annR, scoresR, refAssignR,
+    legsR, relayR, annR, refAssignR,
   ] = await Promise.all([
     pool.request().query('SELECT [key], [value] FROM bo_settings'),
     pool.request().query(`
@@ -102,22 +115,9 @@ async function loadSharedBootstrap(pool, fresh) {
       SELECT r.leg_id, r.user_id, u.team, u.first_name, u.last_name, u.username
       FROM bo_relay_signups r JOIN bo_users u ON u.id = r.user_id`),
     pool.request().query('SELECT TOP 20 id, title, body, created_at FROM bo_announcements ORDER BY created_at DESC, id DESC'),
-    pool.request().query('SELECT ISNULL(SUM(pts_buffalo), 0) AS buffalo, ISNULL(SUM(pts_roadhouse), 0) AS roadhouse FROM bo_results'),
     pool.request().query('SELECT game_id, user_id FROM bo_ref_assignments'),
   ]);
 
-  // Leaderboard — points per scorer per tribe (drives top-10 + "your rank").
-  // Rows are grouped by the result's player_name, so team results ("A & B")
-  // rank as the pair — same matching rule as myResults. Kept outside the big
-  // Promise.all so a stale cached shared block (missing this key) stays valid.
-  let leaderboardR = { recordset: [] };
-  try {
-    leaderboardR = await pool.request().query(`
-      SELECT player_name, winner, SUM(pts) AS pts
-      FROM bo_results
-      WHERE player_name IS NOT NULL AND pts > 0 AND winner IN ('buffalo', 'roadhouse')
-      GROUP BY player_name, winner`);
-  } catch (e) { /* never fatal — leaderboard just stays empty */ }
   // Idols live in their own table (migration 003; found_by/points 010). Query
   // defensively so the app still boots if a migration hasn't been run yet.
   let idolsR = { recordset: [] };
@@ -197,14 +197,85 @@ async function loadSharedBootstrap(pool, fresh) {
     }
   } catch (e) { /* table not present yet */ }
 
-  const shared = {
+  const roster = {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
-    legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, roundPointsById,
+    legsR, relayR, annR, refAssignR, idolsR, winPointsById, roundPointsById,
     schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup, slotBracketById,
-    leaderboardR,
   };
-  cache.set(SHARED_KEY, shared, SHARED_TTL_MS);
-  return shared;
+  cache.set(SHARED_ROSTER_KEY, roster, SHARED_TTL_MS);
+  return roster;
+}
+
+// ── RESULTS block ──  scores / leaderboard / refResults. Skipped entirely in
+// sign-up mode (nothing scored yet → zero result queries); otherwise cached
+// under its own key so a SIGN-UP write never rebuilds it and a SCORE write
+// (bustResultsBootstrap) never rebuilds the roster half.
+async function loadResultsBlock(pool, fresh, eventMode) {
+  if (eventMode === 'signup') {
+    return {
+      scoresR: { recordset: [{ buffalo: 0, roadhouse: 0 }] },
+      leaderboardR: { recordset: [] },
+      refResultsR: { recordset: [] },
+    };
+  }
+  if (!fresh) {
+    const cached = cache.get(SHARED_RESULTS_KEY);
+    if (cached) return cached;
+  }
+
+  const scoresR = await pool.request().query(
+    'SELECT ISNULL(SUM(pts_buffalo), 0) AS buffalo, ISNULL(SUM(pts_roadhouse), 0) AS roadhouse FROM bo_results');
+
+  // Leaderboard — points per scorer per tribe (drives top-10 + "your rank").
+  // Rows are grouped by the result's player_name, so team results ("A & B")
+  // rank as the pair — same matching rule as myResults.
+  let leaderboardR = { recordset: [] };
+  try {
+    leaderboardR = await pool.request().query(`
+      SELECT player_name, winner, SUM(pts) AS pts
+      FROM bo_results
+      WHERE player_name IS NOT NULL AND pts > 0 AND winner IN ('buffalo', 'roadhouse')
+      GROUP BY player_name, winner`);
+  } catch (e) { /* never fatal — leaderboard just stays empty */ }
+
+  // Every logged result (newest first) — refs only, but IDENTICAL for every ref,
+  // so it lives in the shared cached block instead of running per ref-request.
+  // A `TOP 2000` scan on every ref poll was one of the heaviest game-day costs;
+  // caching it here means one scan per refill. The per-user `mine` flag is
+  // applied in the ref section below. slot_id/slot_label/round_label are
+  // migrations 010/012 — query defensively so it still boots pre-migration.
+  let refResultsR;
+  try {
+    refResultsR = await pool.request().query(`
+      SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
+             entered_by, entered_by_id, slot_label, round_label, slot_id, created_at
+      FROM bo_results ORDER BY created_at DESC, id DESC`);
+  } catch (e012) {
+    try {
+      refResultsR = await pool.request().query(`
+        SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
+               entered_by, entered_by_id, slot_label, round_label, created_at
+        FROM bo_results ORDER BY created_at DESC, id DESC`);
+    } catch (e) {
+      refResultsR = await pool.request().query(`
+        SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
+               entered_by, entered_by_id, created_at
+        FROM bo_results ORDER BY created_at DESC, id DESC`);
+    }
+  }
+
+  const results = { scoresR, leaderboardR, refResultsR };
+  cache.set(SHARED_RESULTS_KEY, results, SHARED_TTL_MS);
+  return results;
+}
+
+// Merge the two cached blocks into the one shape buildBootstrap consumes. The
+// event mode (from the roster block's settings) decides whether results run.
+async function loadSharedBootstrap(pool, fresh) {
+  const roster = await loadRosterBlock(pool, fresh);
+  const eventMode = settingsFromRows(roster.settingsR.recordset).eventMode;
+  const results = await loadResultsBlock(pool, fresh, eventMode);
+  return { ...roster, ...results };
 }
 
 async function buildBootstrap(pool, user, opts = {}) {
@@ -218,7 +289,7 @@ async function buildBootstrap(pool, user, opts = {}) {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
     legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, roundPointsById,
     schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup, slotBracketById,
-    leaderboardR,
+    leaderboardR, refResultsR,
   } = shared;
   // Bracket payload for a game, or null. Undefined isBracket (pre-009) is left
   // for the frontend to resolve against its BRACKETS fallback.
@@ -228,20 +299,28 @@ async function buildBootstrap(pool, user, opts = {}) {
     const gt = gameTypeById[id] || {};
     return { intro: gt.bracketIntro || '', rounds };
   };
-  const [myVoteR, myResultsR] = await Promise.all([
-    pool.request().input('uid', sql.Int, uid)
-      .query('SELECT dip_entry_id FROM bo_dip_votes WHERE user_id = @uid'),
-    pool.request().input('pname', sql.NVarChar, myName)
-      .query(`
-        SELECT game_name, detail, pts FROM bo_results
-        WHERE player_name = @pname
-           OR player_name LIKE @pname + ' & %'
-           OR player_name LIKE '% & ' + @pname
-           OR player_name LIKE '% & ' + @pname + ' & %'
-        ORDER BY created_at DESC, id DESC`),
-  ]);
-
   const settings = settingsFromRows(settingsR.recordset);
+
+  // The two per-user queries are the ONLY DB cost that can't be shared/cached —
+  // they run live on every poll. In sign-up mode both are pointless: dip voting
+  // opens on Game Day (no votes yet) and nothing has been scored (no results),
+  // so skip them entirely and hand back empty results. That's zero per-user DB
+  // work per poll during the sign-up rush.
+  let myVoteR = { recordset: [] }, myResultsR = { recordset: [] };
+  if (settings.eventMode !== 'signup') {
+    [myVoteR, myResultsR] = await Promise.all([
+      pool.request().input('uid', sql.Int, uid)
+        .query('SELECT dip_entry_id FROM bo_dip_votes WHERE user_id = @uid'),
+      pool.request().input('pname', sql.NVarChar, myName)
+        .query(`
+          SELECT game_name, detail, pts FROM bo_results
+          WHERE player_name = @pname
+             OR player_name LIKE @pname + ' & %'
+             OR player_name LIKE '% & ' + @pname
+             OR player_name LIKE '% & ' + @pname + ' & %'
+          ORDER BY created_at DESC, id DESC`),
+    ]);
+  }
 
   // ── per-slot rosters ──
   const slotRoster = {};          // slotId -> { buffalo:[names], roadhouse:[names] }
@@ -572,28 +651,8 @@ async function buildBootstrap(pool, user, opts = {}) {
         return true;
       });
 
-    // Every logged result (newest first) so refs can SEE what's been scored,
-    // mark slots/rounds "Scored", and change a result. slot_label/round_label
-    // are migration 010 — query defensively pre-010.
-    let refResultsR;
-    try {
-      refResultsR = await pool.request().query(`
-        SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
-               entered_by, entered_by_id, slot_label, round_label, slot_id, created_at
-        FROM bo_results ORDER BY created_at DESC, id DESC`);
-    } catch (e012) {
-      try {
-        refResultsR = await pool.request().query(`
-          SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
-                 entered_by, entered_by_id, slot_label, round_label, created_at
-          FROM bo_results ORDER BY created_at DESC, id DESC`);
-      } catch (e) {
-        refResultsR = await pool.request().query(`
-          SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
-                 entered_by, entered_by_id, created_at
-          FROM bo_results ORDER BY created_at DESC, id DESC`);
-      }
-    }
+    // Logged results come from the shared cached block (identical for every ref);
+    // here we only apply the per-user `mine` flag.
     payload.refResults = refResultsR.recordset.map(r => ({
       id: r.id,
       game: r.game_name,
@@ -614,6 +673,6 @@ async function buildBootstrap(pool, user, opts = {}) {
 }
 
 module.exports = {
-  buildBootstrap, bustSharedBootstrap, getSettings, upsertSetting, settingsFromRows,
+  buildBootstrap, bustSharedBootstrap, bustResultsBootstrap, getSettings, upsertSetting, settingsFromRows,
   stationType, slotsOverlap, signupMaxFor, SIGNUP_MAX_BUFFALO, SIGNUP_MAX_ROADHOUSE, SLOT_MINUTES,
 };

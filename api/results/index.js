@@ -1,7 +1,7 @@
 const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
 const { json, requireUser, requireRef, formatName } = require('../lib/auth');
-const { bustSharedBootstrap } = require('../lib/bootstrap');
+const { bustResultsBootstrap } = require('../lib/bootstrap');
 
 const TEAMS = ['buffalo', 'roadhouse'];
 
@@ -102,7 +102,7 @@ app.http('results', {
         const dr = await pool0.request().input('id', sql.Int, id)
           .query('DELETE FROM bo_results WHERE id = @id');
         if (!dr.rowsAffected[0]) return json({ error: 'That result is already gone' }, 404);
-        bustSharedBootstrap();
+        bustResultsBootstrap();
         return json({ ok: true });
       }
 
@@ -130,7 +130,7 @@ app.http('results', {
           enteredBy, enteredById,
           ...labelsFrom(body),
         });
-        bustSharedBootstrap();
+        bustResultsBootstrap();
         return json({ ok: true });
       }
 
@@ -183,7 +183,7 @@ app.http('results', {
           enteredBy, enteredById,
           ...labelsFrom(body),
         });
-        bustSharedBootstrap();
+        bustResultsBootstrap();
         return json({ ok: true });
       }
 
@@ -206,7 +206,7 @@ app.http('results', {
             ...labelsFrom(body),
           });
         }
-        bustSharedBootstrap();
+        bustResultsBootstrap();
         return json({ ok: true });
       }
 
@@ -227,7 +227,7 @@ app.http('results', {
           playerName,
           enteredBy, enteredById,
         });
-        bustSharedBootstrap();
+        bustResultsBootstrap();
         return json({ ok: true });
       }
 
