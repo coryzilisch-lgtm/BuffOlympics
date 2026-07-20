@@ -190,26 +190,33 @@ cleaning; `USERS`/`SLOTS`/`DURATION_S`/`READ_ONLY` env knobs). Full runbook + Fa
 ## Fabric load — shared-bootstrap cache
 
 The event runs on a **shared Fabric F4** capacity (double F2), and `GET /api/bootstrap` (every load,
-re-polled every ~90s by every ACTIVE viewer) originally ran **14 queries**. Split in
-`api/lib/bootstrap.js`:
+re-polled every ~90s by every ACTIVE viewer) originally ran **14 queries**. `api/lib/bootstrap.js`
+splits the identical-for-everyone data into **two independently-busted cached blocks** (both `~120s`
+TTL, `api/lib/cache.js`) plus a small per-user tail:
 
-- **Shared queries** (games, slots, rosters, tribes, schedule, dip, relay, scores, announcements +
-  the ref `refResults` scan) → cached in-process **~120s** (`api/lib/cache.js`, `SHARED_KEY`). The
-  TTL is deliberately LONGER than the client poll interval so a lone foregrounded reader's next poll
-  hits the cache (0 shared queries) instead of refilling every time — the main lever against idle-tab
-  CU burn. `refResults` (the `TOP 2000` result scan) is identical for every ref, so it lives in the
-  shared block instead of running per ref-request — one scan per refill, not one per ref per poll.
-- **2 per-user queries** (`myVote`, `myResults`) → always live.
-- Writers bypass/refresh the cache: signup/dip/relay pass `buildBootstrap(pool, user, {fresh:true})`;
-  results/admin/team call `bustSharedBootstrap()`. So the writer sees their change immediately and
-  every successful signup/score refreshes the shared copy → headcounts + Scored marks stay fresh
-  during a rush; the 120s TTL is just a backstop. Net: crowd DB cost drops from once-per-request to a
-  few shared-refills/min.
+- **ROSTER block** (`SHARED_ROSTER_KEY`) — games, slots, rosters, tribes, schedule, dip, relay,
+  announcements, ref assignments + all game-config maps. Changes only on **sign-up / dip / relay /
+  admin** edits.
+- **RESULTS block** (`SHARED_RESULTS_KEY`) — `scores`, `leaderboard`, and the ref `refResults`
+  (`TOP 2000`) scan. Changes only on **score** writes — and is **SKIPPED ENTIRELY in sign-up mode**
+  (nothing scored yet → zero result queries). `refResults` is identical for every ref, so caching it
+  here means one scan per refill, not one per ref per poll.
+- **Why two blocks:** a write invalidates only the half it changed. During the **sign-up rush** every
+  signup rebuilds rosters but never touches results; during **game day** every score calls
+  `bustResultsBootstrap()` and rebuilds only the small results block, leaving the whole roster payload
+  cached. `bustSharedBootstrap()` (roster/admin/team writes) busts BOTH — the safe default.
+- **Per-user tail** (`myVote`, `myResults`) — the only DB cost that can't be cached (runs live per
+  poll). Also **skipped in sign-up mode**: dip voting opens on Game Day and nothing is scored, so both
+  are empty → **zero per-user DB work per poll during the sign-up rush.**
+- The `~120s` TTL is deliberately LONGER than the ~90s client poll so a lone foregrounded reader's
+  next poll hits the cache (0 shared queries) instead of refilling — the main lever against idle-tab
+  CU burn. Writers pass `{fresh:true}` / bust, so headcounts + Scored marks stay fresh during a rush;
+  the TTL is just a backstop for pure readers between writes.
 - **Client polling** (`app.js`, bottom): a hidden/backgrounded tab never polls, AND a tab left open
   but untouched for **5 minutes pauses completely** until the person interacts or refocuses (which
   fires an immediate catch-up poll). Cadence is 90s. Both guards keep an idle phone off the F4 budget.
 
-The cache stores raw mssql result objects and `buildBootstrap` only READS them (the one `.sort` is on
+Each block stores raw mssql result objects and `buildBootstrap` only READS them (the one `.sort` is on
 a filtered copy), so it's safe to share across users. Per-user `mine` flags are computed each call.
 
 ---

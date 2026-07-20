@@ -1,7 +1,7 @@
 const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
 const { json, requireUser, requireAdmin, formatName } = require('../lib/auth');
-const { bustSharedBootstrap } = require('../lib/bootstrap');
+const { bustResultsBootstrap } = require('../lib/bootstrap');
 
 app.http('ac-results', {
   methods: ['PATCH'],
@@ -49,9 +49,10 @@ app.http('ac-results', {
             updated_at = SYSUTCDATETIME()
           WHERE id = @id`);
 
-      // Totals + leaderboard live in the shared cache — a pts edit right before
-      // the reveal must not serve stale scores for up to 45s.
-      bustSharedBootstrap();
+      // Totals + leaderboard live in the results cache — a pts edit right before
+      // the reveal must not serve stale scores. Results-only bust (rosters are
+      // untouched by a score edit).
+      bustResultsBootstrap();
       return json({ ok: true });
     } catch (err) {
       context.error('admin-results error:', err);
