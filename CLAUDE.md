@@ -190,16 +190,24 @@ cleaning; `USERS`/`SLOTS`/`DURATION_S`/`READ_ONLY` env knobs). Full runbook + Fa
 ## Fabric load — shared-bootstrap cache
 
 The event runs on a **shared Fabric F4** capacity (double F2), and `GET /api/bootstrap` (every load,
-re-polled every 60s by every player) originally ran **14 queries**. Split in `api/lib/bootstrap.js`:
+re-polled every ~90s by every ACTIVE viewer) originally ran **14 queries**. Split in
+`api/lib/bootstrap.js`:
 
-- **12 shared queries** (games, slots, rosters, tribes, schedule, dip, relay, scores, announcements)
-  → cached in-process **~45s** (`api/lib/cache.js`, `SHARED_KEY`; raised from 20s after the first
-  crowd load test — trims cold-fill cost when SWA scales out under a burst).
+- **Shared queries** (games, slots, rosters, tribes, schedule, dip, relay, scores, announcements +
+  the ref `refResults` scan) → cached in-process **~120s** (`api/lib/cache.js`, `SHARED_KEY`). The
+  TTL is deliberately LONGER than the client poll interval so a lone foregrounded reader's next poll
+  hits the cache (0 shared queries) instead of refilling every time — the main lever against idle-tab
+  CU burn. `refResults` (the `TOP 2000` result scan) is identical for every ref, so it lives in the
+  shared block instead of running per ref-request — one scan per refill, not one per ref per poll.
 - **2 per-user queries** (`myVote`, `myResults`) → always live.
 - Writers bypass/refresh the cache: signup/dip/relay pass `buildBootstrap(pool, user, {fresh:true})`;
   results/admin/team call `bustSharedBootstrap()`. So the writer sees their change immediately and
-  every successful signup refreshes the shared copy → headcounts stay fresh during a rush; the 45s
-  TTL is just a backstop. Net: crowd DB cost drops from once-per-request to a few shared-refills/min.
+  every successful signup/score refreshes the shared copy → headcounts + Scored marks stay fresh
+  during a rush; the 120s TTL is just a backstop. Net: crowd DB cost drops from once-per-request to a
+  few shared-refills/min.
+- **Client polling** (`app.js`, bottom): a hidden/backgrounded tab never polls, AND a tab left open
+  but untouched for **5 minutes pauses completely** until the person interacts or refocuses (which
+  fires an immediate catch-up poll). Cadence is 90s. Both guards keep an idle phone off the F4 budget.
 
 The cache stores raw mssql result objects and `buildBootstrap` only READS them (the one `.sort` is on
 a filtered copy), so it's safe to share across users. Per-user `mine` flags are computed each call.

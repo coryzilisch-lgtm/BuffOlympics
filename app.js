@@ -4568,12 +4568,41 @@ document.addEventListener('change', (e) => {
 });
 
 /* ════════════════════ polling + init ════════════════════ */
-setInterval(() => {
-  if (document.visibilityState !== 'visible') return;
+// Background polling exists to keep headcounts / scores fresh for someone who's
+// actually LOOKING at the app. Two guards keep it off the Fabric CU budget when
+// nobody is: (1) a hidden/backgrounded tab never polls; (2) a tab left open but
+// untouched for 5 minutes pauses completely until the person comes back. Poll
+// cadence is 90s (was 60s) — headcounts still refresh instantly on any write.
+const POLL_MS = 90000;
+const IDLE_PAUSE_MS = 5 * 60 * 1000;   // full stop after 5 min with no interaction
+let lastActivity = Date.now();
+
+function pollNow() {
   if (!S.token || !S.boot || S.busy) return;
   loadBoot(true);
   if (S.route === 'admin' && S.boot.user.isAdmin) loadOverview(true);
-}, 60000);
+}
+
+// Any real interaction resets the idle clock. If we'd already paused, the first
+// touch resumes polling AND catches up immediately so the person sees fresh data.
+function markActive() {
+  const wasIdle = Date.now() - lastActivity > IDLE_PAUSE_MS;
+  lastActivity = Date.now();
+  if (wasIdle && document.visibilityState === 'visible') pollNow();
+}
+['pointerdown', 'keydown', 'touchstart', 'scroll'].forEach(ev =>
+  document.addEventListener(ev, markActive, { passive: true, capture: true }));
+
+// Returning to a backgrounded tab counts as activity and gets an immediate refresh.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') { lastActivity = Date.now(); pollNow(); }
+});
+
+setInterval(() => {
+  if (document.visibilityState !== 'visible') return;      // backgrounded → paused
+  if (Date.now() - lastActivity > IDLE_PAUSE_MS) return;   // idle 5+ min → paused
+  pollNow();
+}, POLL_MS);
 
 parseRoute();
 render();

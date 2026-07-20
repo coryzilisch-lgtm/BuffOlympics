@@ -8,13 +8,15 @@ const cache = require('./cache');
 // { fresh:true } (or call bustSharedBootstrap) so the mutator sees their change
 // immediately and every other player picks it up on their next poll.
 const SHARED_KEY = 'bootstrap:shared';
-// Players poll every 60s and writers bypass the cache (fresh:true), so a 45s
-// TTL is invisible to any single user while cutting crowd DB refills further —
-// this also trims the cold-fill cost when Static Web Apps scales out to several
-// Function instances under a burst (each keeps its own copy). Headcounts stay
-// near-live regardless: every successful signup refreshes the shared copy, so
-// the TTL is just a backstop for pure readers between writes.
-const SHARED_TTL_MS = 45000;
+// Players poll every ~90s and writers bypass the cache (fresh:true), so a TTL
+// LONGER than the poll interval lets a lone foregrounded reader's next poll hit
+// the cache (0 shared queries) instead of refilling every time — the single
+// biggest lever against idle-tab CU burn on our F4. Headcounts stay near-live
+// regardless: every successful signup/score refreshes the shared copy
+// (bustSharedBootstrap), so the TTL is only a backstop for pure readers between
+// writes. During a sign-up rush or active scoring, frequent writes keep it
+// fresh; in quiet periods a ~2-minute staleness backstop is harmless.
+const SHARED_TTL_MS = 120000;
 function bustSharedBootstrap() { cache.bust(SHARED_KEY); }
 
 // Per-tribe sign-up cap (relay + dip are separate). Texas Roadhouse brings
@@ -197,11 +199,38 @@ async function loadSharedBootstrap(pool, fresh) {
     }
   } catch (e) { /* table not present yet */ }
 
+  // Every logged result (newest first) — refs only, but IDENTICAL for every ref,
+  // so it lives in the shared cached block instead of running per ref-request.
+  // A `TOP 2000` scan on every ref poll was one of the heaviest game-day costs;
+  // caching it here means one scan per shared refill (writes bust the cache, so
+  // it stays fresh the moment a score is logged). The per-user `mine` flag is
+  // applied in the ref section below. slot_id/slot_label/round_label are
+  // migrations 010/012 — query defensively so it still boots pre-migration.
+  let refResultsR;
+  try {
+    refResultsR = await pool.request().query(`
+      SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
+             entered_by, entered_by_id, slot_label, round_label, slot_id, created_at
+      FROM bo_results ORDER BY created_at DESC, id DESC`);
+  } catch (e012) {
+    try {
+      refResultsR = await pool.request().query(`
+        SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
+               entered_by, entered_by_id, slot_label, round_label, created_at
+        FROM bo_results ORDER BY created_at DESC, id DESC`);
+    } catch (e) {
+      refResultsR = await pool.request().query(`
+        SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
+               entered_by, entered_by_id, created_at
+        FROM bo_results ORDER BY created_at DESC, id DESC`);
+    }
+  }
+
   const shared = {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
     legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, roundPointsById,
     schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup, slotBracketById,
-    leaderboardR,
+    leaderboardR, refResultsR,
   };
   cache.set(SHARED_KEY, shared, SHARED_TTL_MS);
   return shared;
@@ -218,7 +247,7 @@ async function buildBootstrap(pool, user, opts = {}) {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
     legsR, relayR, annR, scoresR, refAssignR, idolsR, winPointsById, roundPointsById,
     schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup, slotBracketById,
-    leaderboardR,
+    leaderboardR, refResultsR,
   } = shared;
   // Bracket payload for a game, or null. Undefined isBracket (pre-009) is left
   // for the frontend to resolve against its BRACKETS fallback.
@@ -572,28 +601,8 @@ async function buildBootstrap(pool, user, opts = {}) {
         return true;
       });
 
-    // Every logged result (newest first) so refs can SEE what's been scored,
-    // mark slots/rounds "Scored", and change a result. slot_label/round_label
-    // are migration 010 — query defensively pre-010.
-    let refResultsR;
-    try {
-      refResultsR = await pool.request().query(`
-        SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
-               entered_by, entered_by_id, slot_label, round_label, slot_id, created_at
-        FROM bo_results ORDER BY created_at DESC, id DESC`);
-    } catch (e012) {
-      try {
-        refResultsR = await pool.request().query(`
-          SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
-                 entered_by, entered_by_id, slot_label, round_label, created_at
-          FROM bo_results ORDER BY created_at DESC, id DESC`);
-      } catch (e) {
-        refResultsR = await pool.request().query(`
-          SELECT TOP 2000 id, game_name, detail, winner, pts, player_name,
-                 entered_by, entered_by_id, created_at
-          FROM bo_results ORDER BY created_at DESC, id DESC`);
-      }
-    }
+    // Logged results come from the shared cached block (identical for every ref);
+    // here we only apply the per-user `mine` flag.
     payload.refResults = refResultsR.recordset.map(r => ({
       id: r.id,
       game: r.game_name,
