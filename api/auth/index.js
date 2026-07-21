@@ -34,30 +34,36 @@ async function signup(pool, body) {
   if (!password) return json({ error: 'Password is required' }, 400);
   if (!TEAMS.includes(team)) return json({ error: 'Pick a tribe — buffalo or roadhouse' }, 400);
 
-  // Uniqueness is enforced IN the insert batch (no separate check-then-insert
-  // window): a double-tapped signup form must not create two accounts with the
-  // same email — signin would then pick one arbitrarily.
-  const r = await pool.request()
-    .input('email', sql.NVarChar, email)
-    .input('password_hash', sql.NVarChar, hashPassword(password))
-    .input('first_name', sql.NVarChar, firstName)
-    .input('last_name', sql.NVarChar, lastName)
-    .input('team', sql.NVarChar, team)
-    .input('shirt_size', sql.NVarChar, body.shirtSize ? String(body.shirtSize) : null)
-    .input('years', sql.NVarChar, body.years ? String(body.years) : null)
-    .input('song_request', sql.NVarChar, body.songRequest ? String(body.songRequest) : null)
-    .input('is_admin', sql.Bit, isBootstrapAdmin(email) ? 1 : 0)
-    .query(`
-      SET XACT_ABORT ON;
-      BEGIN TRANSACTION;
-        IF NOT EXISTS (SELECT 1 FROM bo_users WITH (UPDLOCK, HOLDLOCK) WHERE LOWER(email) = LOWER(@email))
-          INSERT INTO bo_users
-            (email, password_hash, first_name, last_name, team, shirt_size, years, song_request, is_ref, is_admin)
-          OUTPUT INSERTED.*
-          VALUES
-            (@email, @password_hash, @first_name, @last_name, @team, @shirt_size, @years, @song_request, 0, @is_admin);
-      COMMIT TRANSACTION;
-    `);
+  // Uniqueness is enforced ATOMICALLY by the ux_bo_users_email unique index — a
+  // duplicate email raises SQL error 2601/2627, which we turn into a friendly
+  // 409. This is the correct atomic guard: no check-then-insert race, and no
+  // `OUTPUT INSERTED.*` inside an IF/transaction batch — that combination
+  // returned no recordset through the mssql driver and 500'd EVERY signup.
+  let r;
+  try {
+    r = await pool.request()
+      .input('email', sql.NVarChar, email)
+      .input('password_hash', sql.NVarChar, hashPassword(password))
+      .input('first_name', sql.NVarChar, firstName)
+      .input('last_name', sql.NVarChar, lastName)
+      .input('team', sql.NVarChar, team)
+      .input('shirt_size', sql.NVarChar, body.shirtSize ? String(body.shirtSize) : null)
+      .input('years', sql.NVarChar, body.years ? String(body.years) : null)
+      .input('song_request', sql.NVarChar, body.songRequest ? String(body.songRequest) : null)
+      .input('is_admin', sql.Bit, isBootstrapAdmin(email) ? 1 : 0)
+      .query(`
+        INSERT INTO bo_users
+          (email, password_hash, first_name, last_name, team, shirt_size, years, song_request, is_ref, is_admin)
+        OUTPUT INSERTED.*
+        VALUES
+          (@email, @password_hash, @first_name, @last_name, @team, @shirt_size, @years, @song_request, 0, @is_admin);
+      `);
+  } catch (e) {
+    if (e && (e.number === 2601 || e.number === 2627)) {
+      return json({ error: 'An account with that email already exists' }, 409);
+    }
+    throw e;
+  }
   const user = r.recordset[0];
   if (!user) return json({ error: 'An account with that email already exists' }, 409);
   return json({ token: signToken(user.id, user.token_version), user: userToJson(user) });
@@ -109,26 +115,31 @@ async function refCreate(pool, body) {
   if (email || firstName || lastName) {
     if (!firstName || !lastName) return json({ error: 'First and last name are required' }, 400);
     if (!email) return json({ error: 'Email is required' }, 400);
-    // Same atomic email-uniqueness as the player signup.
-    const r = await pool.request()
-      .input('email', sql.NVarChar, email)
-      .input('password_hash', sql.NVarChar, hashPassword(password))
-      .input('first_name', sql.NVarChar, firstName)
-      .input('last_name', sql.NVarChar, lastName)
-      .input('shirt_size', sql.NVarChar, body.shirtSize ? String(body.shirtSize) : null)
-      .input('years', sql.NVarChar, body.years ? String(body.years) : null)
-      .input('song_request', sql.NVarChar, body.songRequest ? String(body.songRequest) : null)
-      .query(`
-        SET XACT_ABORT ON;
-        BEGIN TRANSACTION;
-          IF NOT EXISTS (SELECT 1 FROM bo_users WITH (UPDLOCK, HOLDLOCK) WHERE LOWER(email) = LOWER(@email))
-            INSERT INTO bo_users
-              (email, password_hash, first_name, last_name, shirt_size, years, song_request, is_ref, is_admin)
-            OUTPUT INSERTED.*
-            VALUES
-              (@email, @password_hash, @first_name, @last_name, @shirt_size, @years, @song_request, 1, 0);
-        COMMIT TRANSACTION;
-      `);
+    // Same atomic email-uniqueness as the player signup: the unique index
+    // enforces it and a duplicate (2601/2627) becomes a 409.
+    let r;
+    try {
+      r = await pool.request()
+        .input('email', sql.NVarChar, email)
+        .input('password_hash', sql.NVarChar, hashPassword(password))
+        .input('first_name', sql.NVarChar, firstName)
+        .input('last_name', sql.NVarChar, lastName)
+        .input('shirt_size', sql.NVarChar, body.shirtSize ? String(body.shirtSize) : null)
+        .input('years', sql.NVarChar, body.years ? String(body.years) : null)
+        .input('song_request', sql.NVarChar, body.songRequest ? String(body.songRequest) : null)
+        .query(`
+          INSERT INTO bo_users
+            (email, password_hash, first_name, last_name, shirt_size, years, song_request, is_ref, is_admin)
+          OUTPUT INSERTED.*
+          VALUES
+            (@email, @password_hash, @first_name, @last_name, @shirt_size, @years, @song_request, 1, 0);
+        `);
+    } catch (e) {
+      if (e && (e.number === 2601 || e.number === 2627)) {
+        return json({ error: 'An account with that email already exists' }, 409);
+      }
+      throw e;
+    }
     const user = r.recordset[0];
     if (!user) return json({ error: 'An account with that email already exists' }, 409);
     return json({ token: signToken(user.id, user.token_version), user: userToJson(user) });
@@ -168,7 +179,15 @@ app.http('auth', {
       return json({ error: 'Unknown auth action' }, 404);
     } catch (err) {
       context.error('auth error:', err);
-      return json({ error: 'Internal server error' }, 500);
+      // TEMPORARY diagnostic: SWA managed-function logs are hard to reach, so
+      // surface the DB error on the 500 to root-cause the signup failure from
+      // the browser Network tab. REMOVE once the cause is understood.
+      return json({
+        error: 'Internal server error',
+        detail: err && err.message,
+        code: err && (err.number != null ? err.number : err.code),
+        name: err && err.name,
+      }, 500);
     }
   },
 });
