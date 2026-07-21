@@ -168,7 +168,15 @@ app.http('auth', {
       return json({ error: 'Unknown auth action' }, 404);
     } catch (err) {
       context.error('auth error:', err);
-      return json({ error: 'Internal server error' }, 500);
+      // TEMPORARY diagnostic: SWA managed-function logs are hard to reach, so
+      // surface the DB error on the 500 to root-cause the signup failure from
+      // the browser Network tab. REMOVE once the cause is understood.
+      return json({
+        error: 'Internal server error',
+        detail: err && err.message,
+        code: err && (err.number != null ? err.number : err.code),
+        name: err && err.name,
+      }, 500);
     }
   },
 });
