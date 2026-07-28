@@ -52,6 +52,7 @@ api/                       — Azure Functions v4 (Node 20, app.http model, mssq
   ac-results/, ac-dip/     — PATCH result / DELETE dip entry (admin)
   health/                  — GET /api/health (DB connectivity diagnostic)
 docs/API.md                — the frontend↔backend contract (UPDATE FIRST when changing endpoints)
+docs/DATAPACKAGE.md        — OKF/Frictionless Data package export (see scripts/build-datapackage.js)
 infra/main.bicep           — SWA resource + app settings
 infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
   001_init.sql             — all bo_* tables + seed (games, schedule, relay legs, settings)
@@ -91,6 +92,9 @@ scripts/
   loadtest-crowd.js        — realistic crowd load test: read stampede + sign-up burst + sustained
                              mix, reports latency percentiles + throttle rate, self-cleaning (see
                              docs/LOADTEST.md). Different question than the concurrency test.
+  build-datapackage.js     — exports the public event program (games/slots/brackets/schedule/relay
+                             legs — no sign-ups, results, or personal data) as an OKF/Frictionless
+                             Data package (datapackage.json + CSVs). See docs/DATAPACKAGE.md.
 .github/workflows/azure-static-web-apps.yml  — deploy on push to main
 staticwebapp.config.json   — SPA fallback, node:20 apiRuntime, anonymous API routes
 ```
