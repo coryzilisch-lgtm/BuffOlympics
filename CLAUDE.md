@@ -38,6 +38,8 @@ api/                       — Azure Functions v4 (Node 20, app.http model, mssq
     auth.js                — token verify, requireUser/requireRef/requireAdmin, formatName, json()
     bootstrap.js           — buildBootstrap() + SHARED-block cache + signupMaxFor + helpers
     cache.js               — tiny per-instance TTL cache (get/set/bust)
+    datapackage.js         — OKF/Frictionless Data resource schemas + row builders + CSV encoder,
+                             shared by the datapackage/datapackage-file functions
   auth/                    — POST /api/auth/{signup,signin,ref-login,ref-create}
   me/, me-team/            — GET /api/me, POST /api/me/team
   bootstrap/               — GET /api/bootstrap (the whole payload)
@@ -50,9 +52,13 @@ api/                       — Azure Functions v4 (Node 20, app.http model, mssq
   ac-overview/             — GET /api/ac-overview (admin dashboard payload; includes game slots)
   ac-actions/              — POST /api/ac/{action} (admin mutations; see list below)
   ac-results/, ac-dip/     — PATCH result / DELETE dip entry (admin)
+  datapackage/, datapackage-file/ — GET /api/datapackage(-file) — public, anonymous, live OKF/
+                             Frictionless Data package export (game catalog/slots/brackets/schedule/
+                             relay legs; no sign-ups/results/personal data). Reads the same cached
+                             roster block as bootstrap/ac-overview — no independent DB polling.
   health/                  — GET /api/health (DB connectivity diagnostic)
 docs/API.md                — the frontend↔backend contract (UPDATE FIRST when changing endpoints)
-docs/DATAPACKAGE.md        — OKF/Frictionless Data package export (see scripts/build-datapackage.js)
+docs/DATAPACKAGE.md        — OKF/Frictionless Data package: live endpoints + scripts/build-datapackage.js
 infra/main.bicep           — SWA resource + app settings
 infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
   001_init.sql             — all bo_* tables + seed (games, schedule, relay legs, settings)

@@ -675,4 +675,5 @@ async function buildBootstrap(pool, user, opts = {}) {
 module.exports = {
   buildBootstrap, bustSharedBootstrap, bustResultsBootstrap, getSettings, upsertSetting, settingsFromRows,
   stationType, slotsOverlap, signupMaxFor, SIGNUP_MAX_BUFFALO, SIGNUP_MAX_ROADHOUSE, SLOT_MINUTES,
+  loadRosterBlock,
 };

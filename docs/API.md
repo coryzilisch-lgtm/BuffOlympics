@@ -44,6 +44,12 @@ via the `mssql` driver with service-principal auth (same pattern as Herd-Intrane
 | `POST /api/auth/ref-login` | `{username,password}` | `{token,user}` or 401. Only users with `is_ref=1` or username-based accounts. |
 | `POST /api/auth/ref-create` | `{firstName,lastName,email,password,joinCode,shirtSize?,years?,songRequest?}` | `{token,user}`. Same profile fields as a player signup, minus the tribe (refs are neutral); the account signs back in via the normal `signin`. 403 `{error:'bad_code'}` if joinCode doesn't match the `ref_join_code` setting (case-insensitive). 409 if the email exists. Creates user with `is_ref=1`, no team. Legacy fallback: a body with only `{username,password,joinCode}` still creates a username-based ref (signs in via `ref-login`). |
 
+### Public data package (anonymous)
+| Method & path | Returns |
+|---|---|
+| `GET /api/datapackage` | The OKF/Frictionless Data `datapackage.json` descriptor for the public event program (games, slots, bracket rounds, schedule, relay legs — no sign-ups/results/personal data). Each resource's `path` points at `datapackage-file`. See `docs/DATAPACKAGE.md`. |
+| `GET /api/datapackage-file?name=<games\|game-slots\|bracket-rounds\|schedule\|relay-legs>` | That resource as CSV (`text/csv`). 404 on an unknown `name`. |
+
 ### Session'd (require X-Auth-Token; 401 otherwise)
 | Method & path | Body | Notes |
 |---|---|---|
