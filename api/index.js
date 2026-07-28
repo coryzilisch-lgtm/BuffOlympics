@@ -17,3 +17,5 @@ require('./ac-overview/index');
 require('./ac-actions/index');
 require('./ac-results/index');
 require('./ac-dip/index');
+require('./datapackage/index');
+require('./datapackage-file/index');
