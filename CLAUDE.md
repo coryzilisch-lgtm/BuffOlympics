@@ -132,8 +132,8 @@ Sign-ups are **per time slot**, not per game. Each `bo_games` row has rows in `b
 `cap_buffalo`, `cap_roadhouse`, `sort`). `bo_signups` is `(user_id, slot_id)` PK.
 
 - **Per-tribe day cap** (NOT in the schema — enforced in code, `api/lib/bootstrap.js` →
-  `signupMaxFor`): **Buffalo = 4 slots, Texas Roadhouse = 2** (TXRH brings more people, so each takes
-  fewer slots). `payload.signupMax` carries the caller's cap; the frontend reads `boot.signupMax`
+  `signupMaxFor`): **Buffalo = 4 slots, Texas Roadhouse = 4** (both tribes now get 4).
+  `payload.signupMax` carries the caller's cap; the frontend reads `boot.signupMax`
   (never hard-code 2).
 - **Fixed-time games** (`open_play = 0`) can't have two overlapping picks.
 - **Walk-up games** (`open_play = 1`) ALSO carry sign-up slots now: reserve a time in the window; the
@@ -227,6 +227,15 @@ Browser UI to add/edit/remove games and slots, **safe mid-event**. `admGamesSect
 (`admGamesModals`) in `app.js`; handlers `admGame*` / `admSlot*` in `ACTIONS`. Time entry: type
 `1:30 PM` → `parseTimeLabel`/`minToLabel` derive `start_min` + label. `ac-overview.gamesCatalog[]`
 carries `slots[]` with live `nBuffalo`/`nRoadhouse` signed counts.
+
+**Slot report** (Games tab → "📊 Run slot report", `admCapacityPanel`/`capacityReport` in `app.js`):
+per-tribe open seats vs. filled, how many teammates are on the tribe / signed up / maxed out, picks
+used out of `roster × dayCap`, and the balance (open seats − picks the tribe could still claim), plus
+a per-game table sorted tightest-first and a CSV export (`admExportCapacity`). It's computed entirely
+from the `ac-overview` payload already on screen — **no extra API call, zero DB cost**. The day caps
+come from `ac-overview.signupMax` `{buffalo, roadhouse}` (never hard-code them; frontend falls back
+to 4). Slot picks are counted from `slots[].people[]` ids (the cap counts SLOTS, and `people[].games`
+is deduped to distinct games, so it's the wrong source).
 
 Backend: **`POST /api/ac/games`** (in `ac-actions/index.js`, `handleGames`):
 `addGame` / `updateGame` / `removeGame` / `addSlot` / `updateSlot` / `removeSlot` /
@@ -346,7 +355,7 @@ header. `api/lib/auth.js`: `requireUser` (verifies token → user row), `require
 ## Event flow (admin cheat-sheet)
 
 1. **Sign-Up phase** (default): players create accounts, pick a tribe, claim slots (Buffalo 4 / TXRH
-   2), join Dip Off (5 cooks/tribe), claim one relay leg.
+   4), join Dip Off (5 cooks/tribe), claim one relay leg.
 2. Admin flips **Event mode → Game Day**: sign-ups lock, dip **voting** opens (one vote each).
 3. Refs log results all day: assign refs in Admin → Referees (or refs self-assign from their Games
    tab), then each ref taps their game → picks the timeslot → logs the winner (head-to-head/bracket)

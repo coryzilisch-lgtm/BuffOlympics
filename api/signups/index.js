@@ -5,7 +5,7 @@ const { buildBootstrap, getSettings, slotsOverlap, signupMaxFor } = require('../
 
 // Sign up for a SLOT (a specific 5-minute time within a game). Enforces, all
 // server-side: signup phase only, slot exists, my tribe has room in that slot,
-// the per-tribe day cap (Buffalo 4 / TXRH 2), and no two of my slots overlap in
+// the per-tribe day cap (Buffalo 4 / TXRH 4), and no two of my slots overlap in
 // time — EXCEPT walk-up (open_play) games, which may overlap (the UI warns to
 // finish inside the window, then the game reverts to free walk-up).
 async function handleSignup(pool, user, slotId, teamNoRaw) {

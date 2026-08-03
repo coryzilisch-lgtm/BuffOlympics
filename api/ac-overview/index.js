@@ -1,7 +1,7 @@
 const { app } = require('@azure/functions');
 const { getPool } = require('../lib/db');
 const { json, requireUser, requireAdmin, formatName } = require('../lib/auth');
-const { settingsFromRows } = require('../lib/bootstrap');
+const { settingsFromRows, SIGNUP_MAX_BUFFALO, SIGNUP_MAX_ROADHOUSE } = require('../lib/bootstrap');
 
 // Flat route 'admin-board' — deliberately NOT under the 'admin/…' segment
 // space, because a two-segment 'admin/overview' collides with admin-actions'
@@ -300,6 +300,9 @@ app.http('ac-overview', {
           refs: refs.length,
           admins: usersR.recordset.filter(u => u.is_admin).length,
         },
+        // Per-tribe day cap (code-level, api/lib/bootstrap.js) — the slot
+        // report compares open spots against what each tribe may still claim.
+        signupMax: { buffalo: SIGNUP_MAX_BUFFALO, roadhouse: SIGNUP_MAX_ROADHOUSE },
         people,
         gamesCatalog,
         schedule,
