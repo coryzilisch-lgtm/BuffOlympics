@@ -41,6 +41,7 @@ const S = {
   admBracketEdit: null,  // { gameId } — bracket editor modal (rounds + intro)
   admRoundEdit: null,    // round id being edited inline in the bracket modal
   admRoundTeam: 'both',  // selected matchup for the round being edited
+  admCapReport: false,   // "Run slot report" panel open in the Games tab
   admFillSlot: null,     // { slotId, gameId } — "Fill slot" search open in Games tab
   admRefAdd: null,       // gameId — "+ Add ref" search open in the Referees tab
   admAddSlot: null,      // { uid, gameId } — slot picker open in People tab
@@ -212,10 +213,10 @@ function isRefUser() {
 }
 
 /* ════════════════════ slot-based sign-up state ════════════════════ */
-// Per-tribe day cap comes from the server (Buffalo 4 / TXRH 2). Fall back to 2.
+// Per-tribe day cap comes from the server (Buffalo 4 / TXRH 4). Fall back to 4.
 function signupMax() {
   const m = S.boot && S.boot.signupMax;
-  return Number.isFinite(m) ? m : 2;
+  return Number.isFinite(m) ? m : 4;
 }
 function myTeamKey() {
   return S.boot.user.team === 'roadhouse' ? 'roadhouse' : 'buffalo';
@@ -2450,6 +2451,151 @@ function minToLabel(min) {
   return `${h}:${String(mm).padStart(2, '0')} ${ap}`;
 }
 
+/* ── slot capacity report (Admin → Games → "Slot report") ──
+   Everything here is computed from the ac-overview payload already on screen —
+   no extra API call, so running the report costs the DB nothing. Per tribe it
+   answers: how many seats are still open, how many teammates are signed up,
+   and how many picks those teammates could still claim (roster × day cap). */
+function capacityReport(ov) {
+  const games = ov.gamesCatalog || [];
+  const people = ov.people || [];
+  const maxes = ov.signupMax || {};
+  const dayCap = (t) => Number.isFinite(maxes[t]) ? maxes[t] : 4;
+  const blank = () => ({ cap: 0, filled: 0, open: 0 });
+  const totals = { buffalo: blank(), roadhouse: blank() };
+  const picksByUser = {};   // user id -> slots held (the day cap counts SLOTS)
+  const perGame = [];
+
+  for (const g of games) {
+    const slots = g.slots || [];
+    const row = { id: g.id, name: g.name, openPlay: !!g.openPlay, slots: slots.length, buffalo: blank(), roadhouse: blank() };
+    for (const s of slots) {
+      row.buffalo.cap += s.capBuffalo || 0;
+      row.buffalo.filled += s.nBuffalo || 0;
+      row.roadhouse.cap += s.capRoadhouse || 0;
+      row.roadhouse.filled += s.nRoadhouse || 0;
+      for (const p of (s.people || [])) picksByUser[p.id] = (picksByUser[p.id] || 0) + 1;
+    }
+    for (const t of ['buffalo', 'roadhouse']) {
+      // An admin "Fill slot" override can push a slot past cap — never let that
+      // read as negative open spots.
+      row[t].open = Math.max(0, row[t].cap - row[t].filled);
+      totals[t].cap += row[t].cap;
+      totals[t].filled += row[t].filled;
+      totals[t].open += row[t].open;
+    }
+    perGame.push(row);
+  }
+
+  const tribes = {};
+  for (const t of ['buffalo', 'roadhouse']) {
+    const roster = people.filter(p => p.team === t);
+    const picks = roster.map(p => picksByUser[p.id] || 0);
+    const used = picks.reduce((n, x) => n + x, 0);
+    const cap = dayCap(t);
+    const allowance = roster.length * cap;
+    const unclaimed = Math.max(0, allowance - used);   // picks the tribe could still make
+    tribes[t] = {
+      dayCap: cap,
+      players: roster.length,
+      signedUp: picks.filter(x => x > 0).length,
+      noPicks: picks.filter(x => x === 0).length,
+      maxedOut: picks.filter(x => x >= cap).length,
+      picksUsed: used,
+      allowance,
+      unclaimed,
+      slotCap: totals[t].cap,
+      filled: totals[t].filled,
+      open: totals[t].open,
+      // + = seats to spare if every teammate maxes out, − = more demand than seats.
+      balance: totals[t].open - unclaimed,
+    };
+  }
+  perGame.sort((a, b) => (a.buffalo.open + a.roadhouse.open) - (b.buffalo.open + b.roadhouse.open) || a.name.localeCompare(b.name));
+  return { tribes, perGame };
+}
+
+function admCapacityPanel(ov) {
+  const rep = capacityReport(ov);
+  const TEAMS = [
+    { key: 'buffalo', label: 'Buffalo', color: '#FF5F00', ink: '#B34700', bg: '#FFF3E8', line: '#F5DCC4' },
+    { key: 'roadhouse', label: 'Texas Roadhouse', color: '#E0322E', ink: '#B3241F', bg: '#FDEEEE', line: '#F2CFCE' },
+  ];
+  const num = (v, color) => `<span style="font-family:'BN Kragen';font-size:22px;color:${color};line-height:1;">${v}</span>`;
+  const line = (label, val, color, note) => `
+    <div style="display:flex;align-items:baseline;justify-content:space-between;gap:10px;padding:7px 0;border-top:1px solid rgba(0,0,0,0.06);">
+      <span style="font-size:12px;color:#6D7C83;">${label}</span>
+      <span style="text-align:right;">${num(val, color)}${note ? `<div style="font-size:10.5px;color:#9AA7A5;margin-top:2px;">${note}</div>` : ''}</span>
+    </div>`;
+
+  const cards = TEAMS.map(t => {
+    const d = rep.tribes[t.key];
+    const pct = d.slotCap ? Math.round((d.filled / d.slotCap) * 100) : 0;
+    const balColor = d.balance < 0 ? '#B3241F' : '#1F8A5B';
+    const balNote = d.balance < 0
+      ? `${Math.abs(d.balance)} more picks than seats — some teammates won't fill all ${d.dayCap}`
+      : `${d.balance} seats would still be open if everyone maxed out`;
+    return `
+    <div style="background:${t.bg};border:1px solid ${t.line};border-radius:10px;padding:14px 16px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="width:9px;height:9px;border-radius:50%;background:${t.color};"></span>
+        <span style="font-family:'BN Kragen';font-size:17px;color:#00253D;text-transform:uppercase;line-height:1;">${t.label}</span>
+        <span style="margin-left:auto;font-size:10px;font-weight:800;color:${t.ink};background:#fff;border:1px solid ${t.line};border-radius:5px;padding:3px 7px;">${d.dayCap} games each</span>
+      </div>
+      <div style="display:flex;align-items:baseline;gap:8px;margin-top:11px;">
+        ${num(d.open, t.ink)}
+        <span style="font-size:12px;font-weight:700;color:#6D7C83;">open slots left · ${d.filled} of ${d.slotCap} filled (${pct}%)</span>
+      </div>
+      <div style="height:7px;border-radius:4px;background:rgba(0,0,0,0.08);overflow:hidden;margin-top:8px;">
+        <div style="height:100%;width:${Math.min(100, pct)}%;background:${t.color};"></div>
+      </div>
+      <div style="margin-top:10px;">
+        ${line('Teammates on this tribe', d.players, '#00253D')}
+        ${line('Signed up for at least one game', d.signedUp, '#00253D', `${d.noPicks} haven't picked anything yet`)}
+        ${line('Maxed out', d.maxedOut, '#00253D', `all ${d.dayCap} slots claimed`)}
+        ${line('Picks used', `${d.picksUsed}<span style="font-size:13px;color:#6D7C83;"> / ${d.allowance}</span>`, '#00253D', `${d.unclaimed} picks still available to this tribe`)}
+        ${line('Open slots vs picks left', `${d.balance >= 0 ? '+' : ''}${d.balance}`, balColor, balNote)}
+      </div>
+    </div>`;
+  }).join('');
+
+  const gameRows = rep.perGame.map(g => {
+    const full = (g.buffalo.open + g.roadhouse.open) === 0 && (g.buffalo.cap + g.roadhouse.cap) > 0;
+    const cell = (d, color) => `<span style="width:112px;flex-shrink:0;font-size:12px;font-weight:700;color:${color};">${d.open} open <span style="font-weight:600;color:#9AA7A5;">(${d.filled}/${d.cap})</span></span>`;
+    return `
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 16px;border-top:1px solid #EEF2F1;${full ? 'background:#F7FAF9;' : ''}">
+      <span style="flex:1;min-width:0;font-size:12.5px;font-weight:700;color:#00253D;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(g.name)}${g.openPlay ? ' <span style="font-size:9px;font-weight:800;color:#fff;background:#00253D;border-radius:4px;padding:2px 5px;">Walk-up</span>' : ''}</span>
+      ${cell(g.buffalo, '#B34700')}
+      ${cell(g.roadhouse, '#B3241F')}
+      <span style="width:56px;flex-shrink:0;text-align:right;font-size:10px;font-weight:800;color:${full ? '#1F8A5B' : '#9AA7A5'};">${full ? 'FULL' : `${g.slots} slot${g.slots === 1 ? '' : 's'}`}</span>
+    </div>`;
+  }).join('');
+
+  return `
+  <div style="background:#fff;border:1px solid #E0E6E5;border-radius:12px;padding:16px;margin-bottom:16px;">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:13px;">
+      <div>
+        <div style="font-family:'BN Kragen';font-size:20px;color:#00253D;text-transform:uppercase;line-height:1;">Slot report</div>
+        <div style="font-size:12px;color:#6D7C83;margin-top:5px;">Open seats per tribe, against how many teammates are signed up and how many picks they could still claim.</div>
+      </div>
+      <div style="display:flex;gap:8px;flex-shrink:0;">
+        <button data-act="admExportCapacity" style="font-size:12px;font-weight:800;color:#00253D;border:1px solid #DCE3E2;border-radius:8px;padding:9px 13px;">⬇ CSV</button>
+        <button data-act="admCapReport" style="font-size:12px;font-weight:800;color:#6D7C83;border:1px solid #DCE3E2;border-radius:8px;padding:9px 13px;">Hide</button>
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">${cards}</div>
+    <div style="border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;margin-top:14px;">
+      <div style="display:flex;align-items:center;gap:10px;padding:9px 16px;background:#EEF2F1;font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">
+        <span style="flex:1;">Game — tightest first</span>
+        <span style="width:112px;flex-shrink:0;">Buffalo</span>
+        <span style="width:112px;flex-shrink:0;">TXRH</span>
+        <span style="width:56px;flex-shrink:0;text-align:right;">Slots</span>
+      </div>
+      ${gameRows || '<div style="padding:16px;font-size:13px;color:#9AA7A5;font-style:italic;">No games yet.</div>'}
+    </div>
+  </div>`;
+}
+
 function admGamesSection(ov) {
   const games = ov.gamesCatalog || [];
   const totalSlots = games.reduce((n, g) => n + (g.slots || []).length, 0);
@@ -2529,8 +2675,12 @@ function admGamesSection(ov) {
       <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Games &amp; slots</h3>
       <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">${games.length} games · ${totalSlots} slots. Edit times or caps freely — sign-ups are preserved. Deleting a slot or game only drops that item's sign-ups.</p>
     </div>
-    <button data-act="admGameNew" style="background:#FF5F00;color:#011220;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;flex-shrink:0;">+ Add game</button>
+    <div style="display:flex;gap:8px;flex-shrink:0;">
+      <button data-act="admCapReport" style="background:#fff;color:#00253D;border:1px solid #DCE3E2;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;">📊 ${S.admCapReport ? 'Hide' : 'Run'} slot report</button>
+      <button data-act="admGameNew" style="background:#FF5F00;color:#011220;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;">+ Add game</button>
+    </div>
   </div>
+  ${S.admCapReport ? admCapacityPanel(ov) : ''}
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start;">${games.map(gameCard).join('')}</div>`;
 }
 
@@ -3952,6 +4102,37 @@ const ACTIONS = {
       await loadOverview(true);
       toast(`${name} removed`);
     });
+  },
+  admCapReport: () => { S.admCapReport = !S.admCapReport; render(); },
+  admExportCapacity: () => {
+    const ov = S.overview;
+    if (!ov) return;
+    const rep = capacityReport(ov);
+    const csvCell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const row = (cells) => cells.map(csvCell).join(',');
+    const lines = [row(['Tribe', 'Day cap', 'Teammates', 'Signed up', 'No picks yet', 'Maxed out', 'Picks used', 'Picks allowed', 'Picks still available', 'Slot capacity', 'Slots filled', 'Slots open', 'Open minus picks left'])];
+    for (const t of ['buffalo', 'roadhouse']) {
+      const d = rep.tribes[t];
+      lines.push(row([t === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse', d.dayCap, d.players, d.signedUp, d.noPicks,
+        d.maxedOut, d.picksUsed, d.allowance, d.unclaimed, d.slotCap, d.filled, d.open, d.balance]));
+    }
+    lines.push('');
+    lines.push(row(['Game', 'Walk-up', 'Slots', 'Buffalo filled', 'Buffalo capacity', 'Buffalo open', 'TXRH filled', 'TXRH capacity', 'TXRH open']));
+    for (const g of rep.perGame) {
+      lines.push(row([g.name, g.openPlay ? 'yes' : 'no', g.slots,
+        g.buffalo.filled, g.buffalo.cap, g.buffalo.open,
+        g.roadhouse.filled, g.roadhouse.cap, g.roadhouse.open]));
+    }
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'buff-olympics-slot-report.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast('Slot report exported');
   },
   admExportSongs: () => {
     const ov = S.overview;

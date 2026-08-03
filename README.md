@@ -79,7 +79,7 @@ staticwebapp.config.json — SPA fallback, node:20 apiRuntime, anonymous routes
 ## How the event runs (admin cheat-sheet)
 
 1. **Sign-Up phase** (default): players create accounts, pick a tribe, claim time slots up to their
-   per-tribe cap (**Buffalo 4 / Texas Roadhouse 2**, no overlapping fixed-time blocks), join the
+   per-tribe cap (**Buffalo 4 / Texas Roadhouse 4**, no overlapping fixed-time blocks), join the
    **Dip Off** (5 cooks/tribe) and one **relay leg**.
 2. Flip **Event mode → Game Day** in the Admin Center sidebar: sign-ups lock, **dip voting** opens
    on every phone (one vote each; dips stay numbered/anonymous).
@@ -102,8 +102,8 @@ staticwebapp.config.json — SPA fallback, node:20 apiRuntime, anonymous routes
 Games sign-ups are **per time slot**, not per game. Each game (`bo_games`) has rows in
 `bo_game_slots` — a 5-minute slot with a **per-team headcount** (`cap_buffalo` / `cap_roadhouse`;
 `0` = that tribe isn't in that slot). Players reserve a slot for their tribe up to a **per-tribe
-day cap** — **Buffalo 4 slots, Texas Roadhouse 2** (TXRH brings more people, so each Roadie takes
-fewer slots to spread them around). Fixed-time games can't overlap; they can arrive anytime in the
+day cap** — **4 slots for both tribes** (Buffalo 4, Texas Roadhouse 4). Fixed-time games can't
+overlap; they can arrive anytime in the
 game's window, and after it the game is free walk-up. Relay + Dip Off are separate from the cap.
 
 **Walk-up games** (`open_play = 1`) also carry sign-up slots now: a player can lock a time inside
@@ -124,6 +124,13 @@ sign-ups (it drops `bo_signups` and reseeds slots with new IDs). Instead, **Admi
 slots** lets you add/edit/remove games and time slots from the browser. Editing a time or a cap is
 an `UPDATE` on a stable slot ID, so **everyone stays signed up**; deleting a slot or game only drops
 that item's sign-ups. It's the safe path once people have started signing up.
+
+**How full are we? — "📊 Run slot report".** The Games tab has a report button that answers, per
+tribe: how many slots are still open, how many teammates are on the tribe and how many have signed
+up (or are maxed out), how many picks they've used out of what the day cap allows, and whether the
+open seats can absorb the picks still unclaimed. Below that, every game is listed tightest-first with
+open seats per tribe, and there's a CSV export. It reads the admin data already loaded in the
+browser, so running it costs the database nothing.
 
 ### Concurrency is safe — and you can prove it
 

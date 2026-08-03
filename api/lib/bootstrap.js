@@ -29,10 +29,9 @@ const SHARED_TTL_MS = 120000;
 function bustSharedBootstrap() { cache.bust(SHARED_ROSTER_KEY); cache.bust(SHARED_RESULTS_KEY); }
 function bustResultsBootstrap() { cache.bust(SHARED_RESULTS_KEY); }
 
-// Per-tribe sign-up cap (relay + dip are separate). Texas Roadhouse brings
-// more people, so each Roadie takes fewer slots to spread them around.
+// Per-tribe sign-up cap (relay + dip are separate). Both tribes get 4 slots.
 const SIGNUP_MAX_BUFFALO = 4;
-const SIGNUP_MAX_ROADHOUSE = 2;
+const SIGNUP_MAX_ROADHOUSE = 4;
 function signupMaxFor(team) {
   return team === 'roadhouse' ? SIGNUP_MAX_ROADHOUSE : SIGNUP_MAX_BUFFALO;
 }
