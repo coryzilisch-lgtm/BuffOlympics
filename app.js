@@ -42,6 +42,7 @@ const S = {
   admRoundEdit: null,    // round id being edited inline in the bracket modal
   admRoundTeam: 'both',  // selected matchup for the round being edited
   admCapReport: false,   // "Run slot report" panel open in the Games tab
+  admShirtReport: false, // shirt-size tally panel open in the People tab
   admFillSlot: null,     // { slotId, gameId } — "Fill slot" search open in Games tab
   admRefAdd: null,       // gameId — "+ Add ref" search open in the Referees tab
   admAddSlot: null,      // { uid, gameId } — slot picker open in People tab
@@ -379,6 +380,9 @@ function bracketMatches(st, results) {
 }
 
 /* ════════════════════ auth screens ════════════════════ */
+// Shirt sizes offered at sign-up, smallest first — also the order the admin
+// shirt-size tally + CSV export use, so both stay in step with the form.
+const SHIRT_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL'];
 function inputStyle(pad) {
   return 'width:100%;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.14);border-radius:8px;padding:' + (pad || '13px 14px') + ';color:#F3F7F5;font-size:14.5px;font-family:\'Montserrat\';outline:none;';
 }
@@ -400,7 +404,7 @@ function authScreen() {
   const suAccent = suIsRoad ? '#E0322E' : '#FF5F00';
   const suAccentOn = suIsRoad ? '#fff' : '#011220';
   const suGlow = suIsRoad ? 'rgba(224,50,46,0.30)' : 'rgba(255,95,0,0.28)';
-  const shirtOptions = ['XS', 'S', 'M', 'L', 'XL', 'XXL', '3XL'];
+  const shirtOptions = SHIRT_SIZES;
   const yearOptions = ['1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th or more'];
 
   let inner = '';
@@ -2328,8 +2332,73 @@ function admYearBadge(years) {
   if (!years) return '';
   return `<span title="Which Buff Olympics this is for them" style="display:inline-flex;align-items:center;font-size:11px;font-weight:700;color:#8A5A12;background:#FCEFDD;border:1px solid #F0D9BB;border-radius:5px;padding:1px 6px;line-height:1.5;">${esc(years)} 🏅</span>`;
 }
+// Shirt-size tally for the order: counts per size (sign-up order, then any
+// odd/legacy value), split by tribe. Refs have no tribe, so they land in
+// "No tribe" — they still need a shirt.
+function shirtTally(people) {
+  const groups = [
+    { key: 'buffalo', label: 'Buffalo' },
+    { key: 'roadhouse', label: 'Texas Roadhouse' },
+    { key: 'none', label: 'No tribe' },
+  ];
+  const rows = {};
+  let missing = 0, total = 0;
+  const extras = [];
+  for (const p of people) {
+    const size = (p.shirtSize || '').trim();
+    if (!size) { missing += 1; continue; }
+    if (!SHIRT_SIZES.includes(size) && !extras.includes(size)) extras.push(size);
+    if (!rows[size]) rows[size] = { buffalo: 0, roadhouse: 0, none: 0, total: 0 };
+    const g = p.team === 'buffalo' || p.team === 'roadhouse' ? p.team : 'none';
+    rows[size][g] += 1;
+    rows[size].total += 1;
+    total += 1;
+  }
+  extras.sort();
+  const sizes = SHIRT_SIZES.filter(s => rows[s]).concat(extras);
+  return { groups, rows, sizes, missing, total };
+}
+
 function admPeopleSection(ov) {
-  const rows = (ov.people || []).map(p => {
+  const people = ov.people || [];
+  const tally = shirtTally(people);
+  const shirtPanel = () => {
+    if (!S.admShirtReport) return '';
+    const cell = (v, strong) => `<span style="width:64px;flex-shrink:0;text-align:right;font-size:${strong ? '13.5px' : '13px'};font-weight:${strong ? '800' : '600'};color:${v ? '#00253D' : '#C9D3D2'};">${v}</span>`;
+    const rows = tally.sizes.map(s => {
+      const r = tally.rows[s];
+      return `
+      <div style="display:flex;align-items:center;gap:10px;padding:8px 16px;border-top:1px solid #EEF2F1;">
+        <span style="flex:1;font-family:'BN Kragen';font-size:16px;color:#00253D;">${esc(s)}</span>
+        ${cell(r.buffalo)}${cell(r.roadhouse)}${cell(r.none)}${cell(r.total, true)}
+      </div>`;
+    }).join('');
+    const totalRow = tally.groups.map(g => tally.sizes.reduce((n, s) => n + tally.rows[s][g.key], 0));
+    return `
+    <div style="background:#fff;border:1px solid #E0E6E5;border-radius:12px;padding:16px;margin-bottom:16px;">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+        <div>
+          <div style="font-family:'BN Kragen';font-size:20px;color:#00253D;text-transform:uppercase;line-height:1;">Shirt sizes</div>
+          <div style="font-size:12px;color:#6D7C83;margin-top:5px;">${tally.total} size${tally.total === 1 ? '' : 's'} on file${tally.missing ? ` · <strong style="color:#B3241F;">${tally.missing} missing</strong>` : ' · everyone has one'}. Hand the CSV to whoever places the order.</div>
+        </div>
+        <button data-act="admShirtReport" style="flex-shrink:0;font-size:12px;font-weight:800;color:#6D7C83;border:1px solid #DCE3E2;border-radius:8px;padding:9px 13px;">Hide</button>
+      </div>
+      <div style="border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
+        <div style="display:flex;align-items:center;gap:10px;padding:9px 16px;background:#EEF2F1;font-size:10px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">
+          <span style="flex:1;">Size</span>
+          ${tally.groups.map(g => `<span style="width:64px;flex-shrink:0;text-align:right;">${g.label === 'Texas Roadhouse' ? 'TXRH' : g.label}</span>`).join('')}
+          <span style="width:64px;flex-shrink:0;text-align:right;">Total</span>
+        </div>
+        ${rows || '<div style="padding:16px;font-size:13px;color:#9AA7A5;font-style:italic;">Nobody has a shirt size on file yet.</div>'}
+        ${rows ? `<div style="display:flex;align-items:center;gap:10px;padding:9px 16px;border-top:2px solid #E0E6E5;background:#FCFBF7;">
+          <span style="flex:1;font-size:11px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:#6D7C83;">All shirts</span>
+          ${totalRow.map(v => cell(v)).join('')}${cell(tally.total, true)}
+        </div>` : ''}
+      </div>
+    </div>`;
+  };
+
+  const rows = people.map(p => {
     const options = (ov.gamesCatalog || []).filter(g => !(p.games || []).some(x => x.gameId === g.id));
     // When a game is picked for this person, offer a time-slot chooser.
     let slotPick = '';
@@ -2375,12 +2444,17 @@ function admPeopleSection(ov) {
     </div>`;
   }).join('');
   return `
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px;">
     <div>
       <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">People</h3>
       <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Assign anyone to any game, set referees, grant admin, reset a password, or remove an account. Shirt size &amp; which Buff Olympics it is for them show under each name.</p>
     </div>
+    <div style="display:flex;gap:8px;flex-shrink:0;">
+      <button data-act="admShirtReport" style="background:#fff;color:#00253D;border:1px solid #DCE3E2;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;">👕 ${S.admShirtReport ? 'Hide' : 'Shirt'} sizes</button>
+      <button data-act="admExportShirts" ${tally.total ? '' : 'disabled'} style="background:${tally.total ? '#FF5F00' : '#C9D3D2'};color:${tally.total ? '#011220' : '#fff'};font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;${tally.total ? '' : 'cursor:not-allowed;'}">⬇ Export shirt sizes</button>
+    </div>
   </div>
+  ${shirtPanel()}
   <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
     <div style="display:flex;align-items:center;gap:14px;padding:11px 18px;background:#EEF2F1;border-bottom:1px solid #E0E6E5;font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">
       <span style="width:172px;flex-shrink:0;">Name · shirt · year</span>
@@ -4104,6 +4178,42 @@ const ACTIONS = {
     });
   },
   admCapReport: () => { S.admCapReport = !S.admCapReport; render(); },
+  admShirtReport: () => { S.admShirtReport = !S.admShirtReport; render(); },
+  admExportShirts: () => {
+    const ov = S.overview;
+    if (!ov) return;
+    const people = ov.people || [];
+    const teamLabel = (t) => t === 'roadhouse' ? 'Texas Roadhouse' : (t === 'buffalo' ? 'Buffalo' : '');
+    const csvCell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const row = (cells) => cells.map(csvCell).join(',');
+    const tally = shirtTally(people);
+    if (!tally.total && !tally.missing) { toast('No accounts to export yet'); return; }
+    // Per-person rows first (the order list), then the size tally underneath —
+    // one file that works both for checking names off and for placing the order.
+    const lines = [row(['Name', 'Tribe', 'Shirt size', 'Referee'])];
+    people.slice()
+      .sort((a, b) => (a.name || '').localeCompare(b.name || ''))
+      .forEach(p => lines.push(row([p.name, teamLabel(p.team), (p.shirtSize || '').trim() || 'NOT SET', p.isRef ? 'yes' : 'no'])));
+    lines.push('');
+    lines.push(row(['Size', 'Buffalo', 'Texas Roadhouse', 'No tribe', 'Total']));
+    for (const s of tally.sizes) {
+      const r = tally.rows[s];
+      lines.push(row([s, r.buffalo, r.roadhouse, r.none, r.total]));
+    }
+    const sum = (k) => tally.sizes.reduce((n, s) => n + tally.rows[s][k], 0);
+    lines.push(row(['All shirts', sum('buffalo'), sum('roadhouse'), sum('none'), tally.total]));
+    if (tally.missing) lines.push(row(['No size on file', '', '', '', tally.missing]));
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'buff-olympics-shirt-sizes.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast(`Shirt sizes exported${tally.missing ? ` · ${tally.missing} missing a size` : ''}`);
+  },
   admExportCapacity: () => {
     const ov = S.overview;
     if (!ov) return;
