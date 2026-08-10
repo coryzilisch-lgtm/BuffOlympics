@@ -2,6 +2,7 @@ const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
 const { json, requireUser, userToJson } = require('../lib/auth');
 const { bustSharedBootstrap } = require('../lib/bootstrap');
+const cache = require('../lib/cache');
 
 app.http('me-team', {
   methods: ['POST'],
@@ -19,10 +20,10 @@ app.http('me-team', {
       }
 
       const pool = await getPool();
-      // Switching tribes after committing breaks caps and rosters (a Buffalo
-      // player with 4 slots becomes a TXRH player over the 2-slot cap, and
-      // every roster recolors) — so a CHANGE is only allowed while the user has
-      // no sign-ups. First-time picks always go through.
+      // Switching tribes after committing breaks rosters and slot caps (their
+      // seats were counted against the old tribe's capacity in every slot they
+      // hold, and every roster recolors) — so a CHANGE is only allowed while
+      // the user has no sign-ups. First-time picks always go through.
       if (user.team && user.team !== team) {
         const busyR = await pool.request().input('uid', sql.Int, user.id).query(`
           SELECT (SELECT COUNT(*) FROM bo_signups WHERE user_id = @uid)
@@ -38,6 +39,7 @@ app.http('me-team', {
         .query('UPDATE bo_users SET team = @team WHERE id = @id');
       user.team = team;
       bustSharedBootstrap();  // tribes + slot rosters change with a team switch
+      cache.bustUsers();      // their cached identity row still says the old tribe
 
       return json({ user: userToJson(user) });
     } catch (err) {

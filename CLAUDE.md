@@ -37,7 +37,7 @@ api/                       — Azure Functions v4 (Node 20, app.http model, mssq
     db.js                  — Fabric SQL pool (mssql, SP-secret auth); pool idleTimeout 5min
     auth.js                — token verify, requireUser/requireRef/requireAdmin, formatName, json()
     bootstrap.js           — buildBootstrap() + SHARED-block cache + signupMaxFor + helpers
-    cache.js               — tiny per-instance TTL cache (get/set/bust)
+    cache.js               — per-instance TTL cache + single-flight (getOrFill) + user-row cache
   auth/                    — POST /api/auth/{signup,signin,ref-login,ref-create}
   me/, me-team/            — GET /api/me, POST /api/me/team
   bootstrap/               — GET /api/bootstrap (the whole payload)
@@ -56,7 +56,8 @@ infra/main.bicep           — SWA resource + app settings
 infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
   001_init.sql             — all bo_* tables + seed (games, schedule, relay legs, settings)
   002_slots.sql            — GENERATED slot migration (see "Slots" below). RESETS sign-ups.
-  003_idols.sql            — bo_idols table + seed (hidden-immunity clues; Admin → Idols)
+  003_idols.sql            — bo_idols table + seed. FEATURE REMOVED (Aug 2026) — the app no
+                             longer reads or writes bo_idols; the table is left in place, unused.
   004_win_points.sql       — bo_games.win_points (per-game points a ref's winner pick awards)
   005_default_ref.sql      — one-time: set needs_ref=1 on every game (refs are the default)
   006_schedule_end.sql     — bo_schedule.end_label/end_ampm (optional start/end range on blocks)
@@ -72,7 +73,7 @@ infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
                              (MULTIPLE refs per game, uncapped), bo_results.slot_label/round_label
                              (green "Scored" marks + ref change-result), bo_games.round_points
                              (points per bracket-round win; champion still earns win_points),
-                             bo_idols.points/found_by (admin awards an idol to its finder).
+                             bo_idols.points/found_by (idols since removed — those columns are dead).
                              RUN IN TWO STEPS like 009.
   011_team_games.sql       — team games: bo_games.team_size (players/team; 1=individuals) +
                              bo_signups.team_no (which team within a slot+tribe). A slot then holds
@@ -119,7 +120,7 @@ Single IIFE, vanilla JS, hash routing (`#/home`, `#/games`, `#/game/{id}`, `#/ad
 
 Key UI areas: player games list/detail (`gamesScreen`, `gameDetailScreen`, `slotRowHtml`), ref board
 (`refBoardScreen`) + ref self-assign tab (`refGamesScreen`), Admin Center (`adminScreen` +
-`adm*Section` incl. `admIdolsSection`/`admSongsSection` + `admGamesModals`). Bracket games render a
+`adm*Section` incl. `admSongsSection` + `admGamesModals`). Bracket games render a
 "Bracket path" panel via `bracketFor(g)` — DB-backed bracket data from the payload (migration 009),
 with the hard-coded `BRACKETS` const as a pre-009 fallback. Admin-editable in the bracket editor.
 
@@ -187,34 +188,57 @@ cleaning; `USERS`/`SLOTS`/`DURATION_S`/`READ_ONLY` env knobs). Full runbook + Fa
 
 ---
 
-## Fabric load — shared-bootstrap cache
+## Fabric load — a poll costs ZERO queries
 
-The event runs on a **shared Fabric F4** capacity (double F2), and `GET /api/bootstrap` (every load,
-re-polled every ~90s by every ACTIVE viewer) originally ran **14 queries**. `api/lib/bootstrap.js`
-splits the identical-for-everyone data into **two independently-busted cached blocks** (both `~120s`
-TTL, `api/lib/cache.js`) plus a small per-user tail:
+The event runs on a **shared Fabric F4** capacity. `GET /api/bootstrap` is re-polled every ~90s by
+every ACTIVE viewer, so the cost that matters is **queries per poll per person**, multiplied by the
+crowd, all day. That number is now **0** while the caches are warm — verified by a fake-pool harness
+that counts real round-trips through `buildBootstrap`.
 
-- **ROSTER block** (`SHARED_ROSTER_KEY`) — games, slots, rosters, tribes, schedule, dip, relay,
-  announcements, ref assignments + all game-config maps. Changes only on **sign-up / dip / relay /
-  admin** edits.
-- **RESULTS block** (`SHARED_RESULTS_KEY`) — `scores`, `leaderboard`, and the ref `refResults`
-  (`TOP 2000`) scan. Changes only on **score** writes — and is **SKIPPED ENTIRELY in sign-up mode**
-  (nothing scored yet → zero result queries). `refResults` is identical for every ref, so caching it
-  here means one scan per refill, not one per ref per poll.
-- **Why two blocks:** a write invalidates only the half it changed. During the **sign-up rush** every
-  signup rebuilds rosters but never touches results; during **game day** every score calls
-  `bustResultsBootstrap()` and rebuilds only the small results block, leaving the whole roster payload
-  cached. `bustSharedBootstrap()` (roster/admin/team writes) busts BOTH — the safe default.
-- **Per-user tail** (`myVote`, `myResults`) — the only DB cost that can't be cached (runs live per
-  poll). Also **skipped in sign-up mode**: dip voting opens on Game Day and nothing is scored, so both
-  are empty → **zero per-user DB work per poll during the sign-up rush.**
-- The `~120s` TTL is deliberately LONGER than the ~90s client poll so a lone foregrounded reader's
-  next poll hits the cache (0 shared queries) instead of refilling — the main lever against idle-tab
-  CU burn. Writers pass `{fresh:true}` / bust, so headcounts + Scored marks stay fresh during a rush;
-  the TTL is just a backstop for pure readers between writes.
-- **Client polling** (`app.js`, bottom): a hidden/backgrounded tab never polls, AND a tab left open
-  but untouched for **5 minutes pauses completely** until the person interacts or refocuses (which
-  fires an immediate catch-up poll). Cadence is 90s. Both guards keep an idle phone off the F4 budget.
+`api/lib/bootstrap.js` splits the identical-for-everyone data into **three independently-busted
+cached blocks** (`api/lib/cache.js`):
+
+- **ROSTER block** (`SHARED_ROSTER_KEY`, ~18 queries) — games, slots, rosters, tribes, schedule, dip,
+  relay, announcements, ref assignments + all game-config maps. Changes only on **sign-up / dip /
+  relay / admin** edits. TTL `120s`, or **`300s` on game day** (`ROSTER_TTL_GAMEDAY_MS`) — sign-ups
+  are locked then, so only a write (which busts) can change it.
+- **RESULTS block** (`SHARED_RESULTS_KEY`, 3 queries) — `scores`, `leaderboard`, and ONE scan of
+  `bo_results` (`TOP RESULT_SCAN_MAX`). Changes only on **score** writes; **skipped entirely in
+  sign-up mode**. Keeps the short `120s` TTL deliberately — see the cross-instance note below.
+- **VOTES block** (`SHARED_VOTES_KEY`, 1 tiny query) — who voted for which dip, as a `userId ->
+  entryId` map. Its own key so a vote doesn't rebuild rosters or results.
+- **Why separate blocks:** a write invalidates only the part it changed. `bustResultsBootstrap()`
+  (score writes) rebuilds 3 queries; `bustVotesBootstrap()` (a dip vote) rebuilds 1;
+  `bustSharedBootstrap()` (roster/admin/team writes) busts everything — the safe default. All three
+  also drop the admin payload.
+
+**There is no per-user query left.** `myVote` reads the cached votes map, and `myResults` is
+`.filter()`ed out of the same cached `bo_results` scan the ref board already needed
+(`resultBelongsTo` mirrors the old SQL's `A & B` pair matching, splitting on the separator so a
+LIKE wildcard inside a name can't misfire). Refs still receive only the newest `RESULT_SCAN_REF`
+(2000) rows, so their payload is unchanged; `RESULT_SCAN_MAX` (6000) is how far back a player's own
+results are matched — **never lower either** (a missing row reads as "unscored" and a ref re-logs it).
+
+**The identity query is cached too.** Every authenticated request loads its `bo_users` row, which was
+one round-trip per person per poll on its own. `cache.getUser/setUser` holds it for 45s;
+`cache.bustUsers()` runs on every admin action and on a tribe pick, so a password reset still kills
+old sessions (`token_version`) immediately.
+
+**Single-flight** (`cache.getOrFill`): concurrent misses after a bust share ONE refill instead of
+each running the full query set — without it a bust during a crowd hits Fabric with N× the work at
+the worst moment.
+
+**`GET /api/ac-overview` is cached** the same way (`OVERVIEW_KEY`, 60s) — ~25 queries that are
+identical for every admin, re-polled every 90s by an Admin Center left open all day.
+
+**Cross-instance caveat (why TTLs stay modest):** this cache is per host instance and a bust is
+local. If SWA has scaled out, another instance keeps serving its copy until ITS TTL expires — that,
+not the bust, is the real ceiling on staleness. So the block refs read to see what's already scored
+keeps the short TTL. Refills are cheap now that polls are free; don't trade freshness for them.
+
+**Client polling** (`app.js`, bottom): a hidden/backgrounded tab never polls, AND a tab left open but
+untouched for **5 minutes pauses completely** until the person interacts or refocuses (which fires an
+immediate catch-up poll). Cadence is 90s.
 
 Each block stores raw mssql result objects and `buildBootstrap` only READS them (the one `.sort` is on
 a filtered copy), so it's safe to share across users. Per-user `mine` flags are computed each call.
@@ -264,8 +288,7 @@ UPDATE in try/catch; round actions 409 pre-009) so the editor still works before
 `settings` (eventMode/refJoinCode/scoresRevealed[re-sealable — the Scores tab has a "Re-seal scores"
 undo]/dipRevealed) · `people`
 (toggleAdmin/toggleRef/addGame/removeGame/**fillSlot**/**unfillSlot**/**resetPassword**/**removeUser**) · `relay-legs` · `announcements` ·
-`schedule` (add/remove/move/update) · **`idols`** (add/update/remove/toggleFound — hidden-immunity clues,
-`bo_idols`, migration 003; hidden by default, reveal by release time or found) · `ref-assign` · `games`
+`schedule` (add/remove/move/update) · `ref-assign` · `games`
 (addGame/updateGame/removeGame/addSlot/updateSlot/removeSlot + **addRound/updateRound/removeRound** —
 see above) · **`reset-scores`** (clears ALL logged scores). Every `ac` action busts the
 shared bootstrap cache. `removeUser` deletes a user + their sign-ups/dip/relay/ref-assignment (keeps
@@ -368,8 +391,7 @@ header. `api/lib/auth.js`: `requireUser` (verifies token → user row), `require
 2. Admin flips **Event mode → Game Day**: sign-ups lock, dip **voting** opens (one vote each).
 3. Refs log results all day: assign refs in Admin → Referees (or refs self-assign from their Games
    tab), then each ref taps their game → picks the timeslot → logs the winner (head-to-head/bracket)
-   or types scores (walk-up). Totals stay sealed; admin can **peek** privately. Idol clues release on
-   their times / get marked found in Admin → Idols.
+   or types scores (walk-up). Totals stay sealed; admin can **peek** privately.
 4. Closing: Admin → Scores → **Reveal** (one-way), Admin → Dip Off → **Reveal winner**.
 
 ---
@@ -383,7 +405,7 @@ song_request, …) · `bo_games` (id NVARCHAR PK, name, time_label, needs_ref, v
 cap_buffalo, cap_roadhouse, sort) · `bo_signups` (user_id, slot_id) PK ·
 `bo_schedule` (…, **end_label/end_ampm** [006]) · `bo_relay_legs` / `bo_relay_signups` ·
 `bo_dip_entries` / `bo_dip_votes` · `bo_results` / `bo_result_history` · `bo_ref_assignments`
-(game_id PK — one ref per game) · `bo_idols` (title, clue, release_min, found, sort — 003) ·
+(game_id PK — one ref per game) ·
 **`bo_bracket_rounds`** (id IDENTITY, game_id, sort, time_label, name, detail, team — 009; editable
 bracket rounds) · `bo_announcements` · `bo_settings` (key/value: event_mode, ref_join_code,
 scores_revealed, dip_revealed).
@@ -400,7 +422,7 @@ SWA app settings: `FABRIC_SQL_SERVER`, `FABRIC_SQL_DATABASE`, `AZURE_TENANT_ID` 
 `AZURE_CLIENT_SECRET` (SP; Secret **Value** not ID), `SESSION_SECRET`, `ADMIN_EMAILS`.
 
 Migrations run **by hand** in the Fabric portal SQL editor: `001_init.sql` then `002_slots.sql`
-(002 resets sign-ups — pre-event only), then `003`–`009` (idols / win_points / default-ref /
+(002 resets sign-ups — pre-event only), then `003`–`009` (idols [removed] / win_points / default-ref /
 schedule-end / game details / widen game text / **game types + brackets**; each idempotent, run once —
 **009 runs in TWO steps**, Part 1 schema then Part 2 backfill, per the Fabric Msg 207 gotcha). Backend
 reads the 003–009 columns/tables **defensively** (try/catch → default), so the app still boots if a
@@ -445,17 +467,16 @@ concurrency — that's what `scripts/concurrency-loadtest.js` is for (run agains
 
 ---
 
-## Current status (July 2026)
+## Current status (August 2026)
 
 Live on Azure, deploy pipeline green. Foundation (earlier): walk-up sign-up slots + per-tribe caps
-(4/2); Games & slots editor; shared-bootstrap cache; **atomic concurrency guard**; concurrency
+(now **4/4**); Games & slots editor; shared-bootstrap cache; **atomic concurrency guard**; concurrency
 load-test.
 
 Shipped since (all merged to `main`):
 - **Admin Center:** People shows shirt size + which Buff Olympics (per person); 🔑 reset-password +
-  🗑 delete-player; **Songs** tab w/ CSV export; **Idols** tab (create clues, set release times, mark
-  found — hidden by default); **Schedule** editor (per-block start/end times) + live Timeline built
-  from real games/slots; fixed the scroll-jumping-to-top bug.
+  🗑 delete-player; **Songs** tab w/ CSV export; **Schedule** editor (per-block start/end times) +
+  live Timeline built from real games/slots; fixed the scroll-jumping-to-top bug.
 - **Team colours:** Buffalo navy/orange, TXRH red/yellow everywhere (shared `teamPill`); "Captains"
   removed.
 - **Player app:** games search (mobile + desktop); removed the confusing "then walk-up"; game-day
@@ -472,19 +493,28 @@ Shipped since (all merged to `main`):
   per team; green **Scored ✓** marks + logged-result panels + warn-first **Change result**
   (`DELETE /api/results/{id}`); bracket rounds award admin-set `round_points` (champion earns
   `win_points`) and the bracket progress list populates the next round with logged winners.
-  **Plus:** idols carry points + an admin 🏆 Award-to-finder flow (auto-logs the tribe points);
-  walk-up head-to-head note (player + ref); dip cooks get an 11:30 AM Cafe drop-off on their
+  **Plus:** walk-up head-to-head note (player + ref); dip cooks get an 11:30 AM Cafe drop-off on their
   schedule; home hero says "Welcome back, FIRSTNAME" / "Buff Olympics." (date removed); home cards
   reflect all-slots-picked / relay-leg / dip-full state; "Herd Games" → "Buff Olympics".
 
-DB migrations **003–008 have been run** in Fabric (idols / win_points / default-ref / schedule-end /
-game details / widen game text). **009 (game types + brackets), 010 (ref mode), 011 (team games),
+- **Game-day load work (Aug 2026):** a poll now costs **zero** DB queries — `myVote`/`myResults`
+  come out of the shared cached blocks (new VOTES block + one `bo_results` scan reused for both refs
+  and players), the per-request `bo_users` identity lookup is cached (45s, busted on admin writes),
+  `ac-overview` is cached (60s), concurrent misses share one refill (single-flight), a dip vote no
+  longer rebuilds the whole payload, and the roster block gets a longer TTL on game day. Verified
+  with a fake-pool harness that counts real round-trips.
+- **Idol clues removed (Aug 2026):** the player Immunity screen, the admin Idols tab and
+  `POST /api/ac/idols` are gone, and nothing queries `bo_idols` any more (one less query per roster
+  refill). The table is left in the database, unused — drop it by hand if you want it gone.
+
+DB migrations **003–008 have been run** in Fabric (003 idols — feature since removed / win_points /
+default-ref / schedule-end / game details / widen game text). **009 (game types + brackets), 010 (ref mode), 011 (team games),
 and 012 (bracket engine) must still be run** — each in two steps, Part 1 then Part 2. Pre-012 there
 are no structured brackets (legacy round/champ tabs) and results match slots by LABEL — so two
 same-time matches will both show Scored until 012 is run. Until they are, the backend stays
 defensive: pre-009 refs fall back to the old open_play-derived scoring + the hard-coded `BRACKETS`;
 pre-010 only one ref per game can claim (second claim 409s), results aren't slot-tagged (no Scored
-marks), bracket rounds stay advancement-only, and idol points stay dormant; **pre-011 every game is
+marks) and bracket rounds stay advancement-only; **pre-011 every game is
 an individual game** (`team_size` defaults to 1, `team_no` ignored) — the team sign-up/scoring UI
 only appears once a game's `team_size` is set to ≥2 (run 011, then set it in the Games editor). Edit
 the game lineup only via the admin editor — never re-run 002 (it wipes sign-ups).

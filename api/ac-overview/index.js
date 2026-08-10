@@ -1,7 +1,10 @@
 const { app } = require('@azure/functions');
 const { getPool } = require('../lib/db');
 const { json, requireUser, requireAdmin, formatName } = require('../lib/auth');
-const { settingsFromRows, SIGNUP_MAX_BUFFALO, SIGNUP_MAX_ROADHOUSE } = require('../lib/bootstrap');
+const {
+  settingsFromRows, SIGNUP_MAX_BUFFALO, SIGNUP_MAX_ROADHOUSE, OVERVIEW_KEY, OVERVIEW_TTL_MS,
+} = require('../lib/bootstrap');
+const cache = require('../lib/cache');
 
 // Flat route 'admin-board' — deliberately NOT under the 'admin/…' segment
 // space, because a two-segment 'admin/overview' collides with admin-actions'
@@ -19,314 +22,304 @@ app.http('ac-overview', {
       if (!user) return json({ error: 'Not signed in' }, 401);
       if (!requireAdmin(user)) return json({ error: 'Admin access required' }, 403);
 
-      const pool = await getPool();
-      const [
-        settingsR, usersR, gamesR, signupsR, scheduleR, dipR, votesR,
-        legsR, relayR, scoresR, resultsR, historyR, refAssignR, annR, gameSlotsR,
-      ] = await Promise.all([
-        pool.request().query('SELECT [key], [value] FROM bo_settings'),
-        pool.request().query('SELECT id, first_name, last_name, username, team, is_ref, is_admin, shirt_size, years, song_request FROM bo_users ORDER BY id'),
-        pool.request().query(`
-          SELECT id, name, needs_ref, venue, open_play, time_label,
-                 descr, inventory, players, points_label, video_url
-          FROM bo_games ORDER BY sort, id`),
-        pool.request().query(`
-          SELECT s.user_id, sl.game_id
-          FROM bo_signups s JOIN bo_game_slots sl ON sl.id = s.slot_id`),
-        pool.request().query('SELECT id, time_label, ampm, title, place, kind FROM bo_schedule ORDER BY sort, id'),
-        pool.request().query(`
-          SELECT d.id, d.user_id, d.team, d.created_at, u.first_name, u.last_name, u.username
-          FROM bo_dip_entries d JOIN bo_users u ON u.id = d.user_id
-          ORDER BY d.created_at, d.id`),
-        pool.request().query('SELECT dip_entry_id, COUNT(*) AS n FROM bo_dip_votes GROUP BY dip_entry_id'),
-        pool.request().query('SELECT id, name, cap, descr FROM bo_relay_legs ORDER BY sort, id'),
-        pool.request().query(`
-          SELECT r.leg_id, r.user_id, u.team, u.first_name, u.last_name, u.username
-          FROM bo_relay_signups r JOIN bo_users u ON u.id = r.user_id`),
-        pool.request().query('SELECT ISNULL(SUM(pts_buffalo), 0) AS buffalo, ISNULL(SUM(pts_roadhouse), 0) AS roadhouse FROM bo_results'),
-        pool.request().query(`
-          SELECT id, game_name, detail, winner, pts, player_name, entered_by, edited_by, created_at
-          FROM bo_results ORDER BY created_at DESC, id DESC`),
-        pool.request().query('SELECT id, result_id, pts, by_name, created_at FROM bo_result_history ORDER BY created_at DESC, id DESC'),
-        pool.request().query('SELECT game_id, user_id FROM bo_ref_assignments'),
-        pool.request().query('SELECT id, title, body, created_at FROM bo_announcements ORDER BY created_at DESC, id DESC'),
-        pool.request().query(`
-          SELECT sl.id, sl.game_id, sl.start_min, sl.label, sl.cap_buffalo, sl.cap_roadhouse, sl.sort,
-                 SUM(CASE WHEN u.team = 'buffalo' THEN 1 ELSE 0 END) AS n_buffalo,
-                 SUM(CASE WHEN u.team = 'roadhouse' THEN 1 ELSE 0 END) AS n_roadhouse
-          FROM bo_game_slots sl
-          LEFT JOIN bo_signups s ON s.slot_id = sl.id
-          LEFT JOIN bo_users u ON u.id = s.user_id
-          GROUP BY sl.id, sl.game_id, sl.start_min, sl.label, sl.cap_buffalo, sl.cap_roadhouse, sl.sort
-          ORDER BY sl.game_id, sl.sort, sl.start_min`),
-      ]);
-
-      // Idols (migration 003) — query defensively so admin still loads if the
-      // table isn't there yet.
-      let idols = [];
-      try {
-        // found_by / points are migration 010 — fall back to the 003 shape.
-        let idolsR;
-        try {
-          idolsR = await pool.request().query(
-            'SELECT id, title, clue, release_min, found, found_by, points, sort FROM bo_idols ORDER BY sort, id');
-        } catch (e) {
-          idolsR = await pool.request().query(
-            'SELECT id, title, clue, release_min, found, sort FROM bo_idols ORDER BY sort, id');
-        }
-        idols = idolsR.recordset.map(x => ({
-          id: x.id, title: x.title || '', clue: x.clue || '',
-          releaseMin: x.release_min == null ? null : x.release_min, found: !!x.found, sort: x.sort,
-          foundBy: x.found_by || null,
-          points: x.points == null ? null : x.points,
-        }));
-      } catch (e) { /* table not present yet */ }
-
-      // Per-game win points (migration 004) + bracket round points (010) —
-      // defensive so admin loads pre-migration.
-      let winPointsById = {}, roundPointsById = {};
-      try {
-        const wpR = await pool.request().query('SELECT id, win_points, round_points FROM bo_games');
-        for (const r of wpR.recordset) { winPointsById[r.id] = r.win_points; roundPointsById[r.id] = r.round_points; }
-      } catch (e) {
-        try {
-          const wpR = await pool.request().query('SELECT id, win_points FROM bo_games');
-          for (const r of wpR.recordset) winPointsById[r.id] = r.win_points;
-        } catch (e2) { /* column not present yet */ }
-      }
-
-      // Per-game team size (migration 011) — defensive so admin loads pre-011.
-      let teamSizeById = {};
-      try {
-        const tsR = await pool.request().query('SELECT id, team_size FROM bo_games');
-        for (const r of tsR.recordset) teamSizeById[r.id] = r.team_size;
-      } catch (e) { /* column not present yet */ }
-
-      // Bracket-match placement on slots (migration 012) — defensive pre-012.
-      let slotBracketById = {};
-      try {
-        const sbR = await pool.request().query('SELECT id, round_no, lane FROM bo_game_slots');
-        for (const r of sbR.recordset) slotBracketById[r.id] = { roundNo: r.round_no, lane: r.lane || null };
-      } catch (e) { /* columns not present yet */ }
-
-      // Per-slot roster (ids + names) — powers the Games editor's slot roster
-      // view (see who's in each slot, remove/add anyone).
-      const slotPeople = {};
-      {
-        const rosterR = await pool.request().query(`
-          SELECT s.slot_id, u.id, u.first_name, u.last_name, u.username, u.team
-          FROM bo_signups s JOIN bo_users u ON u.id = s.user_id`);
-        for (const r of rosterR.recordset) {
-          if (!slotPeople[r.slot_id]) slotPeople[r.slot_id] = [];
-          slotPeople[r.slot_id].push({ id: r.id, name: formatName(r.first_name, r.last_name, r.username), team: r.team || null });
-        }
-      }
-
-      // Schedule end times (migration 006) — defensive so admin loads pre-006.
-      let schedEndById = {};
-      try {
-        const seR = await pool.request().query('SELECT id, end_label, end_ampm FROM bo_schedule');
-        for (const r of seR.recordset) schedEndById[r.id] = { endLabel: r.end_label || '', endAmpm: r.end_ampm || '' };
-      } catch (e) { /* columns not present yet */ }
-
-      // Game types + bracket rounds (migration 009) — defensive so admin loads pre-009.
-      let gameTypeById = {};
-      try {
-        const gtR = await pool.request().query('SELECT id, head_to_head, is_bracket, bracket_intro FROM bo_games');
-        for (const r of gtR.recordset) gameTypeById[r.id] = {
-          headToHead: !!r.head_to_head, isBracket: !!r.is_bracket, bracketIntro: r.bracket_intro || '',
-        };
-      } catch (e) { /* columns not present yet */ }
-      let bracketRoundsByGame = {};
-      try {
-        const brR = await pool.request().query(
-          'SELECT id, game_id, sort, time_label, name, detail, team FROM bo_bracket_rounds ORDER BY game_id, sort, id');
-        for (const r of brR.recordset) {
-          if (!bracketRoundsByGame[r.game_id]) bracketRoundsByGame[r.game_id] = [];
-          bracketRoundsByGame[r.game_id].push({
-            id: r.id, time: r.time_label || '', name: r.name || '', detail: r.detail || '', team: r.team || 'both',
-          });
-        }
-      } catch (e) { /* table not present yet */ }
-
-      const settings = settingsFromRows(settingsR.recordset);
-
-      const gameById = {};
-      for (const g of gamesR.recordset) gameById[g.id] = g;
-
-      // A person can hold two slots of the same game — dedupe to distinct games.
-      const gamesByUser = {};
-      const seenUG = new Set();
-      for (const s of signupsR.recordset) {
-        const key = s.user_id + '|' + s.game_id;
-        if (seenUG.has(key)) continue;
-        seenUG.add(key);
-        if (!gamesByUser[s.user_id]) gamesByUser[s.user_id] = [];
-        const g = gameById[s.game_id];
-        gamesByUser[s.user_id].push({ gameId: s.game_id, name: g ? g.name : s.game_id });
-      }
-
-      const people = usersR.recordset.map(u => ({
-        id: u.id,
-        name: formatName(u.first_name, u.last_name, u.username),
-        team: u.team || null,
-        isAdmin: !!u.is_admin,
-        isRef: !!u.is_ref,
-        shirtSize: u.shirt_size || null,
-        years: u.years || null,
-        songRequest: u.song_request || null,
-        games: gamesByUser[u.id] || [],
-      }));
-
-      const slotsByGame = {};
-      for (const s of gameSlotsR.recordset) {
-        if (!slotsByGame[s.game_id]) slotsByGame[s.game_id] = [];
-        slotsByGame[s.game_id].push({
-          id: s.id,
-          startMin: s.start_min,
-          label: s.label,
-          capBuffalo: s.cap_buffalo,
-          capRoadhouse: s.cap_roadhouse,
-          nBuffalo: s.n_buffalo || 0,
-          nRoadhouse: s.n_roadhouse || 0,
-          roundNo: (slotBracketById[s.id] || {}).roundNo ?? null,   // migration 012
-          lane: (slotBracketById[s.id] || {}).lane || null,
-          people: slotPeople[s.id] || [],   // who's in the slot (id/name/team)
-        });
-      }
-      const gamesCatalog = gamesR.recordset.map(g => {
-        const gt = gameTypeById[g.id] || {};
-        return {
-          id: g.id,
-          name: g.name,
-          runtimeLabel: g.time_label || '',
-          openPlay: !!g.open_play,
-          needsRef: !!g.needs_ref,
-          venue: g.venue,
-          descr: g.descr || '',
-          inventory: g.inventory || '',
-          players: g.players || '',
-          pointsLabel: g.points_label || '',
-          videoUrl: g.video_url || '',
-          winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
-          roundPoints: roundPointsById[g.id] != null ? roundPointsById[g.id] : 0,
-          teamSize: (teamSizeById[g.id] && teamSizeById[g.id] >= 1) ? teamSizeById[g.id] : 1,  // migration 011
-          // Game types (migration 009). Pre-009 falls back to the old derivation.
-          headToHead: gt.headToHead !== undefined ? gt.headToHead : !g.open_play,
-          isBracket: !!gt.isBracket,
-          bracketIntro: gt.bracketIntro || '',
-          bracketRounds: bracketRoundsByGame[g.id] || [],
-          slots: slotsByGame[g.id] || [],
-        };
-      });
-
-      const schedule = scheduleR.recordset.map(r => ({
-        id: r.id, timeLabel: r.time_label, ampm: r.ampm, title: r.title, place: r.place, kind: r.kind,
-        endLabel: (schedEndById[r.id] || {}).endLabel || '', endAmpm: (schedEndById[r.id] || {}).endAmpm || '',
-      }));
-
-      // ── dip (admins see all names + vote counts) ──
-      const votesByEntry = {};
-      let totalVotes = 0;
-      for (const v of votesR.recordset) {
-        votesByEntry[v.dip_entry_id] = v.n;
-        totalVotes += v.n;
-      }
-      // `no` is the GLOBAL dip number (order of entry across both tribes) —
-      // must match the numbering voters see on the anonymous ballot.
-      const dipCounts = { buffalo: 0, roadhouse: 0 };
-      const dipEntries = dipR.recordset.map((d, i) => {
-        const team = d.team === 'roadhouse' ? 'roadhouse' : 'buffalo';
-        dipCounts[team] += 1;
-        return {
-          id: d.id,
-          no: i + 1,
-          name: formatName(d.first_name, d.last_name, d.username),
-          team,
-          votes: votesByEntry[d.id] || 0,
-        };
-      });
-
-      // ── relay ──
-      const legs = legsR.recordset.map(l => ({ id: l.id, name: l.name, cap: l.cap, desc: l.descr }));
-      const relayRoster = {};
-      for (const l of legs) relayRoster[l.id] = { buffalo: [], roadhouse: [] };
-      for (const r of relayR.recordset) {
-        if (!relayRoster[r.leg_id]) relayRoster[r.leg_id] = { buffalo: [], roadhouse: [] };
-        if (r.team === 'buffalo' || r.team === 'roadhouse') {
-          relayRoster[r.leg_id][r.team].push(formatName(r.first_name, r.last_name, r.username));
-        }
-      }
-
-      // ── results with edit history ──
-      const historyByResult = {};
-      for (const h of historyR.recordset) {
-        if (!historyByResult[h.result_id]) historyByResult[h.result_id] = [];
-        historyByResult[h.result_id].push({
-          pts: h.pts,
-          by: h.by_name,
-          when: h.created_at ? new Date(h.created_at).toISOString() : null,
-        });
-      }
-      const results = resultsR.recordset.map(r => ({
-        id: r.id,
-        game: r.game_name,
-        detail: r.detail,
-        pts: r.pts,
-        winner: r.winner,
-        enteredBy: r.entered_by,
-        editedBy: r.edited_by || null,
-        createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
-        history: historyByResult[r.id] || [],
-      }));
-
-      // Multi-ref (migration 010): gameId -> [userId, …].
-      const refAssignments = {};
-      for (const a of refAssignR.recordset) {
-        if (!refAssignments[a.game_id]) refAssignments[a.game_id] = [];
-        refAssignments[a.game_id].push(a.user_id);
-      }
-
-      const refs = usersR.recordset
-        .filter(u => u.is_ref)
-        .map(u => ({ id: u.id, name: formatName(u.first_name, u.last_name, u.username) }));
-
-      const totals = scoresR.recordset[0] || { buffalo: 0, roadhouse: 0 };
-
-      return json({
-        stats: {
-          people: usersR.recordset.length,
-          games: gamesR.recordset.length,
-          refs: refs.length,
-          admins: usersR.recordset.filter(u => u.is_admin).length,
-        },
-        // Per-tribe day cap (code-level, api/lib/bootstrap.js) — the slot
-        // report compares open spots against what each tribe may still claim.
-        signupMax: { buffalo: SIGNUP_MAX_BUFFALO, roadhouse: SIGNUP_MAX_ROADHOUSE },
-        people,
-        gamesCatalog,
-        schedule,
-        idols,
-        dip: { entries: dipEntries, counts: dipCounts, totalVotes, revealed: settings.dipRevealed },
-        relay: { legs, roster: relayRoster, total: relayR.recordset.length },
-        scores: { buffalo: totals.buffalo, roadhouse: totals.roadhouse, revealed: settings.scoresRevealed },
-        results,
-        refAssignments,
-        refs,
-        settings: {
-          eventMode: settings.eventMode,
-          refJoinCode: settings.refJoinCode,
-          scoresRevealed: settings.scoresRevealed,
-          dipRevealed: settings.dipRevealed,
-        },
-        announcements: annR.recordset.map(a => ({
-          id: a.id, title: a.title, body: a.body,
-          createdAt: a.created_at ? new Date(a.created_at).toISOString() : null,
-        })),
-      });
+      // This payload is ~25 queries and IDENTICAL for every admin — nothing in
+      // it is per-caller. An admin parked on the Admin Center re-polls it every
+      // 90s all day, so it's cached like the shared bootstrap blocks: every
+      // admin write and every score write busts it (see bustSharedBootstrap /
+      // bustResultsBootstrap), so an admin still sees their own change land
+      // immediately, and concurrent misses share one refill.
+      const payload = await cache.getOrFill(OVERVIEW_KEY, () => buildOverview(), OVERVIEW_TTL_MS);
+      return json(payload);
     } catch (err) {
       context.error('admin-board error:', err);
       return json({ error: 'Internal server error' }, 500);
     }
   },
 });
+
+// The whole admin payload. Called only on a cache miss.
+async function buildOverview() {
+  const pool = await getPool();
+  const [
+    settingsR, usersR, gamesR, signupsR, scheduleR, dipR, votesR,
+    legsR, relayR, scoresR, resultsR, historyR, refAssignR, annR, gameSlotsR,
+  ] = await Promise.all([
+    pool.request().query('SELECT [key], [value] FROM bo_settings'),
+    pool.request().query('SELECT id, first_name, last_name, username, team, is_ref, is_admin, shirt_size, years, song_request FROM bo_users ORDER BY id'),
+    pool.request().query(`
+      SELECT id, name, needs_ref, venue, open_play, time_label,
+             descr, inventory, players, points_label, video_url
+      FROM bo_games ORDER BY sort, id`),
+    pool.request().query(`
+      SELECT s.user_id, sl.game_id
+      FROM bo_signups s JOIN bo_game_slots sl ON sl.id = s.slot_id`),
+    pool.request().query('SELECT id, time_label, ampm, title, place, kind FROM bo_schedule ORDER BY sort, id'),
+    pool.request().query(`
+      SELECT d.id, d.user_id, d.team, d.created_at, u.first_name, u.last_name, u.username
+      FROM bo_dip_entries d JOIN bo_users u ON u.id = d.user_id
+      ORDER BY d.created_at, d.id`),
+    pool.request().query('SELECT dip_entry_id, COUNT(*) AS n FROM bo_dip_votes GROUP BY dip_entry_id'),
+    pool.request().query('SELECT id, name, cap, descr FROM bo_relay_legs ORDER BY sort, id'),
+    pool.request().query(`
+      SELECT r.leg_id, r.user_id, u.team, u.first_name, u.last_name, u.username
+      FROM bo_relay_signups r JOIN bo_users u ON u.id = r.user_id`),
+    pool.request().query('SELECT ISNULL(SUM(pts_buffalo), 0) AS buffalo, ISNULL(SUM(pts_roadhouse), 0) AS roadhouse FROM bo_results'),
+    pool.request().query(`
+      SELECT id, game_name, detail, winner, pts, player_name, entered_by, edited_by, created_at
+      FROM bo_results ORDER BY created_at DESC, id DESC`),
+    pool.request().query('SELECT id, result_id, pts, by_name, created_at FROM bo_result_history ORDER BY created_at DESC, id DESC'),
+    pool.request().query('SELECT game_id, user_id FROM bo_ref_assignments'),
+    pool.request().query('SELECT id, title, body, created_at FROM bo_announcements ORDER BY created_at DESC, id DESC'),
+    pool.request().query(`
+      SELECT sl.id, sl.game_id, sl.start_min, sl.label, sl.cap_buffalo, sl.cap_roadhouse, sl.sort,
+             SUM(CASE WHEN u.team = 'buffalo' THEN 1 ELSE 0 END) AS n_buffalo,
+             SUM(CASE WHEN u.team = 'roadhouse' THEN 1 ELSE 0 END) AS n_roadhouse
+      FROM bo_game_slots sl
+      LEFT JOIN bo_signups s ON s.slot_id = sl.id
+      LEFT JOIN bo_users u ON u.id = s.user_id
+      GROUP BY sl.id, sl.game_id, sl.start_min, sl.label, sl.cap_buffalo, sl.cap_roadhouse, sl.sort
+      ORDER BY sl.game_id, sl.sort, sl.start_min`),
+  ]);
+
+  // Per-game win points (migration 004) + bracket round points (010) —
+  // defensive so admin loads pre-migration.
+  let winPointsById = {}, roundPointsById = {};
+  try {
+    const wpR = await pool.request().query('SELECT id, win_points, round_points FROM bo_games');
+    for (const r of wpR.recordset) { winPointsById[r.id] = r.win_points; roundPointsById[r.id] = r.round_points; }
+  } catch (e) {
+    try {
+      const wpR = await pool.request().query('SELECT id, win_points FROM bo_games');
+      for (const r of wpR.recordset) winPointsById[r.id] = r.win_points;
+    } catch (e2) { /* column not present yet */ }
+  }
+
+  // Per-game team size (migration 011) — defensive so admin loads pre-011.
+  let teamSizeById = {};
+  try {
+    const tsR = await pool.request().query('SELECT id, team_size FROM bo_games');
+    for (const r of tsR.recordset) teamSizeById[r.id] = r.team_size;
+  } catch (e) { /* column not present yet */ }
+
+  // Bracket-match placement on slots (migration 012) — defensive pre-012.
+  let slotBracketById = {};
+  try {
+    const sbR = await pool.request().query('SELECT id, round_no, lane FROM bo_game_slots');
+    for (const r of sbR.recordset) slotBracketById[r.id] = { roundNo: r.round_no, lane: r.lane || null };
+  } catch (e) { /* columns not present yet */ }
+
+  // Per-slot roster (ids + names) — powers the Games editor's slot roster
+  // view (see who's in each slot, remove/add anyone).
+  const slotPeople = {};
+  {
+    const rosterR = await pool.request().query(`
+      SELECT s.slot_id, u.id, u.first_name, u.last_name, u.username, u.team
+      FROM bo_signups s JOIN bo_users u ON u.id = s.user_id`);
+    for (const r of rosterR.recordset) {
+      if (!slotPeople[r.slot_id]) slotPeople[r.slot_id] = [];
+      slotPeople[r.slot_id].push({ id: r.id, name: formatName(r.first_name, r.last_name, r.username), team: r.team || null });
+    }
+  }
+
+  // Schedule end times (migration 006) — defensive so admin loads pre-006.
+  let schedEndById = {};
+  try {
+    const seR = await pool.request().query('SELECT id, end_label, end_ampm FROM bo_schedule');
+    for (const r of seR.recordset) schedEndById[r.id] = { endLabel: r.end_label || '', endAmpm: r.end_ampm || '' };
+  } catch (e) { /* columns not present yet */ }
+
+  // Game types + bracket rounds (migration 009) — defensive so admin loads pre-009.
+  let gameTypeById = {};
+  try {
+    const gtR = await pool.request().query('SELECT id, head_to_head, is_bracket, bracket_intro FROM bo_games');
+    for (const r of gtR.recordset) gameTypeById[r.id] = {
+      headToHead: !!r.head_to_head, isBracket: !!r.is_bracket, bracketIntro: r.bracket_intro || '',
+    };
+  } catch (e) { /* columns not present yet */ }
+  let bracketRoundsByGame = {};
+  try {
+    const brR = await pool.request().query(
+      'SELECT id, game_id, sort, time_label, name, detail, team FROM bo_bracket_rounds ORDER BY game_id, sort, id');
+    for (const r of brR.recordset) {
+      if (!bracketRoundsByGame[r.game_id]) bracketRoundsByGame[r.game_id] = [];
+      bracketRoundsByGame[r.game_id].push({
+        id: r.id, time: r.time_label || '', name: r.name || '', detail: r.detail || '', team: r.team || 'both',
+      });
+    }
+  } catch (e) { /* table not present yet */ }
+
+  const settings = settingsFromRows(settingsR.recordset);
+
+  const gameById = {};
+  for (const g of gamesR.recordset) gameById[g.id] = g;
+
+  // A person can hold two slots of the same game — dedupe to distinct games.
+  const gamesByUser = {};
+  const seenUG = new Set();
+  for (const s of signupsR.recordset) {
+    const key = s.user_id + '|' + s.game_id;
+    if (seenUG.has(key)) continue;
+    seenUG.add(key);
+    if (!gamesByUser[s.user_id]) gamesByUser[s.user_id] = [];
+    const g = gameById[s.game_id];
+    gamesByUser[s.user_id].push({ gameId: s.game_id, name: g ? g.name : s.game_id });
+  }
+
+  const people = usersR.recordset.map(u => ({
+    id: u.id,
+    name: formatName(u.first_name, u.last_name, u.username),
+    team: u.team || null,
+    isAdmin: !!u.is_admin,
+    isRef: !!u.is_ref,
+    shirtSize: u.shirt_size || null,
+    years: u.years || null,
+    songRequest: u.song_request || null,
+    games: gamesByUser[u.id] || [],
+  }));
+
+  const slotsByGame = {};
+  for (const s of gameSlotsR.recordset) {
+    if (!slotsByGame[s.game_id]) slotsByGame[s.game_id] = [];
+    slotsByGame[s.game_id].push({
+      id: s.id,
+      startMin: s.start_min,
+      label: s.label,
+      capBuffalo: s.cap_buffalo,
+      capRoadhouse: s.cap_roadhouse,
+      nBuffalo: s.n_buffalo || 0,
+      nRoadhouse: s.n_roadhouse || 0,
+      roundNo: (slotBracketById[s.id] || {}).roundNo ?? null,   // migration 012
+      lane: (slotBracketById[s.id] || {}).lane || null,
+      people: slotPeople[s.id] || [],   // who's in the slot (id/name/team)
+    });
+  }
+  const gamesCatalog = gamesR.recordset.map(g => {
+    const gt = gameTypeById[g.id] || {};
+    return {
+      id: g.id,
+      name: g.name,
+      runtimeLabel: g.time_label || '',
+      openPlay: !!g.open_play,
+      needsRef: !!g.needs_ref,
+      venue: g.venue,
+      descr: g.descr || '',
+      inventory: g.inventory || '',
+      players: g.players || '',
+      pointsLabel: g.points_label || '',
+      videoUrl: g.video_url || '',
+      winPoints: winPointsById[g.id] != null ? winPointsById[g.id] : 10,
+      roundPoints: roundPointsById[g.id] != null ? roundPointsById[g.id] : 0,
+      teamSize: (teamSizeById[g.id] && teamSizeById[g.id] >= 1) ? teamSizeById[g.id] : 1,  // migration 011
+      // Game types (migration 009). Pre-009 falls back to the old derivation.
+      headToHead: gt.headToHead !== undefined ? gt.headToHead : !g.open_play,
+      isBracket: !!gt.isBracket,
+      bracketIntro: gt.bracketIntro || '',
+      bracketRounds: bracketRoundsByGame[g.id] || [],
+      slots: slotsByGame[g.id] || [],
+    };
+  });
+
+  const schedule = scheduleR.recordset.map(r => ({
+    id: r.id, timeLabel: r.time_label, ampm: r.ampm, title: r.title, place: r.place, kind: r.kind,
+    endLabel: (schedEndById[r.id] || {}).endLabel || '', endAmpm: (schedEndById[r.id] || {}).endAmpm || '',
+  }));
+
+  // ── dip (admins see all names + vote counts) ──
+  const votesByEntry = {};
+  let totalVotes = 0;
+  for (const v of votesR.recordset) {
+    votesByEntry[v.dip_entry_id] = v.n;
+    totalVotes += v.n;
+  }
+  // `no` is the GLOBAL dip number (order of entry across both tribes) —
+  // must match the numbering voters see on the anonymous ballot.
+  const dipCounts = { buffalo: 0, roadhouse: 0 };
+  const dipEntries = dipR.recordset.map((d, i) => {
+    const team = d.team === 'roadhouse' ? 'roadhouse' : 'buffalo';
+    dipCounts[team] += 1;
+    return {
+      id: d.id,
+      no: i + 1,
+      name: formatName(d.first_name, d.last_name, d.username),
+      team,
+      votes: votesByEntry[d.id] || 0,
+    };
+  });
+
+  // ── relay ──
+  const legs = legsR.recordset.map(l => ({ id: l.id, name: l.name, cap: l.cap, desc: l.descr }));
+  const relayRoster = {};
+  for (const l of legs) relayRoster[l.id] = { buffalo: [], roadhouse: [] };
+  for (const r of relayR.recordset) {
+    if (!relayRoster[r.leg_id]) relayRoster[r.leg_id] = { buffalo: [], roadhouse: [] };
+    if (r.team === 'buffalo' || r.team === 'roadhouse') {
+      relayRoster[r.leg_id][r.team].push(formatName(r.first_name, r.last_name, r.username));
+    }
+  }
+
+  // ── results with edit history ──
+  const historyByResult = {};
+  for (const h of historyR.recordset) {
+    if (!historyByResult[h.result_id]) historyByResult[h.result_id] = [];
+    historyByResult[h.result_id].push({
+      pts: h.pts,
+      by: h.by_name,
+      when: h.created_at ? new Date(h.created_at).toISOString() : null,
+    });
+  }
+  const results = resultsR.recordset.map(r => ({
+    id: r.id,
+    game: r.game_name,
+    detail: r.detail,
+    pts: r.pts,
+    winner: r.winner,
+    enteredBy: r.entered_by,
+    editedBy: r.edited_by || null,
+    createdAt: r.created_at ? new Date(r.created_at).toISOString() : null,
+    history: historyByResult[r.id] || [],
+  }));
+
+  // Multi-ref (migration 010): gameId -> [userId, …].
+  const refAssignments = {};
+  for (const a of refAssignR.recordset) {
+    if (!refAssignments[a.game_id]) refAssignments[a.game_id] = [];
+    refAssignments[a.game_id].push(a.user_id);
+  }
+
+  const refs = usersR.recordset
+    .filter(u => u.is_ref)
+    .map(u => ({ id: u.id, name: formatName(u.first_name, u.last_name, u.username) }));
+
+  const totals = scoresR.recordset[0] || { buffalo: 0, roadhouse: 0 };
+
+  return {
+    stats: {
+      people: usersR.recordset.length,
+      games: gamesR.recordset.length,
+      refs: refs.length,
+      admins: usersR.recordset.filter(u => u.is_admin).length,
+    },
+    // Per-tribe day cap (code-level, api/lib/bootstrap.js) — the slot
+    // report compares open spots against what each tribe may still claim.
+    signupMax: { buffalo: SIGNUP_MAX_BUFFALO, roadhouse: SIGNUP_MAX_ROADHOUSE },
+    people,
+    gamesCatalog,
+    schedule,
+    dip: { entries: dipEntries, counts: dipCounts, totalVotes, revealed: settings.dipRevealed },
+    relay: { legs, roster: relayRoster, total: relayR.recordset.length },
+    scores: { buffalo: totals.buffalo, roadhouse: totals.roadhouse, revealed: settings.scoresRevealed },
+    results,
+    refAssignments,
+    refs,
+    settings: {
+      eventMode: settings.eventMode,
+      refJoinCode: settings.refJoinCode,
+      scoresRevealed: settings.scoresRevealed,
+      dipRevealed: settings.dipRevealed,
+    },
+    announcements: annR.recordset.map(a => ({
+      id: a.id, title: a.title, body: a.body,
+      createdAt: a.created_at ? new Date(a.created_at).toISOString() : null,
+    })),
+  };
+}

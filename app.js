@@ -48,8 +48,6 @@ const S = {
   admAddSlot: null,      // { uid, gameId } — slot picker open in People tab
   admSchedEdit: null,    // schedule row id currently being edited inline
   admSchedKind: 'up',    // kind of the schedule row being edited: up|live|done
-  admIdolEdit: null,     // idol clue id currently being edited inline
-  admIdolAward: null,    // idol id whose "who found it?" search is open
   walkupOpen: false,     // game-day home "earn more points" walk-up expander
   busy: false,
 };
@@ -734,8 +732,8 @@ function homeScreen() {
         <span style="font-size:11px;font-weight:600;color:${T.A};letter-spacing:0.04em;">Welcome back, ${esc(boot.user.firstName || T.myTeamWord)}</span>
         <h2 style="font-family:'BN Kragen';font-size:52px;line-height:0.86;color:${th.text};margin:14px 0 0;text-transform:uppercase;">Buff<br/>Olympics.</h2>
         <p style="font-size:14px;line-height:1.5;color:#C7D3DB;max-width:280px;margin:16px 0 22px;">One day. Two tribes. A field full of games. The fire's lit — let's find out who walks through the storm.</p>
-        <button data-act="go" data-to="immunity" style="display:inline-flex;align-items:center;gap:10px;background:${T.A};color:${T.on};font-weight:700;font-size:14px;padding:13px 20px;border-radius:8px;box-shadow:0 0 28px ${T.glow};">
-          Hunt the hidden idols
+        <button data-act="go" data-to="schedule" style="display:inline-flex;align-items:center;gap:10px;background:${T.A};color:${T.on};font-weight:700;font-size:14px;padding:13px 20px;border-radius:8px;box-shadow:0 0 28px ${T.glow};">
+          See today's schedule
           ${chevR(T.on, 9, 15, 2.4)}
         </button>
         <div style="margin-top:16px;">
@@ -1864,90 +1862,6 @@ function scoreScreen() {
         ${lockSvg('#8AA7B9', 18)}
         <span style="font-size:12.5px;color:${th.sub};line-height:1.4;">These are your personal scores. The full team standings ${scores.revealed ? 'are live above.' : 'stay locked until an admin releases them at the Closing Ceremony.'}</span>
       </div>
-    </div>
-  </div>`;
-}
-
-/* ════════════════════ immunity (admin-managed idol clues) ════════════════════ */
-// Clues are HIDDEN by default. A clue reveals once its release time passes on
-// the viewer's own clock, or once an admin marks it found. Status is derived:
-//   found  → claimed (clue shown, "Found" badge)
-//   locked → release time not reached (or none set) → clue text hidden
-//   open   → released → clue text shown
-function idolStatus(idol, nowMin) {
-  if (idol.found) return 'found';
-  if (idol.releaseMin != null && nowMin >= idol.releaseMin) return 'open';
-  return 'locked';
-}
-function immunityScreen() {
-  const T = theme();
-  const th = T.th;
-  const steel = '#8AA7B9', muted = '#5C7B91', bone = th.text;
-  const now = new Date();
-  const nowMin = now.getHours() * 60 + now.getMinutes();
-  const idols = (S.boot.idols || []).map((idol, i) => {
-    const st = idolStatus(idol, nowMin);
-    const found = st === 'found', open = st === 'open', locked = st === 'locked';
-    const hint = found ? 'Claimed — idol secured'
-      : open ? (idol.clue || 'Active — solve to claim')
-      : (idol.releaseMin != null ? `Unlocks at ${minToLabel(idol.releaseMin)}` : 'Hidden — not yet released');
-    return {
-      num: i + 1,
-      title: found || open ? (idol.clue || idol.title || `Clue ${i + 1}`) : (idol.title || `Clue ${i + 1}`),
-      hint,
-      showClueAsTitle: found || open,
-      bg: open ? th.dim : 'rgba(255,255,255,0.04)',
-      border: open ? T.A : 'rgba(255,255,255,0.08)',
-      iconBg: found ? T.A : (open ? th.dim : 'rgba(255,255,255,0.08)'),
-      numColor: found ? T.on : (open ? T.A : steel),
-      titleColor: locked ? steel : bone,
-      tag: found ? 'Found' : (open ? 'Open' : 'Locked'),
-      tagColor: found ? T.A2 : (open ? T.A : muted),
-    };
-  });
-  const total = idols.length;
-  const foundCount = (S.boot.idols || []).filter(x => x.found).length;
-  return `
-  <div style="padding:0 0 28px;">
-    <div style="position:relative;padding:26px 18px 24px;background:${th.hero};overflow:hidden;">
-      <div style="position:absolute;inset:0;background:radial-gradient(360px 240px at 50% 0%, ${T.glow}, transparent 70%);"></div>
-      <div style="position:relative;text-align:center;">
-        <svg width="40" height="44" viewBox="0 0 24 24" fill="none" style="margin-bottom:8px;"><path d="M12 2l8 3.5v6C20 17 16.5 21 12 22.5 7.5 21 4 17 4 11.5v-6L12 2z" stroke="${T.A}" stroke-width="1.8" stroke-linejoin="round"/><path d="M9.2 11.8l2 2 3.6-4" stroke="${T.A}" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
-        <span style="display:block;font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:${T.A2};">Hidden immunity</span>
-        <h2 style="font-family:'BN Kragen';font-size:34px;color:${th.text};text-transform:uppercase;margin:7px 0 0;line-height:0.92;">Find the Idols</h2>
-        <p style="font-size:13.5px;line-height:1.55;color:#C7D3DB;max-width:290px;margin:12px auto 0;">Clues are hidden across the Support Center and unlock through the day. Crack one to claim an idol — each is worth immunity and bonus points for your tribe.</p>
-      </div>
-    </div>
-    <div style="padding:18px;">
-      <div style="background:rgba(255,95,0,0.10);border:1px solid rgba(255,95,0,0.4);border-radius:10px;padding:15px;display:flex;align-items:center;gap:14px;">
-        <div style="font-family:'BN Kragen';font-size:38px;color:#FF5F00;line-height:0.9;">${foundCount}<span style="font-size:19px;color:#8AA7B9;">/${total}</span></div>
-        <div>
-          <div style="font-size:13px;font-weight:700;color:${th.text};">Idols claimed so far</div>
-          <div style="font-size:11.5px;color:#8AA7B9;margin-top:2px;">Each one earns points for the finder's tribe · who's holding them stays secret until Tribal Council</div>
-        </div>
-      </div>
-      <div style="margin-top:11px;display:flex;align-items:flex-start;gap:10px;background:rgba(255,255,255,0.04);border:1px dashed rgba(255,255,255,0.20);border-radius:10px;padding:13px 15px;">
-        <span style="font-size:16px;flex-shrink:0;">🤫</span>
-        <span style="font-size:12px;color:#C7D3DB;line-height:1.5;">Psst — there are <strong style="color:${th.text};">other idols hidden around camp with no clues at all</strong>. Find one and it gives your tribe an advantage in the relay race.</span>
-      </div>
-    </div>
-    <div style="padding:0 18px;">
-      <div style="font-size:11px;font-weight:700;letter-spacing:0.14em;text-transform:uppercase;color:#8AA7B9;margin-bottom:11px;">The clues</div>
-      <div style="display:flex;flex-direction:column;gap:9px;">
-        ${total ? idols.map(cl => `
-        <div style="display:flex;align-items:center;gap:13px;background:${cl.bg};border:1px solid ${cl.border};border-radius:9px;padding:13px;">
-          <span style="width:30px;height:30px;border-radius:50%;background:${cl.iconBg};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'BN Kragen';font-size:13px;color:${cl.numColor};">${cl.num}</span>
-          <div style="flex:1;min-width:0;">
-            <div style="font-size:13.5px;font-weight:700;color:${cl.titleColor};">${esc(cl.title)}</div>
-            <div style="font-size:11.5px;color:#8AA7B9;margin-top:2px;">${esc(cl.hint)}</div>
-          </div>
-          <span style="font-size:10px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${cl.tagColor};flex-shrink:0;">${cl.tag}</span>
-        </div>`).join('') : `<div style="font-size:12.5px;color:${th.sub};font-style:italic;padding:6px 2px;">No clues released yet — check back through the day.</div>`}
-      </div>
-    </div>
-    <div style="margin:20px 18px 0;background:${T.A};border-radius:10px;padding:15px;text-align:center;box-shadow:0 0 28px ${T.glow};">
-      <div style="font-size:11px;font-weight:700;letter-spacing:0.12em;text-transform:uppercase;color:${T.on};">Final reveal</div>
-      <div style="font-family:'BN Kragen';font-size:20px;color:${T.on};margin-top:3px;text-transform:uppercase;">Tribal Council · 3:30 PM</div>
     </div>
   </div>`;
 }
@@ -3113,85 +3027,6 @@ function admScheduleSection(ov) {
   ${body}`;
 }
 
-// ── Admin → Idols ───────────────────────────────────────────────────────────
-// Create/edit hidden-immunity clues, set release times, and mark one found.
-function admIdolsSection(ov) {
-  const idols = ov.idols || [];
-  const foundCount = idols.filter(x => x.found).length;
-  const people = (ov.people || []).filter(p => p.team === 'buffalo' || p.team === 'roadhouse');
-  // "Award" search — pick the finder; awarding marks the idol found AND logs
-  // the idol's points to the finder's tribe.
-  const awardPanel = (idol) => {
-    if (S.admIdolAward !== idol.id) return '';
-    const q = (S.f.admIdolSearch || '').trim().toLowerCase();
-    const matches = q ? people.filter(p => (p.name || '').toLowerCase().includes(q)).slice(0, 6) : [];
-    return `
-    <div style="padding:12px 18px;border-bottom:1px solid #EEF2F1;background:#FCFBF7;">
-      <div style="font-size:11px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#6D7C83;margin-bottom:7px;">Who found ${esc(idol.title || 'this idol')}? ${idol.points ? `They earn +${idol.points} pts for their tribe.` : '(Set its points in Edit to award any.)'}</div>
-      <div style="display:flex;align-items:center;gap:8px;">
-        <input id="idol-award-search" data-live="admIdolSearch" value="${esc(S.f.admIdolSearch || '')}" placeholder="Type the finder's name…" style="flex:1;min-width:0;font-size:13px;color:#00253D;border:1px solid #DCE3E2;border-radius:7px;padding:8px 10px;outline:none;font-family:'Montserrat';"/>
-        <button data-act="admIdolAwardCancel" style="flex-shrink:0;font-size:12px;font-weight:700;color:#6D7C83;border:1px solid #DCE3E2;border-radius:7px;padding:8px 11px;">Cancel</button>
-      </div>
-      ${matches.length ? `<div style="display:flex;flex-direction:column;gap:5px;margin-top:8px;">${matches.map(p => `
-        <button data-act="admIdolAwardPick" data-id="${idol.id}" data-uid="${p.id}" data-name="${esc(p.name)}" style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:#fff;border:1px solid #E0E6E5;border-radius:7px;padding:8px 11px;text-align:left;">
-          <span style="font-size:13px;font-weight:700;color:#00253D;">${esc(p.name)}</span>
-          ${admTeamChip(p.team)}
-        </button>`).join('')}</div>` : (q ? '<div style="font-size:12px;color:#9AA7A5;margin-top:8px;font-style:italic;">No matches.</div>' : '<div style="font-size:11.5px;color:#9AA7A5;margin-top:7px;">Start typing a name…</div>')}
-    </div>`;
-  };
-  const rowHtml = (idol, i) => {
-    if (S.admIdolEdit === idol.id) {
-      return `
-      <div style="padding:16px 18px;border-bottom:1px solid #EEF2F1;background:#FAFCFB;">
-        <div style="display:flex;gap:12px;flex-wrap:wrap;">
-          <div style="flex:1;min-width:180px;">${admFieldLabel('Short label')}${admTextInput('id-title', 'idTitle', S.f.idTitle || '', 'Clue ' + (i + 1))}</div>
-          <div style="width:170px;">${admFieldLabel('Release time (blank = hidden)')}${admTextInput('id-time', 'idTime', S.f.idTime || '', 'e.g. 1:30 PM')}</div>
-          <div style="width:120px;">${admFieldLabel('Points')}${admTextInput('id-points', 'idPoints', S.f.idPoints || '', 'e.g. 10')}</div>
-        </div>
-        <div style="margin-top:12px;">${admFieldLabel('Clue (hidden from players until release)')}
-          <textarea id="id-clue" data-field="idClue" placeholder="Type the clue riddle…" style="width:100%;min-height:70px;font-size:14px;color:#00253D;border:1px solid #DCE3E2;border-radius:8px;padding:11px 12px;font-family:'Montserrat';outline:none;resize:vertical;">${esc(S.f.idClue || '')}</textarea>
-        </div>
-        <div style="font-size:11px;color:#9AA7A5;margin-top:6px;">Points go to the finder's tribe when you award the idol (needs migration 010).</div>
-        <div style="display:flex;gap:8px;margin-top:14px;">
-          <button data-act="admIdolSave" data-id="${idol.id}" style="background:#FF5F00;color:#011220;font-weight:800;font-size:13px;padding:10px 16px;border-radius:8px;">Save clue</button>
-          <button data-act="admIdolCancel" style="color:#6D7C83;font-weight:700;font-size:13px;padding:10px 12px;border-radius:8px;border:1px solid #DCE3E2;">Cancel</button>
-        </div>
-      </div>`;
-    }
-    const releaseLabel = idol.releaseMin != null ? minToLabel(idol.releaseMin) : 'Hidden (no release time)';
-    return `
-    <div style="display:flex;align-items:center;gap:14px;padding:13px 18px;border-bottom:1px solid #EEF2F1;">
-      <span style="width:30px;height:30px;border-radius:50%;background:${idol.found ? '#FF5F00' : '#EEF2F1'};color:${idol.found ? '#011220' : '#6D7C83'};display:flex;align-items:center;justify-content:center;flex-shrink:0;font-family:'BN Kragen';font-size:13px;">${i + 1}</span>
-      <div style="flex:1;min-width:0;">
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-          <span style="font-size:14px;font-weight:700;color:#00253D;">${esc(idol.title || 'Clue ' + (i + 1))}</span>
-          ${idol.points ? `<span style="font-size:10px;font-weight:800;color:#8A5A12;background:#FCEFDD;border:1px solid #F0D9BB;border-radius:5px;padding:1px 7px;">+${idol.points} pts</span>` : ''}
-        </div>
-        <div style="font-size:12px;color:#6D7C83;margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${idol.clue ? esc(idol.clue) : '<span style="font-style:italic;color:#9AA7A5;">No clue text yet</span>'}</div>
-        <div style="font-size:11px;font-weight:700;color:${idol.releaseMin != null ? '#00253D' : '#9AA7A5'};margin-top:3px;">${idol.releaseMin != null ? '⏱ ' + esc(releaseLabel) : esc(releaseLabel)}${idol.found && idol.foundBy ? ` · <span style="color:#1F8A5B;">Found by ${esc(idol.foundBy)}</span>` : ''}</div>
-      </div>
-      ${idol.found
-        ? `<button data-act="admIdolFound" data-id="${idol.id}" style="flex-shrink:0;font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:6px;background:#1F8A5B;color:#fff;border:1px solid #1F8A5B;">Found ✓</button>`
-        : `<button data-act="admIdolAwardOpen" data-id="${idol.id}" style="flex-shrink:0;font-size:11.5px;font-weight:700;padding:6px 11px;border-radius:6px;background:transparent;color:#6D7C83;border:1px solid #C9D3D2;">🏆 Award</button>`}
-      <div style="display:flex;gap:6px;flex-shrink:0;">
-        <button data-act="admIdolEdit" data-id="${idol.id}" style="height:30px;padding:0 11px;border-radius:6px;border:1px solid #DCE3E2;color:#00253D;font-size:12px;font-weight:700;">Edit</button>
-        <button data-act="admIdolDelete" data-id="${idol.id}" data-title="${esc(idol.title || 'this clue')}" style="width:30px;height:30px;border-radius:6px;border:1px solid #F0CDB3;color:#C77B23;display:flex;align-items:center;justify-content:center;font-size:16px;">×</button>
-      </div>
-    </div>${awardPanel(idol)}`;
-  };
-  return `
-  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px;flex-wrap:wrap;">
-    <div>
-      <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Idols</h3>
-      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Hidden-immunity clues — all hidden by default. Type each clue, set a release time and its points, then hit 🏆 Award and pick the finder — their tribe gets the points automatically. ${foundCount} of ${idols.length} found.</p>
-    </div>
-    <button data-act="admIdolAdd" style="flex-shrink:0;background:#FF5F00;color:#011220;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;">+ Add clue</button>
-  </div>
-  <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
-    ${idols.length ? idols.map(rowHtml).join('') : '<div style="padding:20px;font-size:13px;color:#9AA7A5;font-style:italic;">No clues yet — add one to start the idol hunt.</div>'}
-  </div>`;
-}
-
 function admDipSection(ov) {
   const dip = ov.dip || { entries: [], counts: { buffalo: 0, roadhouse: 0 }, totalVotes: 0, revealed: false };
   const maxVotes = dip.entries.length ? Math.max.apply(null, dip.entries.map(d => d.votes)) : 0;
@@ -3490,7 +3325,7 @@ function adminScreen() {
   }
   const sections = [
     { id: 'people', label: 'People' }, { id: 'songs', label: 'Songs' }, { id: 'games', label: 'Games' },
-    { id: 'schedule', label: 'Schedule' }, { id: 'idols', label: 'Idols' },
+    { id: 'schedule', label: 'Schedule' },
     { id: 'dipoff', label: 'Dip Off' }, { id: 'relay', label: 'Relay Race' },
     { id: 'scores', label: 'Scores' }, { id: 'refs', label: 'Referees' }, { id: 'announce', label: 'Announcements' },
   ];
@@ -3500,7 +3335,6 @@ function adminScreen() {
   else if (S.adminSection === 'songs') body = admSongsSection(ov);
   else if (S.adminSection === 'games') body = admGamesSection(ov);
   else if (S.adminSection === 'schedule') body = admScheduleSection(ov);
-  else if (S.adminSection === 'idols') body = admIdolsSection(ov);
   else if (S.adminSection === 'dipoff') body = admDipSection(ov);
   else if (S.adminSection === 'relay') body = admRelaySection(ov);
   else if (S.adminSection === 'scores') body = admScoresSection(ov);
@@ -3669,7 +3503,6 @@ function screenHtml() {
     case 'schedule': return scheduleScreen();
     case 'tribes': return tribesScreen();
     case 'score': return ref ? refBoardScreen() : scoreScreen();
-    case 'immunity': return immunityScreen();
     case 'dip': return dipSignupScreen();
     case 'dip-vote': return dipVoteScreen();
     case 'relay': return relayScreen();
@@ -3773,7 +3606,7 @@ function render() {
 }
 
 /* ════════════════════ routing ════════════════════ */
-const ROUTES = ['home', 'games', 'game', 'schedule', 'tribes', 'score', 'immunity', 'dip', 'dip-vote', 'relay', 'admin'];
+const ROUTES = ['home', 'games', 'game', 'schedule', 'tribes', 'score', 'dip', 'dip-vote', 'relay', 'admin'];
 function parseRoute() {
   const h = location.hash || '#/home';
   const m = h.match(/^#\/([\w-]+)(?:\/(.+))?/);
@@ -4144,7 +3977,7 @@ const ACTIONS = {
   }),
 
   // ── admin ──
-  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; S.admSchedEdit = null; S.admIdolEdit = null; S.admIdolAward = null; S.admFillSlot = null; S.admAddSlot = null; S.admBracketEdit = null; S.admRefAdd = null; render(); },
+  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; S.admSchedEdit = null; S.admFillSlot = null; S.admAddSlot = null; S.admBracketEdit = null; S.admRefAdd = null; render(); },
   admMode: (el) => guarded(async () => {
     await api('/ac/settings', { method: 'POST', body: { eventMode: el.dataset.mode } });
     await afterAdminMutation();
@@ -4316,71 +4149,6 @@ const ACTIONS = {
     await loadOverview(true);
     toast('Schedule updated');
   }),
-  admIdolAdd: () => guarded(async () => {
-    await api('/ac/idols', { method: 'POST', body: { action: 'add' } });
-    await loadOverview(true);
-    const rows = (S.overview && S.overview.idols) || [];
-    const last = rows[rows.length - 1];
-    if (last) {
-      S.admIdolEdit = last.id;
-      S.f.idTitle = last.title || ''; S.f.idClue = last.clue || '';
-      S.f.idTime = last.releaseMin != null ? minToLabel(last.releaseMin) : '';
-      S.f.idPoints = last.points != null ? String(last.points) : '';
-    }
-    render();
-  }),
-  admIdolEdit: (el) => {
-    const id = parseInt(el.dataset.id, 10);
-    const idol = ((S.overview && S.overview.idols) || []).find(x => x.id === id);
-    if (!idol) return;
-    S.admIdolEdit = id;
-    S.f.idTitle = idol.title || ''; S.f.idClue = idol.clue || '';
-    S.f.idTime = idol.releaseMin != null ? minToLabel(idol.releaseMin) : '';
-    S.f.idPoints = idol.points != null ? String(idol.points) : '';
-    render();
-  },
-  admIdolCancel: () => { S.admIdolEdit = null; render(); },
-  admIdolSave: (el) => guarded(async () => {
-    const id = parseInt(el.dataset.id, 10);
-    const timeStr = (S.f.idTime || '').trim();
-    let releaseMin = null;
-    if (timeStr) {
-      releaseMin = parseTimeLabel(timeStr);
-      if (releaseMin === null) { toast('Enter a time like 1:30 PM, or leave it blank'); return; }
-    }
-    await api('/ac/idols', { method: 'POST', body: {
-      action: 'update', id,
-      title: (S.f.idTitle || '').trim(), clue: (S.f.idClue || '').trim(), releaseMin,
-      points: Math.max(0, parseInt(S.f.idPoints, 10) || 0),
-    } });
-    S.admIdolEdit = null;
-    await loadOverview(true);
-    toast('Clue saved');
-  }),
-  admIdolFound: (el) => guarded(async () => {
-    await api('/ac/idols', { method: 'POST', body: { action: 'toggleFound', id: parseInt(el.dataset.id, 10) } });
-    await loadOverview(true);
-  }),
-  admIdolAwardOpen: (el) => { S.admIdolAward = parseInt(el.dataset.id, 10); S.f.admIdolSearch = ''; render(); },
-  admIdolAwardCancel: () => { S.admIdolAward = null; S.f.admIdolSearch = ''; render(); },
-  admIdolAwardPick: (el) => {
-    const name = el.dataset.name || 'this person';
-    if (!window.confirm(`Award this idol to ${name}? Their tribe gets the idol's points and the entry shows in Scores.`)) return;
-    guarded(async () => {
-      await api('/ac/idols', { method: 'POST', body: { action: 'award', id: parseInt(el.dataset.id, 10), userId: parseInt(el.dataset.uid, 10) } });
-      S.admIdolAward = null; S.f.admIdolSearch = '';
-      await afterAdminMutation();
-      toast(`Idol awarded to ${name}`);
-    });
-  },
-  admIdolDelete: (el) => {
-    if (!window.confirm(`Delete ${el.dataset.title}? This can't be undone.`)) return;
-    guarded(async () => {
-      await api('/ac/idols', { method: 'POST', body: { action: 'remove', id: parseInt(el.dataset.id, 10) } });
-      await loadOverview(true);
-      toast('Clue deleted');
-    });
-  },
   admSchedMove: (el) => guarded(async () => {
     await api('/ac/schedule', { method: 'POST', body: { action: 'move', id: parseInt(el.dataset.id, 10), dir: parseInt(el.dataset.dir, 10) } });
     await loadOverview(true);
@@ -4829,7 +4597,6 @@ document.addEventListener('input', (e) => {
   if (el.dataset && el.dataset.live === 'muSearchB') { S.muSearch.buffalo = el.value; render(); }
   if (el.dataset && el.dataset.live === 'muSearchR') { S.muSearch.roadhouse = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admFill') { S.f.admFillSearch = el.value; render(); }
-  if (el.dataset && el.dataset.live === 'admIdolSearch') { S.f.admIdolSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admRefSearch') { S.f.admRefSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admRefAddSearch') { S.f.admRefAddSearch = el.value; render(); }
   if (el.dataset && el.dataset.debounce === 'refCode') {

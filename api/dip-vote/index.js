@@ -1,7 +1,7 @@
 const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
 const { json, requireUser } = require('../lib/auth');
-const { buildBootstrap, getSettings } = require('../lib/bootstrap');
+const { buildBootstrap, getSettings, bustVotesBootstrap } = require('../lib/bootstrap');
 
 app.http('dip-vote', {
   methods: ['POST'],
@@ -37,7 +37,12 @@ app.http('dip-vote', {
           ELSE
             INSERT INTO bo_dip_votes (user_id, dip_entry_id) VALUES (@uid, @eid);`);
 
-      return json({ bootstrap: await buildBootstrap(pool, user, { fresh: true }) });
+      // A vote changes ONE tiny thing (this user's row in bo_dip_votes), so
+      // bust just the votes block — rebuilding the whole payload per vote meant
+      // ~20 queries × everyone voting at once when voting opens. The rebuilt
+      // votes block includes this vote, so the voter still sees it immediately.
+      bustVotesBootstrap();
+      return json({ bootstrap: await buildBootstrap(pool, user) });
     } catch (err) {
       context.error('dip-vote error:', err);
       return json({ error: 'Internal server error' }, 500);
