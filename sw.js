@@ -1,5 +1,5 @@
 /* Buff Olympics service worker — precache the app shell, network-first for API. */
-const CACHE = 'buffolympics-v18';   // v18: TXRH day cap 4 + admin slot report
+const CACHE = 'buffolympics-v18';   // v18: TXRH day cap 4 + slot/shirt reports
 const SHELL = [
   '/',
   '/index.html',

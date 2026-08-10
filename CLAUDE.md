@@ -280,6 +280,15 @@ tab surfaces each account's shirt size + which Buff Olympics it is for them, has
 and 🗑 delete button per person, and a **Songs** tab lists every song request with a CSV export for
 the DJ.
 
+**Shirt sizes** (People tab → "👕 Shirt sizes" panel + "⬇ Export shirt sizes",
+`shirtTally`/`admExportShirts` in `app.js`): counts per size × tribe (refs land in "No tribe" — they
+still need a shirt) plus how many accounts have no size on file. The CSV holds the per-person list
+(name / tribe / size / referee, name-sorted, blanks as `NOT SET`) followed by the same tally, so one
+file covers both checking names off and placing the order. Sizes come from the shared `SHIRT_SIZES`
+const the sign-up form uses (so the order never drifts); any unrecognized legacy value is appended
+after the known sizes rather than dropped. Computed from the `ac-overview` payload — no extra API
+call.
+
 ---
 
 ## Referee experience (`refBoardScreen`, `refGamesScreen`, `ref-claim/`, `results/`)

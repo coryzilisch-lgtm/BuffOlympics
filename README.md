@@ -80,7 +80,10 @@ staticwebapp.config.json — SPA fallback, node:20 apiRuntime, anonymous routes
 
 1. **Sign-Up phase** (default): players create accounts, pick a tribe, claim time slots up to their
    per-tribe cap (**Buffalo 4 / Texas Roadhouse 4**, no overlapping fixed-time blocks), join the
-   **Dip Off** (5 cooks/tribe) and one **relay leg**.
+   **Dip Off** (5 cooks/tribe) and one **relay leg**. Sign-up also collects a shirt size and a song
+   request — **Admin → People → "⬇ Export shirt sizes"** gives you the order list (every person's
+   size, plus counts per size and tribe, and who still hasn't set one), and **Admin → Songs** exports
+   the request list for the DJ.
 2. Flip **Event mode → Game Day** in the Admin Center sidebar: sign-ups lock, **dip voting** opens
    on every phone (one vote each; dips stay numbered/anonymous).
 3. Refs log results all day from their stations (assign refs to games in Admin → Referees).
