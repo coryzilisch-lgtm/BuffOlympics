@@ -1694,7 +1694,7 @@ function scheduleScreen() {
   return `
   <div style="padding:18px 0 24px;">
     <div style="padding:0 18px 8px;">
-      <span style="font-size:11px;font-weight:600;color:${T.A2};letter-spacing:0.04em;">Thursday · August 14 · Support Center</span>
+      <span style="font-size:11px;font-weight:600;color:${T.A2};letter-spacing:0.04em;">Friday · August 14 · Support Center</span>
       <h2 style="font-family:'BN Kragen';font-size:36px;color:${th.text};text-transform:uppercase;margin:6px 0 0;line-height:0.92;">The Day</h2>
       <p style="font-size:12.5px;color:${th.sub};margin:8px 0 0;">Event moments everyone shares, plus the games you signed up for — woven together in time order.</p>
     </div>
