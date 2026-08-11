@@ -87,6 +87,9 @@ staticwebapp.config.json — SPA fallback, node:20 apiRuntime, anonymous routes
 2. Flip **Event mode → Game Day** in the Admin Center sidebar: sign-ups lock, **dip voting** opens
    on every phone (one vote each; dips stay numbered/anonymous).
 3. Refs log results all day from their stations (assign refs to games in Admin → Referees).
+   Need to fix a roster? **Admin → Games → + Fill** drops someone into a time slot, and
+   **Admin → Relay Race → + Add** puts someone on a relay leg (× removes them) — both are admin
+   overrides that ignore caps and still work once sign-ups are locked.
    Team totals stay sealed — players only see their own results. Admin can **peek** privately.
 4. Closing Ceremony: Admin → Scores → **Reveal scores to everyone** (confirmed, one-way), and
    Admin → Dip Off → **Reveal winner**.
@@ -157,12 +160,25 @@ the admin `removeUser` action, which is also handy for clearing out any bogus ac
 
 ### Keeping Fabric load down
 
-The event runs on the small **shared F2** Fabric capacity, so the read-heavy `GET /api/bootstrap`
-(hit on every load and re-polled every 60s by every player) splits into a **shared block cached
-in-process ~20s** (`api/lib/cache.js`) plus **2 per-user queries** that always run live. Under a
-game-day crowd this collapses the shared dozen-query cost to ~3 refills/minute instead of once per
-request. Writes (`{fresh:true}` on signup/dip/relay, `bustSharedBootstrap()` on results/admin/team)
-bust the cache so nobody sees stale data beyond their own poll.
+The event runs on a small **shared** Fabric capacity, and the read-heavy `GET /api/bootstrap` is
+re-polled every 90s by every active viewer — so the number that matters is **queries per poll per
+person**, multiplied by the crowd, all day. That number is **zero** while the caches are warm.
+
+Everything identical-for-everyone lives in three independently-busted in-process cached blocks
+(`api/lib/cache.js`): **roster** (games/slots/rosters/schedule/config), **results**
+(totals/leaderboard/one scan of `bo_results`), and **votes** (who voted for which dip). There is no
+per-user query left — a player's own results are filtered out of the cached results scan, their dip
+vote is read from the cached votes map, and even the `bo_users` identity lookup every request used to
+make is cached for 45s. The admin dashboard payload (~25 queries) is cached too, so an Admin Center
+left open all day isn't re-running it every 90s.
+
+Writes keep it honest: a score busts only the results block, a dip vote only the votes block, and
+signup/admin/team writes bust everything, so nobody sees stale data beyond their own poll.
+Concurrent misses after a bust share a single refill rather than each re-running the query set.
+
+One caveat worth knowing: the cache is per host instance and a bust is local to it, so if the app has
+scaled out, another instance can serve its own copy until its TTL expires (2 minutes for results).
+That's why the results TTL stays short — it's the half refs read to see what's already been scored.
 
 ## Gotchas hit during setup (so the next person doesn't relearn them)
 

@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { getPool, sql } = require('./db');
+const cache = require('./cache');
 
 const PBKDF2_ITERATIONS = 100000;
 const PBKDF2_KEYLEN = 32;
@@ -97,11 +98,20 @@ async function identityFromRequest(request) {
   const token = request.headers.get('x-auth-token');
   const payload = verifyToken(token);
   if (!payload) return null;
-  const pool = await getPool();
-  const r = await pool.request()
-    .input('id', sql.Int, payload.uid)
-    .query('SELECT * FROM bo_users WHERE id = @id');
-  const row = r.recordset[0] || null;
+  // Short-TTL row cache (api/lib/cache.js). This query used to run on EVERY
+  // authenticated request — one DB round-trip per person per poll all day.
+  // Writes that change a row (tribe pick, ref/admin toggle, password reset,
+  // delete) call cache.bustUsers(), so the token_version revocation below
+  // still takes effect immediately.
+  let row = cache.getUser(payload.uid);
+  if (!row) {
+    const pool = await getPool();
+    const r = await pool.request()
+      .input('id', sql.Int, payload.uid)
+      .query('SELECT * FROM bo_users WHERE id = @id');
+    row = r.recordset[0] || null;
+    if (row) cache.setUser(payload.uid, row);
+  }
   // Token-version check (migration 013): a password reset bumps the row's
   // token_version, so tokens minted before the reset stop matching → 401.
   // Pre-013 the column is absent (undefined → 0) and old tokens have no tv

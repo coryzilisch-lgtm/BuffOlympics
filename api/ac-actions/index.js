@@ -1,7 +1,8 @@
 const { app } = require('@azure/functions');
 const { getPool, sql } = require('../lib/db');
 const { json, requireUser, requireAdmin, hashPassword, formatName } = require('../lib/auth');
-const { getSettings, upsertSetting, bustSharedBootstrap } = require('../lib/bootstrap');
+const { getSettings, upsertSetting, bustSharedBootstrap, bustVotesBootstrap } = require('../lib/bootstrap');
+const cache = require('../lib/cache');
 
 // ── POST /api/admin/settings ───────────────────────────────────────────────
 async function handleSettings(pool, body) {
@@ -185,7 +186,43 @@ async function handlePeople(pool, body) {
     return json({ ok: true });
   }
 
-  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, removeGame, fillSlot, unfillSlot, resetPassword, or removeUser' }, 400);
+  if (action === 'fillRelay') {
+    // Admin drops a specific person onto a relay leg — the relay counterpart of
+    // fillSlot, and an override in the same way: it ignores the leg cap and the
+    // event mode (so a roster can still be fixed on game day). The ONE rule it
+    // does keep is the model's own invariant — a person runs a single leg — so
+    // this moves them off any other leg rather than adding a second.
+    const legId = String(body.legId || '').trim();
+    if (!legId) return json({ error: 'legId is required' }, 400);
+    const legR = await pool.request().input('lid', sql.NVarChar, legId)
+      .query('SELECT id FROM bo_relay_legs WHERE id = @lid');
+    if (!legR.recordset.length) return json({ error: 'Relay leg not found' }, 404);
+    // The relay roster is grouped by tribe, so someone with no tribe (a ref)
+    // would land in the table but show on neither side.
+    const uR = await pool.request().input('id', sql.Int, userId)
+      .query('SELECT team FROM bo_users WHERE id = @id');
+    const team = uR.recordset[0] && uR.recordset[0].team;
+    if (team !== 'buffalo' && team !== 'roadhouse') {
+      return json({ error: 'That person has no tribe yet — the relay roster is per tribe' }, 409);
+    }
+    await pool.request().input('uid', sql.Int, userId).input('lid', sql.NVarChar, legId)
+      .query(`
+        DELETE FROM bo_relay_signups WHERE user_id = @uid;
+        INSERT INTO bo_relay_signups (user_id, leg_id) VALUES (@uid, @lid);`);
+    return json({ ok: true });
+  }
+
+  if (action === 'unfillRelay') {
+    // Pull a person off a leg. Scoped by leg id so a stale click can't wipe a
+    // roster row the admin has since moved elsewhere.
+    const legId = String(body.legId || '').trim();
+    if (!legId) return json({ error: 'legId is required' }, 400);
+    await pool.request().input('uid', sql.Int, userId).input('lid', sql.NVarChar, legId)
+      .query('DELETE FROM bo_relay_signups WHERE user_id = @uid AND leg_id = @lid');
+    return json({ ok: true });
+  }
+
+  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, removeGame, fillSlot, unfillSlot, fillRelay, unfillRelay, resetPassword, or removeUser' }, 400);
 }
 
 // ── POST /api/admin/relay-legs ─────────────────────────────────────────────
@@ -301,106 +338,6 @@ async function handleSchedule(pool, body) {
   }
 
   return json({ error: 'action must be add, remove, move, or update' }, 400);
-}
-
-// ── POST /api/admin/idols ──────────────────────────────────────────────────
-// Idol clues are hidden by default; the admin types clues, sets release times
-// (minutes since midnight, event-local), and marks one found when claimed.
-async function handleIdols(pool, body) {
-  const action = body.action;
-
-  if (action === 'add') {
-    await pool.request().query(`
-      INSERT INTO bo_idols (title, clue, release_min, found, sort)
-      SELECT N'New clue', N'', NULL, 0, ISNULL(MAX(sort), 0) + 1 FROM bo_idols;`);
-    return json({ ok: true });
-  }
-
-  const id = parseInt(body.id, 10);
-  if (!Number.isInteger(id)) return json({ error: 'id is required' }, 400);
-
-  if (action === 'remove') {
-    await pool.request().input('id', sql.Int, id).query('DELETE FROM bo_idols WHERE id = @id');
-    return json({ ok: true });
-  }
-
-  if (action === 'toggleFound') {
-    await pool.request().input('id', sql.Int, id)
-      .query('UPDATE bo_idols SET found = CASE WHEN found = 1 THEN 0 ELSE 1 END WHERE id = @id');
-    // Un-finding clears the finder name (migration 010, defensive). Note this
-    // does NOT remove an already-awarded result — edit that in Scores.
-    try {
-      await pool.request().input('id', sql.Int, id)
-        .query('UPDATE bo_idols SET found_by = NULL WHERE id = @id AND found = 0');
-    } catch (e) { /* pre-010 */ }
-    return json({ ok: true });
-  }
-
-  // Award the idol: mark it found by a specific person AND log a bo_results
-  // row giving the idol's points to their tribe (migration 010).
-  if (action === 'award') {
-    const userId = parseInt(body.userId, 10);
-    if (!Number.isInteger(userId)) return json({ error: 'userId (the finder) is required' }, 400);
-    const uR = await pool.request().input('uid', sql.Int, userId)
-      .query('SELECT id, first_name, last_name, username, team FROM bo_users WHERE id = @uid');
-    if (!uR.recordset.length) return json({ error: 'Finder not found' }, 404);
-    const u = uR.recordset[0];
-    if (u.team !== 'buffalo' && u.team !== 'roadhouse') {
-      return json({ error: 'The finder needs a tribe before points can be awarded' }, 409);
-    }
-    const iR = await pool.request().input('id', sql.Int, id)
-      .query('SELECT id, title, points FROM bo_idols WHERE id = @id');
-    if (!iR.recordset.length) return json({ error: 'Idol not found' }, 404);
-    const idol = iR.recordset[0];
-    const pts = Math.max(0, parseInt(idol.points, 10) || 0);
-    const finder = formatName(u.first_name, u.last_name, u.username);
-
-    await pool.request().input('id', sql.Int, id).query('UPDATE bo_idols SET found = 1 WHERE id = @id');
-    try {
-      await pool.request().input('id', sql.Int, id).input('fb', sql.NVarChar, finder)
-        .query('UPDATE bo_idols SET found_by = @fb WHERE id = @id');
-    } catch (e) { /* pre-010 — found flag still set */ }
-
-    await pool.request()
-      .input('game_name', sql.NVarChar, 'Hidden Idol')
-      .input('detail', sql.NVarChar, `${finder} found ${idol.title || 'an idol'}${pts ? ` (+${pts})` : ''}`)
-      .input('winner', sql.NVarChar, u.team)
-      .input('pts', sql.Int, pts)
-      .input('pb', sql.Int, u.team === 'buffalo' ? pts : 0)
-      .input('pr', sql.Int, u.team === 'roadhouse' ? pts : 0)
-      .input('player_name', sql.NVarChar, finder)
-      .query(`
-        INSERT INTO bo_results (game_name, detail, winner, pts, pts_buffalo, pts_roadhouse, player_name, entered_by)
-        VALUES (@game_name, @detail, @winner, @pts, @pb, @pr, @player_name, N'Admin')`);
-    return json({ ok: true });
-  }
-
-  if (action === 'update') {
-    const sets = [];
-    const req = pool.request().input('id', sql.Int, id);
-    if (body.title !== undefined) { sets.push('title = @title'); req.input('title', sql.NVarChar, String(body.title)); }
-    if (body.clue !== undefined) { sets.push('clue = @clue'); req.input('clue', sql.NVarChar, String(body.clue)); }
-    if (body.releaseMin !== undefined) {
-      const rm = body.releaseMin === null || body.releaseMin === '' ? null : parseInt(body.releaseMin, 10);
-      sets.push('release_min = @rm');
-      req.input('rm', sql.Int, Number.isInteger(rm) ? rm : null);
-    }
-    if (body.found !== undefined) { sets.push('found = @found'); req.input('found', sql.Bit, body.found ? 1 : 0); }
-    if (!sets.length && body.points === undefined) return json({ error: 'Nothing to update' }, 400);
-    if (sets.length) await req.query(`UPDATE bo_idols SET ${sets.join(', ')} WHERE id = @id`);
-    // Points column is migration 010 — separate + defensive.
-    if (body.points !== undefined) {
-      try {
-        const p = parseInt(body.points, 10);
-        await pool.request().input('id', sql.Int, id)
-          .input('p', sql.Int, Number.isInteger(p) && p >= 0 ? p : null)
-          .query('UPDATE bo_idols SET points = @p WHERE id = @id');
-      } catch (e) { /* pre-010 — points stay dormant */ }
-    }
-    return json({ ok: true });
-  }
-
-  return json({ error: 'action must be add, remove, update, award, or toggleFound' }, 400);
 }
 
 // ── POST /api/ac/reset-scores ──────────────────────────────────────────────
@@ -773,13 +710,16 @@ app.http('ac-actions', {
       else if (action === 'schedule') resp = await handleSchedule(pool, body);
       else if (action === 'ref-assign') resp = await handleRefAssign(pool, body);
       else if (action === 'games') resp = await handleGames(pool, body);
-      else if (action === 'idols') resp = await handleIdols(pool, body);
       else if (action === 'reset-scores') resp = await handleResetScores(pool, body);
       else return json({ error: 'Unknown admin action' }, 404);
 
       // Every admin write can change the shared bootstrap block — drop the
-      // cached copy so players pick up the change on their next poll.
+      // cached copy so players pick up the change on their next poll. Cached
+      // user rows go too: a password reset must kill old sessions NOW, and a
+      // ref/admin toggle or delete must not linger behind a cached identity.
       bustSharedBootstrap();
+      bustVotesBootstrap();
+      cache.bustUsers();
       return resp;
     } catch (err) {
       context.error('admin-actions error:', err);
