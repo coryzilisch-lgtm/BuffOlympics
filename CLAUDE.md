@@ -287,7 +287,7 @@ UPDATE in try/catch; round actions 409 pre-009) so the editor still works before
 
 `settings` (eventMode/refJoinCode/scoresRevealed[re-sealable — the Scores tab has a "Re-seal scores"
 undo]/dipRevealed) · `people`
-(toggleAdmin/toggleRef/addGame/removeGame/**fillSlot**/**unfillSlot**/**resetPassword**/**removeUser**) · `relay-legs` · `announcements` ·
+(toggleAdmin/toggleRef/addGame/removeGame/**fillSlot**/**unfillSlot**/**fillRelay**/**unfillRelay**/**resetPassword**/**removeUser**) · `relay-legs` · `announcements` ·
 `schedule` (add/remove/move/update) · `ref-assign` · `games`
 (addGame/updateGame/removeGame/addSlot/updateSlot/removeSlot + **addRound/updateRound/removeRound** —
 see above) · **`reset-scores`** (clears ALL logged scores). Every `ac` action busts the
@@ -295,7 +295,11 @@ shared bootstrap cache. `removeUser` deletes a user + their sign-ups/dip/relay/r
 `bo_results`) — for clearing test/bogus accounts. `resetPassword` sets a new `password_hash` (admin-
 driven reset — no email infra, so the admin sets it and tells the person). `fillSlot` drops a specific
 person into a specific slot (admin override — ignores caps/overlap/mode); powers **"Fill slot"** in the
-Games editor and the time-slot picker when adding someone to a game from the People tab. **`reset-scores`**
+Games editor and the time-slot picker when adding someone to a game from the People tab. **`fillRelay`/
+`unfillRelay`** are the relay counterparts (`{userId, legId}`) behind **+ Add** / × in the Relay tab —
+same override posture, but they keep the one-leg-per-person rule, so adding someone already on another
+leg MOVES them (the UI warns first); 409 if they have no tribe. The admin relay roster carries
+`{id, name}` per person plus `relay.legByUser` so the search can flag who's already running a leg. **`reset-scores`**
 `{confirm:'RESET'}` deletes every `bo_result_history` + `bo_results` row and re-seals the board — for
 wiping pre-event test data; gated behind the shared password `RESET` (never shown; the Scores tab's
 danger-zone button asks for it via a browser prompt). The Admin Center → People

@@ -87,6 +87,9 @@ staticwebapp.config.json — SPA fallback, node:20 apiRuntime, anonymous routes
 2. Flip **Event mode → Game Day** in the Admin Center sidebar: sign-ups lock, **dip voting** opens
    on every phone (one vote each; dips stay numbered/anonymous).
 3. Refs log results all day from their stations (assign refs to games in Admin → Referees).
+   Need to fix a roster? **Admin → Games → + Fill** drops someone into a time slot, and
+   **Admin → Relay Race → + Add** puts someone on a relay leg (× removes them) — both are admin
+   overrides that ignore caps and still work once sign-ups are locked.
    Team totals stay sealed — players only see their own results. Admin can **peek** privately.
 4. Closing Ceremony: Admin → Scores → **Reveal scores to everyone** (confirmed, one-way), and
    Admin → Dip Off → **Reveal winner**.

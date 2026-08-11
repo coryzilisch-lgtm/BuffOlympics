@@ -250,10 +250,14 @@ async function buildOverview() {
   const legs = legsR.recordset.map(l => ({ id: l.id, name: l.name, cap: l.cap, desc: l.descr }));
   const relayRoster = {};
   for (const l of legs) relayRoster[l.id] = { buffalo: [], roadhouse: [] };
+  // Admin rosters carry the user id (the player payload sends names only) so
+  // the Relay tab can remove a specific person from a leg.
+  const relayLegByUser = {};
   for (const r of relayR.recordset) {
     if (!relayRoster[r.leg_id]) relayRoster[r.leg_id] = { buffalo: [], roadhouse: [] };
+    relayLegByUser[r.user_id] = r.leg_id;
     if (r.team === 'buffalo' || r.team === 'roadhouse') {
-      relayRoster[r.leg_id][r.team].push(formatName(r.first_name, r.last_name, r.username));
+      relayRoster[r.leg_id][r.team].push({ id: r.user_id, name: formatName(r.first_name, r.last_name, r.username) });
     }
   }
 
@@ -306,7 +310,9 @@ async function buildOverview() {
     gamesCatalog,
     schedule,
     dip: { entries: dipEntries, counts: dipCounts, totalVotes, revealed: settings.dipRevealed },
-    relay: { legs, roster: relayRoster, total: relayR.recordset.length },
+    // legByUser lets the "+ Add" search show who's already running a leg
+    // (adding them MOVES them, so the admin should see it coming).
+    relay: { legs, roster: relayRoster, legByUser: relayLegByUser, total: relayR.recordset.length },
     scores: { buffalo: totals.buffalo, roadhouse: totals.roadhouse, revealed: settings.scoresRevealed },
     results,
     refAssignments,

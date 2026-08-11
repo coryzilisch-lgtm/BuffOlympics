@@ -186,7 +186,43 @@ async function handlePeople(pool, body) {
     return json({ ok: true });
   }
 
-  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, removeGame, fillSlot, unfillSlot, resetPassword, or removeUser' }, 400);
+  if (action === 'fillRelay') {
+    // Admin drops a specific person onto a relay leg — the relay counterpart of
+    // fillSlot, and an override in the same way: it ignores the leg cap and the
+    // event mode (so a roster can still be fixed on game day). The ONE rule it
+    // does keep is the model's own invariant — a person runs a single leg — so
+    // this moves them off any other leg rather than adding a second.
+    const legId = String(body.legId || '').trim();
+    if (!legId) return json({ error: 'legId is required' }, 400);
+    const legR = await pool.request().input('lid', sql.NVarChar, legId)
+      .query('SELECT id FROM bo_relay_legs WHERE id = @lid');
+    if (!legR.recordset.length) return json({ error: 'Relay leg not found' }, 404);
+    // The relay roster is grouped by tribe, so someone with no tribe (a ref)
+    // would land in the table but show on neither side.
+    const uR = await pool.request().input('id', sql.Int, userId)
+      .query('SELECT team FROM bo_users WHERE id = @id');
+    const team = uR.recordset[0] && uR.recordset[0].team;
+    if (team !== 'buffalo' && team !== 'roadhouse') {
+      return json({ error: 'That person has no tribe yet — the relay roster is per tribe' }, 409);
+    }
+    await pool.request().input('uid', sql.Int, userId).input('lid', sql.NVarChar, legId)
+      .query(`
+        DELETE FROM bo_relay_signups WHERE user_id = @uid;
+        INSERT INTO bo_relay_signups (user_id, leg_id) VALUES (@uid, @lid);`);
+    return json({ ok: true });
+  }
+
+  if (action === 'unfillRelay') {
+    // Pull a person off a leg. Scoped by leg id so a stale click can't wipe a
+    // roster row the admin has since moved elsewhere.
+    const legId = String(body.legId || '').trim();
+    if (!legId) return json({ error: 'legId is required' }, 400);
+    await pool.request().input('uid', sql.Int, userId).input('lid', sql.NVarChar, legId)
+      .query('DELETE FROM bo_relay_signups WHERE user_id = @uid AND leg_id = @lid');
+    return json({ ok: true });
+  }
+
+  return json({ error: 'action must be toggleAdmin, toggleRef, addGame, removeGame, fillSlot, unfillSlot, fillRelay, unfillRelay, resetPassword, or removeUser' }, 400);
 }
 
 // ── POST /api/admin/relay-legs ─────────────────────────────────────────────

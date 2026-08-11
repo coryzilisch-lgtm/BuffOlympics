@@ -45,6 +45,7 @@ const S = {
   admShirtReport: false, // shirt-size tally panel open in the People tab
   admFillSlot: null,     // { slotId, gameId } — "Fill slot" search open in Games tab
   admRefAdd: null,       // gameId — "+ Add ref" search open in the Referees tab
+  admRelayAdd: null,     // { legId, team } — "+ Add" search open in the Relay tab
   admAddSlot: null,      // { uid, gameId } — slot picker open in People tab
   admSchedEdit: null,    // schedule row id currently being edited inline
   admSchedKind: 'up',    // kind of the schedule row being edited: up|live|done
@@ -3066,8 +3067,55 @@ function admDipSection(ov) {
 
 function admRelaySection(ov) {
   const relay = ov.relay || { legs: [], roster: {}, total: 0 };
-  const rows = (relay.legs || []).map(l => {
+  const people = ov.people || [];
+  const legByUser = relay.legByUser || {};
+  const legName = (id) => ((relay.legs || []).find(l => l.id === id) || {}).name || 'another leg';
+
+  // Per-tribe roster panel: name chips (× to pull someone off) + an "+ Add"
+  // search over that tribe's teammates. Mirrors "Fill slot" in the Games tab —
+  // an admin override, so it ignores the leg cap and works on game day too.
+  const teamPanel = (l, team, label, ink, bg, line) => {
     const r = (relay.roster || {})[l.id] || { buffalo: [], roadhouse: [] };
+    const list = r[team] || [];
+    const open = S.admRelayAdd && S.admRelayAdd.legId === l.id && S.admRelayAdd.team === team;
+    const q = (S.f.admRelaySearch || '').trim().toLowerCase();
+    const matches = open && q
+      ? people.filter(p => p.team === team && (p.name || '').toLowerCase().includes(q)).slice(0, 6)
+      : [];
+    const chips = list.length
+      ? `<div style="display:flex;flex-wrap:wrap;gap:5px;margin-top:6px;">${list.map(p => `
+          <span style="display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:700;color:${ink};background:#fff;border:1px solid ${line};border-radius:6px;padding:4px 5px 4px 9px;">${esc(p.name)}
+            <button data-act="admRelayRemove" data-uid="${p.id}" data-leg="${esc(l.id)}" data-name="${esc(p.name)}" data-legname="${esc(l.name)}" title="Remove from this leg" style="width:16px;height:16px;border-radius:4px;background:rgba(0,0,0,0.06);color:inherit;font-size:11px;line-height:1;display:flex;align-items:center;justify-content:center;">×</button>
+          </span>`).join('')}</div>`
+      : '<div style="font-size:12.5px;color:#9AA7A5;font-style:italic;margin-top:5px;">Nobody yet</div>';
+    const search = open ? `
+      <div style="margin-top:8px;">
+        <div style="display:flex;align-items:center;gap:7px;">
+          <input id="relay-add-search" data-live="admRelaySearch" value="${esc(S.f.admRelaySearch || '')}" placeholder="Type a ${esc(label)} name…" style="flex:1;min-width:0;font-size:12.5px;color:#00253D;background:#fff;border:1px solid #DCE3E2;border-radius:7px;padding:7px 9px;outline:none;font-family:'Montserrat';"/>
+          <button data-act="admRelayAddCancel" style="flex-shrink:0;font-size:11.5px;font-weight:700;color:#6D7C83;border:1px solid #DCE3E2;border-radius:7px;padding:7px 10px;">Cancel</button>
+        </div>
+        ${matches.length ? `<div style="display:flex;flex-direction:column;gap:4px;margin-top:6px;">${matches.map(p => {
+          const on = legByUser[p.id];
+          return `<button data-act="admRelayPick" data-uid="${p.id}" data-leg="${esc(l.id)}" data-name="${esc(p.name)}" data-from="${esc(on ? legName(on) : '')}" style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:#fff;border:1px solid #E0E6E5;border-radius:7px;padding:7px 10px;text-align:left;">
+            <span style="font-size:12.5px;font-weight:700;color:#00253D;">${esc(p.name)}</span>
+            ${on ? `<span style="font-size:10px;font-weight:700;color:#C77B23;flex-shrink:0;">${on === l.id ? 'already here' : 'on ' + esc(legName(on))}</span>` : ''}
+          </button>`;
+        }).join('')}</div>` : (q ? `<div style="font-size:11.5px;color:#9AA7A5;margin-top:6px;font-style:italic;">No ${esc(label)} teammates match.</div>` : '<div style="font-size:11px;color:#9AA7A5;margin-top:6px;">Start typing a name…</div>')}
+      </div>` : '';
+    return `
+    <div style="flex:1;min-width:200px;background:${bg};border:1px solid ${line};border-radius:8px;padding:10px 12px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+        <span style="font-size:10.5px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:${ink};">${esc(label)}</span>
+        <span style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:11px;font-weight:700;color:${list.length >= l.cap ? '#1F8A5B' : '#6D7C83'};">${list.length} / ${l.cap}</span>
+          ${open ? '' : `<button data-act="admRelayAddOpen" data-leg="${esc(l.id)}" data-team="${team}" style="font-size:10.5px;font-weight:800;color:#1F8A5B;border:1px solid #BFE3D0;background:#fff;border-radius:6px;padding:3px 8px;">+ Add</button>`}
+        </span>
+      </div>
+      ${chips}${search}
+    </div>`;
+  };
+
+  const rows = (relay.legs || []).map(l => {
     return `
     <div style="background:#fff;border:1px solid #E0E6E5;border-left:3px solid #FF5F00;border-radius:10px;padding:15px 16px;">
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
@@ -3079,22 +3127,16 @@ function admRelaySection(ov) {
           <button data-act="admLegCap" data-id="${esc(l.id)}" data-d="1" style="width:30px;height:30px;border-radius:7px;border:1px solid #DCE3E2;color:#00253D;font-size:17px;display:flex;align-items:center;justify-content:center;">+</button>
         </div>
       </div>
-      <div style="display:flex;gap:12px;margin-top:12px;flex-wrap:wrap;">
-        <div style="flex:1;min-width:200px;background:#FBF4EE;border:1px solid #F3DFCC;border-radius:8px;padding:10px 12px;">
-          <div style="display:flex;align-items:center;justify-content:space-between;"><span style="font-size:10.5px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#C2741C;">Buffalo</span><span style="font-size:11px;font-weight:700;color:${r.buffalo.length >= l.cap ? '#1F8A5B' : '#6D7C83'};">${r.buffalo.length} / ${l.cap}</span></div>
-          <div style="font-size:12.5px;color:#46545B;margin-top:4px;line-height:1.4;">${esc(r.buffalo.join(', ') || '—')}</div>
-        </div>
-        <div style="flex:1;min-width:200px;background:#F6F8F7;border:1px solid #E0E6E5;border-radius:8px;padding:10px 12px;">
-          <div style="display:flex;align-items:center;justify-content:space-between;"><span style="font-size:10.5px;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:#B0353A;">Texas Roadhouse</span><span style="font-size:11px;font-weight:700;color:${r.roadhouse.length >= l.cap ? '#1F8A5B' : '#6D7C83'};">${r.roadhouse.length} / ${l.cap}</span></div>
-          <div style="font-size:12.5px;color:#46545B;margin-top:4px;line-height:1.4;">${esc(r.roadhouse.join(', ') || '—')}</div>
-        </div>
+      <div style="display:flex;gap:12px;margin-top:12px;flex-wrap:wrap;align-items:flex-start;">
+        ${teamPanel(l, 'buffalo', 'Buffalo', '#C2741C', '#FBF4EE', '#F3DFCC')}
+        ${teamPanel(l, 'roadhouse', 'Texas Roadhouse', '#B0353A', '#FDEEEE', '#F2CFCE')}
       </div>
     </div>`;
   }).join('');
   return `
   <div style="margin-bottom:16px;">
     <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Relay Race</h3>
-    <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Rename each leg and set its headcount. Anyone may sign up for one leg only — no matter how many other games they're in. <strong style="color:#46545B;">${relay.total || 0} teammates</strong> signed up so far.</p>
+    <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Rename each leg, set its headcount, and add or remove people yourself with <strong style="color:#46545B;">+ Add</strong> / ×. Anyone may run one leg only — adding someone who's already on another leg MOVES them. <strong style="color:#46545B;">${relay.total || 0} teammates</strong> signed up so far.</p>
   </div>
   <div style="display:flex;flex-direction:column;gap:12px;">${rows}</div>`;
 }
@@ -3977,7 +4019,7 @@ const ACTIONS = {
   }),
 
   // ── admin ──
-  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; S.admSchedEdit = null; S.admFillSlot = null; S.admAddSlot = null; S.admBracketEdit = null; S.admRefAdd = null; render(); },
+  admSection: (el) => { S.adminSection = el.dataset.id; S.adminConfirmReveal = false; S.editingId = null; S.admSchedEdit = null; S.admFillSlot = null; S.admAddSlot = null; S.admBracketEdit = null; S.admRefAdd = null; S.admRelayAdd = null; render(); },
   admMode: (el) => guarded(async () => {
     await api('/ac/settings', { method: 'POST', body: { eventMode: el.dataset.mode } });
     await afterAdminMutation();
@@ -4442,6 +4484,28 @@ const ACTIONS = {
     toast('Added to the slot');
   }),
   admAddCancel: () => { S.admAddSlot = null; render(); },
+  admRelayAddOpen: (el) => { S.admRelayAdd = { legId: el.dataset.leg, team: el.dataset.team }; S.f.admRelaySearch = ''; render(); },
+  admRelayAddCancel: () => { S.admRelayAdd = null; S.f.admRelaySearch = ''; render(); },
+  admRelayPick: (el) => {
+    // Someone can only run one leg, so adding a person who's already on
+    // another one moves them — say so before it happens.
+    const from = el.dataset.from;
+    if (from && !window.confirm(`${el.dataset.name} is on ${from}. Move them to this leg?`)) return;
+    guarded(async () => {
+      await api('/ac/people', { method: 'POST', body: { userId: parseInt(el.dataset.uid, 10), action: 'fillRelay', legId: el.dataset.leg } });
+      S.admRelayAdd = null; S.f.admRelaySearch = '';
+      await loadOverview(true);
+      toast(from ? `${el.dataset.name} moved` : `${el.dataset.name} added to the leg`);
+    });
+  },
+  admRelayRemove: (el) => {
+    if (!window.confirm(`Remove ${el.dataset.name} from ${el.dataset.legname}?`)) return;
+    guarded(async () => {
+      await api('/ac/people', { method: 'POST', body: { userId: parseInt(el.dataset.uid, 10), action: 'unfillRelay', legId: el.dataset.leg } });
+      await loadOverview(true);
+      toast('Removed from the leg');
+    });
+  },
   admRefAddOpen: (el) => { S.admRefAdd = el.dataset.gid; S.f.admRefAddSearch = ''; render(); },
   admRefAddCancel: () => { S.admRefAdd = null; S.f.admRefAddSearch = ''; render(); },
   admRefAddPick: (el) => guarded(async () => {
@@ -4599,6 +4663,7 @@ document.addEventListener('input', (e) => {
   if (el.dataset && el.dataset.live === 'admFill') { S.f.admFillSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admRefSearch') { S.f.admRefSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admRefAddSearch') { S.f.admRefAddSearch = el.value; render(); }
+  if (el.dataset && el.dataset.live === 'admRelaySearch') { S.f.admRelaySearch = el.value; render(); }
   if (el.dataset && el.dataset.debounce === 'refCode') {
     S.f.refCodeDraft = el.value;
     const code = el.value.trim();
