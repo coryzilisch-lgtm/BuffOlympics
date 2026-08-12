@@ -45,7 +45,7 @@ async function buildOverview() {
     legsR, relayR, scoresR, resultsR, historyR, refAssignR, annR, gameSlotsR,
   ] = await Promise.all([
     pool.request().query('SELECT [key], [value] FROM bo_settings'),
-    pool.request().query('SELECT id, first_name, last_name, username, team, is_ref, is_admin, shirt_size, years, song_request FROM bo_users ORDER BY id'),
+    pool.request().query('SELECT id, first_name, last_name, username, email, team, is_ref, is_admin, shirt_size, years, song_request FROM bo_users ORDER BY id'),
     pool.request().query(`
       SELECT id, name, needs_ref, venue, open_play, time_label,
              descr, inventory, players, points_label, video_url
@@ -168,6 +168,9 @@ async function buildOverview() {
   const people = usersR.recordset.map(u => ({
     id: u.id,
     name: formatName(u.first_name, u.last_name, u.username),
+    // Admin-only payload, so the address is safe here — it powers the email
+    // export. Legacy username-only ref accounts have none.
+    email: u.email || null,
     team: u.team || null,
     isAdmin: !!u.is_admin,
     isRef: !!u.is_ref,

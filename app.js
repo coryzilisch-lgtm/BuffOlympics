@@ -43,6 +43,7 @@ const S = {
   admRoundTeam: 'both',  // selected matchup for the round being edited
   admCapReport: false,   // "Run slot report" panel open in the Games tab
   admShirtReport: false, // shirt-size tally panel open in the People tab
+  admEmailReport: false, // per-tribe email list panel open in the People tab
   admFillSlot: null,     // { slotId, gameId } — "Fill slot" search open in Games tab
   admRefAdd: null,       // gameId — "+ Add ref" search open in the Referees tab
   admRelayAdd: null,     // { legId, team } — "+ Add" search open in the Relay tab
@@ -2274,9 +2275,61 @@ function shirtTally(people) {
   return { groups, rows, sizes, missing, total };
 }
 
+// Email list split by tribe. Refs have no tribe, so they get their own group —
+// they still need the "here's the plan" email. `missing` counts accounts with
+// no address at all (legacy username-only ref logins).
+const EMAIL_GROUPS = [
+  { key: 'buffalo', label: 'Buffalo', ink: '#B34700', bg: '#FFF3E8', line: '#F5DCC4' },
+  { key: 'roadhouse', label: 'Texas Roadhouse', ink: '#B3241F', bg: '#FDEEEE', line: '#F2CFCE' },
+  { key: 'none', label: 'No tribe (referees)', ink: '#46545B', bg: '#F3F7F5', line: '#DCE3E2' },
+];
+function emailGroups(people) {
+  const out = { buffalo: [], roadhouse: [], none: [] };
+  let missing = 0;
+  const sorted = people.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  for (const p of sorted) {
+    const email = (p.email || '').trim();
+    if (!email) { missing += 1; continue; }
+    const g = p.team === 'buffalo' || p.team === 'roadhouse' ? p.team : 'none';
+    out[g].push({ name: p.name, email, isRef: !!p.isRef });
+  }
+  return { groups: out, missing, total: out.buffalo.length + out.roadhouse.length + out.none.length };
+}
+
 function admPeopleSection(ov) {
   const people = ov.people || [];
   const tally = shirtTally(people);
+  const mail = emailGroups(people);
+  const mailPanel = () => {
+    if (!S.admEmailReport) return '';
+    const cards = EMAIL_GROUPS.map(g => {
+      const list = mail.groups[g.key];
+      // Semicolon-separated is what Outlook/Gmail accept in a BCC field.
+      const joined = list.map(p => p.email).join('; ');
+      return `
+      <div style="background:${g.bg};border:1px solid ${g.line};border-radius:10px;padding:13px 15px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+          <span style="font-family:'BN Kragen';font-size:16px;color:#00253D;text-transform:uppercase;line-height:1;">${g.label}</span>
+          <span style="display:flex;align-items:center;gap:8px;">
+            <span style="font-size:11px;font-weight:800;color:${g.ink};">${list.length}</span>
+            <button data-act="admCopyEmails" data-group="${g.key}" ${list.length ? '' : 'disabled'} style="font-size:10.5px;font-weight:800;color:${list.length ? '#1F8A5B' : '#9AA7A5'};border:1px solid ${list.length ? '#BFE3D0' : '#DCE3E2'};background:#fff;border-radius:6px;padding:4px 9px;${list.length ? '' : 'cursor:not-allowed;'}">Copy</button>
+          </span>
+        </div>
+        <textarea readonly id="emails-${g.key}" rows="4" style="width:100%;margin-top:9px;font-family:'Montserrat';font-size:11.5px;line-height:1.5;color:#46545B;background:#fff;border:1px solid ${g.line};border-radius:7px;padding:8px 10px;resize:vertical;outline:none;">${esc(joined)}</textarea>
+      </div>`;
+    }).join('');
+    return `
+    <div style="background:#fff;border:1px solid #E0E6E5;border-radius:12px;padding:16px;margin-bottom:16px;">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
+        <div>
+          <div style="font-family:'BN Kragen';font-size:20px;color:#00253D;text-transform:uppercase;line-height:1;">Email list</div>
+          <div style="font-size:12px;color:#6D7C83;margin-top:5px;">${mail.total} address${mail.total === 1 ? '' : 'es'} on file${mail.missing ? ` · <strong style="color:#B3241F;">${mail.missing} account${mail.missing === 1 ? '' : 's'} with no email</strong>` : ''}. <strong>Copy</strong> a tribe and paste it straight into BCC.</div>
+        </div>
+        <button data-act="admEmailReport" style="flex-shrink:0;font-size:12px;font-weight:800;color:#6D7C83;border:1px solid #DCE3E2;border-radius:8px;padding:9px 13px;">Hide</button>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;">${cards}</div>
+    </div>`;
+  };
   const shirtPanel = () => {
     if (!S.admShirtReport) return '';
     const cell = (v, strong) => `<span style="width:64px;flex-shrink:0;text-align:right;font-size:${strong ? '13.5px' : '13px'};font-weight:${strong ? '800' : '600'};color:${v ? '#00253D' : '#C9D3D2'};">${v}</span>`;
@@ -2364,12 +2417,14 @@ function admPeopleSection(ov) {
       <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">People</h3>
       <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Assign anyone to any game, set referees, grant admin, reset a password, or remove an account. Shirt size &amp; which Buff Olympics it is for them show under each name.</p>
     </div>
-    <div style="display:flex;gap:8px;flex-shrink:0;">
+    <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
+      <button data-act="admEmailReport" style="background:#fff;color:#00253D;border:1px solid #DCE3E2;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;">✉ ${S.admEmailReport ? 'Hide' : 'Email'} list</button>
+      <button data-act="admExportEmails" ${mail.total ? '' : 'disabled'} style="background:#fff;color:${mail.total ? '#00253D' : '#9AA7A5'};border:1px solid #DCE3E2;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;${mail.total ? '' : 'cursor:not-allowed;'}">⬇ Export emails</button>
       <button data-act="admShirtReport" style="background:#fff;color:#00253D;border:1px solid #DCE3E2;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;">👕 ${S.admShirtReport ? 'Hide' : 'Shirt'} sizes</button>
       <button data-act="admExportShirts" ${tally.total ? '' : 'disabled'} style="background:${tally.total ? '#FF5F00' : '#C9D3D2'};color:${tally.total ? '#011220' : '#fff'};font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;${tally.total ? '' : 'cursor:not-allowed;'}">⬇ Export shirt sizes</button>
     </div>
   </div>
-  ${shirtPanel()}
+  ${mailPanel()}${shirtPanel()}
   <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;overflow:hidden;">
     <div style="display:flex;align-items:center;gap:14px;padding:11px 18px;background:#EEF2F1;border-bottom:1px solid #E0E6E5;font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">
       <span style="width:172px;flex-shrink:0;">Name · shirt · year</span>
@@ -4054,6 +4109,57 @@ const ACTIONS = {
   },
   admCapReport: () => { S.admCapReport = !S.admCapReport; render(); },
   admShirtReport: () => { S.admShirtReport = !S.admShirtReport; render(); },
+  admEmailReport: () => { S.admEmailReport = !S.admEmailReport; render(); },
+  admCopyEmails: (el) => {
+    const box = document.getElementById('emails-' + el.dataset.group);
+    if (!box || !box.value) { toast('No addresses to copy'); return; }
+    const n = box.value.split(';').filter(x => x.trim()).length;
+    const done = () => toast(`${n} address${n === 1 ? '' : 'es'} copied`);
+    // Selecting the textarea first means that even if the clipboard write is
+    // blocked (permissions, an insecure origin), the text is sitting selected
+    // and ready for a manual Ctrl+C.
+    box.focus(); box.select();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(box.value).then(done, () => {
+        toast(document.execCommand && document.execCommand('copy') ? `${n} copied` : 'Press Ctrl+C to copy');
+      });
+      return;
+    }
+    toast(document.execCommand && document.execCommand('copy') ? `${n} copied` : 'Press Ctrl+C to copy');
+  },
+  admExportEmails: () => {
+    const ov = S.overview;
+    if (!ov) return;
+    const people = ov.people || [];
+    const mail = emailGroups(people);
+    if (!mail.total) { toast('No email addresses on file yet'); return; }
+    const csvCell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+    const row = (cells) => cells.map(csvCell).join(',');
+    // One flat table sorted tribe → name, so it splits or filters in one click
+    // in Excel, with the domain broken out for anyone who wants to sort by it.
+    const lines = [row(['Tribe', 'Name', 'Email', 'Domain', 'Referee'])];
+    for (const g of EMAIL_GROUPS) {
+      for (const p of mail.groups[g.key]) {
+        const at = p.email.lastIndexOf('@');
+        lines.push(row([g.label, p.name, p.email, at > -1 ? p.email.slice(at + 1).toLowerCase() : '', p.isRef ? 'yes' : 'no']));
+      }
+    }
+    lines.push('');
+    lines.push(row(['Group', 'Addresses']));
+    for (const g of EMAIL_GROUPS) lines.push(row([g.label, mail.groups[g.key].length]));
+    lines.push(row(['All addresses', mail.total]));
+    if (mail.missing) lines.push(row(['Accounts with no email', mail.missing]));
+    const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'buff-olympics-emails.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    toast(`${mail.total} email${mail.total === 1 ? '' : 's'} exported`);
+  },
   admExportShirts: () => {
     const ov = S.overview;
     if (!ov) return;
