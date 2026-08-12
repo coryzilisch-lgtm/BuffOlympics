@@ -307,6 +307,17 @@ tab surfaces each account's shirt size + which Buff Olympics it is for them, has
 and 🗑 delete button per person, and a **Songs** tab lists every song request with a CSV export for
 the DJ.
 
+**Email list** (People tab → "✉ Email list" panel + "⬇ Export emails", `emailGroups`/`admExportEmails`
+/`admCopyEmails` in `app.js`): every account's address split **by tribe** — Buffalo / Texas Roadhouse /
+No tribe (referees) — each with a **Copy** button that puts that group's semicolon-separated list on
+the clipboard, ready to paste into BCC (it selects the textarea first, so a blocked clipboard write
+still leaves it ready for Ctrl+C). The CSV is one flat table sorted tribe → name with a broken-out
+lowercased **Domain** column, then per-group counts. Grouping is by **tribe, not email domain** — a
+TXRH teammate on a gmail address still lands under Texas Roadhouse. Accounts with no address at all
+(legacy username-only ref logins) are excluded from the lists and counted separately.
+`ac-overview.people[].email` carries the address (admin-only payload; the player bootstrap never
+sends it).
+
 **Shirt sizes** (People tab → "👕 Shirt sizes" panel + "⬇ Export shirt sizes",
 `shirtTally`/`admExportShirts` in `app.js`): counts per size × tribe (refs land in "No tribe" — they
 still need a shirt) plus how many accounts have no size on file. The CSV holds the per-person list
