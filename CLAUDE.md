@@ -336,6 +336,14 @@ Refs have **no tribe**, so they skip the pick-your-tribe gate (`render()` guards
 (`render()` gates it with `!isRefUser()`), so refs always get the phone-column ref UI, and
 `screenHtml()` routes refs away from the sign-up game detail (refs never sign up). Their world:
 
+- **Rules & points, per station (collapsible).** Opening a game shows a **📋 Rules & points** panel —
+  collapsed by default so the scoring UI stays first (`S.refRules` holds the expanded gameId,
+  `ACTIONS.refRules` toggles). It states what THIS ref's entry is worth (`winPoints`, or the
+  round/champion split on a bracket, or "the number you type IS the points" on a per-person game),
+  then the game's `pointsLabel`/`players` pills, "How to play" (`descr`), "What you need"
+  (`inventory`) and the video button. All of it is read from `boot.games` (already in every payload)
+  — no extra `refStations` fields and no API change. A game with nothing on file still shows the
+  points line plus a "no written rules on file" note.
 - **Home (`refBoardScreen`) = only the games on their list.** Walk-up games are NOT auto-shown
   to every ref — they're claimed like any other game. **Multiple refs per game, uncapped**
   (migration 010: `bo_ref_assignments` PK is `(game_id, user_id)`); bootstrap filters `refStations`

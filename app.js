@@ -24,7 +24,7 @@ const S = {
   tribeTab: 'buffalo',
   videoOpen: null,       // url string
   // ref board UI
-  refOpen: null, refSlot: {}, entryB: 0, entryR: 0, refWinner: null, refRound: 'round',
+  refOpen: null, refRules: null, refSlot: {}, entryB: 0, entryR: 0, refWinner: null, refRound: 'round',
   refRoundSel: null,       // bracket round name being scored (round mode)
   teamScores: {},          // variable-score entry: { buffalo: n, roadhouse: n }
   soloScores: {},          // per-person variable-score entry: { 'Alex R.': n, … }
@@ -1247,7 +1247,49 @@ function refBoardScreen() {
           ${action}`;
       };
 
-      body = walkH2HNote + slotPicker + walkupResultsPanel + scorer + (showMu ? muBlock() : '') + bracketProgress;
+      // ── Rules & points, collapsed by default ──
+      // The ref needs the same rules the players see, plus what a win is
+      // actually worth here. Everything comes from `boot.games` (already in the
+      // payload for every viewer), so this costs no extra API surface.
+      const rulesPanel = (() => {
+        const g = (S.boot.games || []).find(x => x.id === st.gameId) || {};
+        const openRules = S.refRules === st.gameId;
+        // What the ref's entry is worth — the server-authoritative numbers,
+        // not the rules-doc wording.
+        const worth = isVs
+          ? (isBracket
+            ? `Each bracket round win: <strong style="color:${T.A};">${roundPts > 0 ? roundPts + ' pts' : 'advancement only'}</strong> · Champion: <strong style="color:${T.A};">${winPts} pts</strong>`
+            : `The winner you tap earns their tribe <strong style="color:${T.A};">${winPts} pts</strong>`)
+          : `You type each player's score — <strong style="color:${T.A};">the number you enter IS the points</strong> their tribe earns`;
+        const pill = (txt, accent) => `<span style="display:inline-block;font-size:12px;font-weight:${accent ? '800' : '600'};color:${accent ? T.A : th.text};background:${accent ? 'rgba(255,95,0,0.12)' : 'rgba(255,255,255,0.06)'};border:1px solid ${accent ? 'rgba(255,95,0,0.4)' : th.line};border-radius:8px;padding:7px 11px;">${esc(txt)}</span>`;
+        const block = (label, text) => `
+          <div style="margin-top:12px;">
+            <div style="font-size:10px;font-weight:800;letter-spacing:0.1em;text-transform:uppercase;color:${T.A2};margin-bottom:5px;">${label}</div>
+            <div style="font-size:13px;color:${th.text};line-height:1.55;white-space:pre-line;">${esc(text)}</div>
+          </div>`;
+        const pills = [g.pointsLabel ? pill(g.pointsLabel, true) : '', g.players ? pill(g.players) : ''].filter(Boolean).join('');
+        const inner = `
+          <div style="font-size:12.5px;color:${th.sub};line-height:1.5;">${worth}.</div>
+          ${pills ? `<div style="display:flex;flex-wrap:wrap;gap:7px;margin-top:11px;">${pills}</div>` : ''}
+          ${g.descr ? block('How to play', g.descr) : ''}
+          ${g.inventory ? block('What you need', g.inventory) : ''}
+          ${g.videoUrl ? `<button data-act="openVideo" data-id="${esc(st.gameId)}" style="width:100%;margin-top:13px;display:flex;align-items:center;justify-content:center;gap:9px;background:rgba(255,255,255,0.05);border:1px solid ${th.line};border-radius:9px;padding:11px;color:${th.text};font-weight:800;font-size:13px;"><span style="width:26px;height:26px;border-radius:50%;background:${T.A};display:flex;align-items:center;justify-content:center;flex-shrink:0;"><svg width="11" height="11" viewBox="0 0 24 24"><path d="M8 5v14l11-7z" fill="${T.on}"/></svg></span>See how it's played</button>` : ''}
+          ${(!g.descr && !g.pointsLabel && !g.players && !g.inventory) ? `<div style="margin-top:11px;font-size:12px;color:${th.sub};font-style:italic;">No written rules on file for this game — ask an admin to add them in the Games editor.</div>` : ''}`;
+        return `
+        <div style="border:1px solid ${th.line};border-radius:10px;background:rgba(255,255,255,0.03);overflow:hidden;margin-bottom:14px;">
+          <button data-act="refRules" data-id="${esc(st.gameId)}" style="width:100%;display:flex;align-items:center;gap:10px;padding:12px 13px;text-align:left;">
+            <span style="flex-shrink:0;font-size:14px;">📋</span>
+            <span style="flex:1;min-width:0;">
+              <span style="display:block;font-size:12.5px;font-weight:800;color:${th.text};">Rules &amp; points</span>
+              <span style="display:block;font-size:10.5px;color:${th.sub};margin-top:2px;">${openRules ? 'Tap to hide' : 'How it\'s played and what it\'s worth'}</span>
+            </span>
+            <svg width="9" height="14" viewBox="0 0 8 14" style="flex-shrink:0;transform:${openRules ? 'rotate(90deg)' : 'rotate(0deg)'};transition:transform .18s;"><path d="M1 1l6 6-6 6" stroke="${th.sub}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          ${openRules ? `<div style="padding:0 13px 14px;"><div style="height:1px;background:${th.line};margin-bottom:12px;"></div>${inner}</div>` : ''}
+        </div>`;
+      })();
+
+      body = rulesPanel + walkH2HNote + slotPicker + walkupResultsPanel + scorer + (showMu ? muBlock() : '') + bracketProgress;
     }
 
     return `
@@ -3904,6 +3946,9 @@ const ACTIONS = {
     }
     render();
   },
+  // Rules & points, per station — collapsed by default so the scoring UI stays
+  // the first thing on screen.
+  refRules: (el) => { S.refRules = S.refRules === el.dataset.id ? null : el.dataset.id; render(); },
   refSelectSlot: (el) => { S.refSlot[el.dataset.game] = parseInt(el.dataset.slot, 10); S.refWinner = null; S.teamScores = {}; S.soloScores = {}; render(); },
   // ── walk-up matchup builder ──
   muPick: (el) => {
