@@ -437,6 +437,49 @@ async function handleDipEntries(pool, body) {
   return json({ error: 'action must be add, setNumber, or renumber' }, 400);
 }
 
+// ── POST /api/ac/award ─────────────────────────────────────────────────────
+// Award points straight to a tribe, with the reason on the record. For the
+// things that don't come out of a game — sportsmanship, a tiebreak, a penalty
+// call, "they cleaned up the whole field". It lands as an ordinary bo_results
+// row, so it flows into the sealed totals, shows in the live entry log, and can
+// be edited or deleted like anything else a ref logged.
+//
+// player_name stays NULL on purpose: this belongs to the TRIBE, so it must not
+// land on the individual leaderboard.
+async function handleAward(pool, body, user) {
+  const team = body.team === 'roadhouse' ? 'roadhouse' : (body.team === 'buffalo' ? 'buffalo' : null);
+  if (!team) return json({ error: "team must be 'buffalo' or 'roadhouse'" }, 400);
+
+  const pts = parseInt(body.pts, 10);
+  if (!Number.isInteger(pts) || pts === 0) return json({ error: 'Enter how many points to award' }, 400);
+  if (Math.abs(pts) > 999) return json({ error: 'Points must be between -999 and 999' }, 400);
+
+  // The reason is the whole point of the record — an unexplained swing in the
+  // totals is exactly what nobody can reconstruct later.
+  const reason = String(body.reason || '').trim();
+  if (!reason) return json({ error: 'Say why the points were awarded' }, 400);
+  if (reason.length > 280) return json({ error: 'Keep the reason under 280 characters' }, 400);
+
+  const enteredBy = formatName(user.first_name, user.last_name, user.username);
+  await pool.request()
+    .input('game_name', sql.NVarChar, 'Admin award')
+    .input('detail', sql.NVarChar, reason)
+    .input('winner', sql.NVarChar, team)
+    .input('pts', sql.Int, pts)
+    .input('pts_buffalo', sql.Int, team === 'buffalo' ? pts : 0)
+    .input('pts_roadhouse', sql.Int, team === 'roadhouse' ? pts : 0)
+    .input('entered_by', sql.NVarChar, enteredBy)
+    .input('entered_by_id', sql.Int, user.id)
+    .query(`
+      INSERT INTO bo_results
+        (game_name, detail, winner, pts, pts_buffalo, pts_roadhouse,
+         player_name, entered_by, entered_by_id)
+      VALUES
+        (@game_name, @detail, @winner, @pts, @pts_buffalo, @pts_roadhouse,
+         NULL, @entered_by, @entered_by_id);`);
+  return json({ ok: true, team, pts });
+}
+
 // ── POST /api/ac/reset-scores ──────────────────────────────────────────────
 // Wipes ALL logged scores (every ref result + edit history) and re-seals the
 // board — for clearing out pre-event test scores. Gated behind a shared
@@ -808,6 +851,7 @@ app.http('ac-actions', {
       else if (action === 'ref-assign') resp = await handleRefAssign(pool, body);
       else if (action === 'games') resp = await handleGames(pool, body);
       else if (action === 'dip-entries') resp = await handleDipEntries(pool, body);
+      else if (action === 'award') resp = await handleAward(pool, body, user);
       else if (action === 'reset-scores') resp = await handleResetScores(pool, body);
       else return json({ error: 'Unknown admin action' }, 404);
 

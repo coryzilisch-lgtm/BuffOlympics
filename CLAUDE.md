@@ -302,7 +302,7 @@ UPDATE in try/catch; round actions 409 pre-009) so the editor still works before
 undo]/dipRevealed) · `people`
 (toggleAdmin/toggleRef/addGame/removeGame/**fillSlot**/**unfillSlot**/**fillRelay**/**unfillRelay**/**resetPassword**/**removeUser**) · `relay-legs` · `announcements` ·
 `schedule` (add/remove/move/update) · **`dip-entries`** (add/setNumber/renumber — see below) ·
-`ref-assign` · `games`
+`ref-assign` · **`award`** (points straight to a tribe, reason required — see below) · `games`
 (addGame/updateGame/removeGame/addSlot/updateSlot/removeSlot + **addRound/updateRound/removeRound** —
 see above) · **`reset-scores`** (clears ALL logged scores). Every `ac` action busts the
 shared bootstrap cache. `removeUser` deletes a user + their sign-ups/dip/relay/ref-assignment (keeps
@@ -320,6 +320,18 @@ danger-zone button asks for it via a browser prompt). The Admin Center → Peopl
 tab surfaces each account's shirt size + which Buff Olympics it is for them, has a 🔑 reset-password
 and 🗑 delete button per person, and a **Songs** tab lists every song request with a CSV export for
 the DJ.
+
+**Award points** (Scores tab, `admScoresSection`; `POST /api/ac/award` `{team, pts, reason}`): points
+that don't come out of a game — sportsmanship, a tiebreak, a penalty. It writes an ordinary
+`bo_results` row (`game_name='Admin award'`, `detail`=the reason, `winner`=tribe, `pts_buffalo`/
+`pts_roadhouse` set), so it flows into the sealed totals, shows in the live entry log, and can be
+edited or deleted like any ref's result. **`player_name` stays NULL on purpose** — the points belong
+to the TRIBE, so the row must not land on the individual leaderboard. The **reason is required**
+server-side (an unexplained swing in the totals is what nobody can reconstruct later) and `pts` must
+be a non-zero integer within ±999 — **negative takes points away**, and the confirm says "Take N pts
+FROM …" rather than "Award". The two inputs are `data-live` (not `data-field`): the button's
+enabled state and its label depend on them, and `data-field` writes `S.f` WITHOUT re-rendering, so
+the button would sit disabled while you type.
 
 **Dip Off numbers + roster** (Dip Off tab, `admDipSection`; `POST /api/ac/dip-entries`): the dip
 number is what voters see on the anonymous ballot, so it's **admin-assigned** (`bo_dip_entries.dip_no`,

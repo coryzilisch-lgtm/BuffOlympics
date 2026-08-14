@@ -45,6 +45,7 @@ const S = {
   admShirtReport: false, // shirt-size tally panel open in the People tab
   admEmailReport: false, // per-tribe email list panel open in the People tab
   admDipAdd: false,      // "+ Add cook" search open in the Dip Off tab
+  awTeam: 'buffalo',     // tribe selected in the Scores tab's Award points panel
   admFillSlot: null,     // { slotId, gameId } — "Fill slot" search open in Games tab
   admRefAdd: null,       // gameId — "+ Add ref" search open in the Referees tab
   admRelayAdd: null,     // { legId, team } — "+ Add" search open in the Relay tab
@@ -3342,6 +3343,37 @@ function admScoresSection(ov) {
       <button data-act="admUnreveal" style="flex-shrink:0;background:#fff;border:1px solid #DCE3E2;color:#00253D;font-weight:700;font-size:12.5px;padding:10px 14px;border-radius:8px;">🔒 Re-seal scores</button>
     </div>`;
   }
+  // ── Award points to a tribe ──
+  // For the things that don't come out of a game: sportsmanship, a tiebreak, a
+  // penalty. The reason is REQUIRED and lands on the record, because an
+  // unexplained swing in the totals is what nobody can reconstruct afterwards.
+  const awTeam = S.awTeam === 'roadhouse' ? 'roadhouse' : 'buffalo';
+  const awPts = (S.f.awPts || '').trim();
+  const awReason = (S.f.awReason || '').trim();
+  const awReady = !!awReason && /^-?\d+$/.test(awPts) && parseInt(awPts, 10) !== 0;
+  const awBtn = (team, label, color) => {
+    const on = awTeam === team;
+    return `<button data-act="admAwardTeam" data-team="${team}" style="flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:12px;border-radius:9px;border:2px solid ${on ? color : '#DCE3E2'};background:${on ? color : '#fff'};color:${on ? (team === 'buffalo' ? '#011220' : '#fff') : '#6D7C83'};font-weight:800;font-size:13.5px;">${on ? checkSvg(team === 'buffalo' ? '#011220' : '#fff', 14, 3) : ''}${label}</button>`;
+  };
+  const awardPanel = `
+  <div style="margin-top:24px;max-width:520px;background:#fff;border:1px solid #E0E6E5;border-radius:12px;padding:18px;">
+    <div style="font-family:'BN Kragen';font-size:19px;color:#00253D;text-transform:uppercase;line-height:1;">Award points</div>
+    <p style="font-size:12.5px;color:#6D7C83;margin:7px 0 14px;line-height:1.5;">Points that don't come from a game — sportsmanship, a tiebreak, a penalty. It joins the entry log like any other result, so you can edit it later. Use a negative number to take points away.</p>
+    <div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;margin-bottom:7px;">Which tribe</div>
+    <div style="display:flex;gap:9px;">${awBtn('buffalo', 'Buffalo', '#FF5F00')}${awBtn('roadhouse', 'Texas Roadhouse', '#E0322E')}</div>
+    <div style="display:flex;gap:10px;margin-top:13px;align-items:flex-end;">
+      <div style="width:104px;flex-shrink:0;">
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;margin-bottom:6px;">Points</div>
+        <input id="aw-pts" data-live="awPts" value="${esc(S.f.awPts || '')}" inputmode="numeric" placeholder="0" style="width:100%;font-family:'BN Kragen';font-size:22px;color:#00253D;text-align:center;background:#fff;border:1px solid #DCE3E2;border-radius:8px;padding:9px 6px;outline:none;"/>
+      </div>
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:10.5px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;margin-bottom:6px;">Reason <span style="color:#B3241F;">*</span></div>
+        <input id="aw-reason" data-live="awReason" value="${esc(S.f.awReason || '')}" maxlength="280" placeholder="e.g. Helped reset the whole field" style="width:100%;font-family:'Montserrat';font-size:13.5px;color:#00253D;background:#fff;border:1px solid #DCE3E2;border-radius:8px;padding:11px 12px;outline:none;"/>
+      </div>
+    </div>
+    <button data-act="admAward" ${awReady ? '' : 'disabled'} style="width:100%;margin-top:13px;background:${awReady ? '#00253D' : '#C9D3D2'};color:#fff;font-weight:800;font-size:14px;padding:13px;border-radius:9px;text-align:center;${awReady ? '' : 'cursor:not-allowed;'}">${awReady ? `Award ${awPts} pts to ${awTeam === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse'}` : 'Enter points and a reason'}</button>
+  </div>`;
+
   const log = (ov.results || []).map(r => {
     const color = r.winner === 'buffalo' || r.winner === 'Buffalo' ? '#FF5F00' : (r.winner === 'roadhouse' || r.winner === 'Texas Roadhouse' ? '#E0322E' : '#6D7C83');
     const editing = S.editingId === r.id;
@@ -3361,7 +3393,7 @@ function admScoresSection(ov) {
           <button data-act="admEditCancel" style="color:#6D7C83;font-weight:700;font-size:12px;padding:8px 9px;border-radius:7px;border:1px solid #DCE3E2;">Cancel</button>
         </div>` : `
         <div style="display:flex;align-items:center;gap:11px;flex-shrink:0;">
-          <span style="font-family:'BN Kragen';font-size:19px;color:${color};">+${r.pts}</span>
+          <span style="font-family:'BN Kragen';font-size:19px;color:${color};">${r.pts < 0 ? '' : '+'}${r.pts}</span>
           <button data-act="admEditStart" data-id="${r.id}" data-pts="${r.pts}" style="font-size:12px;font-weight:700;color:#FF5F00;border:1px solid #FFD3B5;border-radius:7px;padding:7px 11px;">Edit</button>
         </div>`}
       </div>
@@ -3387,6 +3419,7 @@ function admScoresSection(ov) {
     <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Totals stay hidden by default — even from you — until you choose to look or publish.</p>
   </div>
   <div style="max-width:520px;">${totalPanel}${revealCtl}</div>
+  ${awardPanel}
   <div style="margin-top:24px;">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:11px;">
       <div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;">Live entry log</div>
@@ -4722,6 +4755,24 @@ const ACTIONS = {
     await api('/ac/dip/' + el.dataset.id, { method: 'DELETE' });
     await afterAdminMutation();
   }),
+  admAwardTeam: (el) => { S.awTeam = el.dataset.team === 'roadhouse' ? 'roadhouse' : 'buffalo'; render(); },
+  admAward: () => {
+    const team = S.awTeam === 'roadhouse' ? 'roadhouse' : 'buffalo';
+    const label = team === 'buffalo' ? 'Buffalo' : 'Texas Roadhouse';
+    const pts = parseInt((S.f.awPts || '').trim(), 10);
+    const reason = (S.f.awReason || '').trim();
+    if (!Number.isInteger(pts) || pts === 0) { toast('Enter how many points to award'); return; }
+    if (!reason) { toast('Say why the points were awarded'); return; }
+    // It moves the standings — confirm the whole sentence, not just a yes/no.
+    const verb = pts < 0 ? `Take ${Math.abs(pts)} pts FROM` : `Award ${pts} pts to`;
+    if (!window.confirm(`${verb} ${label}?\n\nReason: ${reason}`)) return;
+    guarded(async () => {
+      await api('/ac/award', { method: 'POST', body: { team, pts, reason } });
+      S.f.awPts = ''; S.f.awReason = '';
+      await afterAdminMutation();
+      toast(`${pts < 0 ? Math.abs(pts) + ' pts taken from ' : pts + ' pts to '}${label}`);
+    });
+  },
   admDipAddOpen: () => { S.admDipAdd = true; S.f.admDipSearch = ''; render(); },
   admDipAddCancel: () => { S.admDipAdd = false; S.f.admDipSearch = ''; render(); },
   admDipAddPick: (el) => guarded(async () => {
@@ -4888,6 +4939,9 @@ document.addEventListener('input', (e) => {
   if (el.dataset && el.dataset.live === 'admRefAddSearch') { S.f.admRefAddSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admRelaySearch') { S.f.admRelaySearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admDipSearch') { S.f.admDipSearch = el.value; render(); }
+  // Live so the Award button enables + its label updates as you type.
+  if (el.dataset && el.dataset.live === 'awPts') { S.f.awPts = el.value; render(); }
+  if (el.dataset && el.dataset.live === 'awReason') { S.f.awReason = el.value; render(); }
   if (el.dataset && el.dataset.debounce === 'refCode') {
     S.f.refCodeDraft = el.value;
     const code = el.value.trim();
