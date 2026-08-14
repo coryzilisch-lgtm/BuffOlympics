@@ -121,6 +121,14 @@ Single IIFE, vanilla JS, hash routing (`#/home`, `#/games`, `#/game/{id}`, `#/ad
   header (SWA managed Functions rewrite `Authorization`, so a Bearer header won't work).
 - **`guarded(fn)`** — wraps mutations (busy-lock + toast on error).
 - Desktop (`≥940px`, `S.isDesk`) gets richer layouts: `deskGamesScreen()`, the Admin Center.
+- **Phone shell layout:** the column is a real `100dvh` box and **`#bo-content` is the only thing
+  that scrolls** — the document must not. Two things make that work and both are load-bearing:
+  the phone shell passes **`flex:0 0 auto`** (the `.bo-col` class sets `flex:1`, i.e. `flex-basis:0`,
+  which silently OVERRIDES an inline height on the main axis — with it, the column sized to its
+  content and the whole page scrolled) and `#bo-content` carries `min-height:0`. The bottom tab bar
+  is **`position:fixed`** (`.bo-tabbar`, width-matched to the column) rather than merely the last
+  flex row, so a resizing mobile viewport — iOS URL bar, or pre-15.4 Safari with no `dvh` — can't
+  push it below the fold; `.bo-tabpad` reserves matching space at the bottom of the scroller.
 - Mobile-first; PWA installable.
 
 Key UI areas: player games list/detail (`gamesScreen`, `gameDetailScreen`, `slotRowHtml`), ref board
@@ -321,8 +329,12 @@ renumber every other dip and desync the ballot from the physical cards. Type ove
 number the two **swap**, which is what keeps the ballot free of duplicates. **+ Add cook** searches
 everyone with a tribe (admin override — ignores the five-per-tribe cap and the event mode; refs have
 no tribe so they're rejected) and the new cook gets `MAX(dip_no)+1`. **↕ Renumber 1–N** (warns first)
-closes gaps after removals. `dipNumbering()` in `api/lib/bootstrap.js` is shared by the player
-payload and `ac-overview` so the two can never disagree about which dip is #3; unnumbered rows fall
+closes gaps after removals. **The voter's ballot renders `entry.no`, never the tile's index** — rendering the position was
+exactly the bug that made assigned numbers not match on the players' phones (`dipVoteScreen`, and the
+"Your vote's in for Dip No. N" line, which looks the entry up by id). A vote stores the ENTRY id, so
+renumbering never moves an existing vote to a different cook. `dipNumbering()` in
+`api/lib/bootstrap.js` is shared by the player payload and `ac-overview` so the two can never
+disagree about which dip is #3; unnumbered rows fall
 back to position, so **pre-014 everything behaves exactly as before** and `setNumber`/`renumber`
 409 with "needs migration 014". The admin UI flags a duplicate number in red.
 

@@ -35,9 +35,26 @@ img{-webkit-user-drag:none;}
 
 #app{min-height:100dvh;display:flex;flex-direction:column;}
 
-/* the app column: full width on phones, centered 520px between 521 and 939px */
+/* the app column: full width on phones, centered 520px between 521 and 939px.
+   NOTE: `flex:1` means flex-basis:0 — which OVERRIDES an inline height on the
+   main axis. The phone shell wants a real 100dvh box (so #bo-content is the
+   thing that scrolls, not the document), so it passes flex:0 0 auto. */
 .bo-col{width:100%;margin:0 auto;display:flex;flex-direction:column;min-height:0;flex:1;}
 @media (min-width:521px){ .bo-col{max-width:520px;} }
+
+/* Bottom tab bar — PINNED to the viewport, not merely the last row of a
+   100dvh column. Mobile Safari resizes the viewport as its URL bar shows and
+   hides, and pre-15.4 iOS has no dvh at all (it falls back to 100vh, which is
+   TALLER than what you can see) — either way an in-flow bar can end up below
+   the fold, so it reads as "not sticky". Fixed positioning takes the viewport
+   height out of the equation. It tracks the column's width so it still lines
+   up with the centred 520px layout on a tablet.
+   #bo-content carries matching bottom padding (--bo-tab-h) so the last row of
+   content is never trapped underneath. */
+:root{--bo-tab-h:74px;}
+.bo-tabbar{position:fixed;left:50%;transform:translateX(-50%);bottom:0;width:100%;z-index:60;}
+@media (min-width:521px){ .bo-tabbar{max-width:520px;} }
+.bo-tabpad{padding-bottom:calc(var(--bo-tab-h) + env(safe-area-inset-bottom, 0px));}
 
 @keyframes scrIn{from{opacity:0;transform:translateY(10px);}to{opacity:1;transform:translateY(0);}}
 @keyframes barGrow{from{transform:scaleX(0);}to{transform:scaleX(1);}}

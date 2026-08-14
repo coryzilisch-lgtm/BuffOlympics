@@ -1995,8 +1995,11 @@ function dipVoteScreen() {
   const entries = dip.entries || [];
   const myVote = dip.myVote;
   const isGameDay = S.boot.settings.eventMode === 'gameday';
-  const myIdx = entries.findIndex(d => d.id === myVote);
-  const myDipVoteNo = myIdx >= 0 ? myIdx + 1 : 0;
+  // The number on the ballot is the one the ADMIN assigned (payload `no`,
+  // migration 014) so it matches the card sitting next to the dip — NOT the
+  // tile's position in this grid, which is what it used to render.
+  const myEntry = entries.find(d => d.id === myVote);
+  const myDipVoteNo = myEntry ? myEntry.no : 0;
 
   return `
   <div style="padding:0 0 28px;">
@@ -2013,12 +2016,12 @@ function dipVoteScreen() {
       <span style="font-size:12.5px;font-weight:700;color:${th.text};">Your vote's in for Dip No. ${myDipVoteNo}. Tap another to change it.</span>
     </div>` : ''}
     <div style="padding:16px 18px 0;display:grid;grid-template-columns:1fr 1fr;gap:11px;">
-      ${entries.map((d, i) => {
+      ${entries.map((d) => {
         const mine = d.id === myVote;
         return `
         <button data-act="dipVote" data-id="${d.id}" style="background:${mine ? T.dim : 'rgba(255,255,255,0.04)'};border:1.5px solid ${mine ? T.A : 'rgba(255,255,255,0.10)'};border-radius:12px;padding:16px 13px;text-align:center;transition:all .15s;">
           <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${mine ? T.A2 : th.sub};">Dip</div>
-          <div style="font-family:'BN Kragen';font-size:40px;line-height:0.9;color:${mine ? T.A : th.text};margin-top:3px;">${i + 1}</div>
+          <div style="font-family:'BN Kragen';font-size:40px;line-height:0.9;color:${mine ? T.A : th.text};margin-top:3px;">${d.no}</div>
           <div style="margin-top:11px;font-size:12px;font-weight:800;color:${mine ? T.A : th.sub};display:flex;align-items:center;justify-content:center;gap:6px;">
             ${mine ? checkSvg(T.A, 14, 2.6) + 'Your vote' : 'Tap to vote'}
           </div>
@@ -3604,7 +3607,7 @@ function tabBar() {
   const activeTab = S.route === 'game' ? 'games' : (['dip', 'dip-vote', 'relay'].includes(S.route) ? 'home' : S.route);
   const tc = k => k === activeTab ? T.A : th.tabIdle;
   return `
-  <div style="min-height:74px;flex-shrink:0;background:${th.bar};border-top:1px solid rgba(255,255,255,0.09);display:flex;align-items:flex-start;padding:9px 6px env(safe-area-inset-bottom, 0px);position:relative;z-index:20;">
+  <div class="bo-tabbar" style="min-height:var(--bo-tab-h);flex-shrink:0;background:${th.bar};border-top:1px solid rgba(255,255,255,0.09);display:flex;align-items:flex-start;padding:9px 6px env(safe-area-inset-bottom, 0px);">
     <button data-act="go" data-to="home" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;color:${tc('home')};">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M3 11l9-7 9 7M5 9.5V20h5v-6h4v6h5V9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span style="font-size:10px;font-weight:700;">Home</span>
@@ -3755,9 +3758,9 @@ function render() {
   } else {
     const T = theme();
     html = `
-    <div class="bo-col" style="height:100vh;height:100dvh;background:${T.th.surface};overflow:hidden;position:relative;display:flex;flex-direction:column;">
+    <div class="bo-col" style="height:100vh;height:100dvh;flex:0 0 auto;background:${T.th.surface};overflow:hidden;position:relative;display:flex;flex-direction:column;">
       ${topBar()}
-      <div class="scrl" id="bo-content" style="flex:1;overflow-y:auto;overflow-x:hidden;position:relative;">${screenHtml()}</div>
+      <div class="scrl bo-tabpad" id="bo-content" style="flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;position:relative;">${screenHtml()}</div>
       ${tabBar()}
     </div>
     ${videoModalHtml()}`;
