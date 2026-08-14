@@ -340,6 +340,103 @@ async function handleSchedule(pool, body) {
   return json({ error: 'action must be add, remove, move, or update' }, 400);
 }
 
+// ── POST /api/ac/dip-entries ───────────────────────────────────────────────
+// Dip Off roster + numbering. The number on a dip is what voters see on the
+// anonymous ballot, so it has to be able to match the cards actually sitting on
+// the table — which means an admin assigns it, rather than it being derived
+// from entry order (migration 014, bo_dip_entries.dip_no).
+//
+// Deliberately routed as 'dip-entries', NOT 'dip': ac-dip already owns
+// 'ac/dip/{entryId}', and this repo has been bitten before by two routes
+// sharing a prefix.
+//
+// `add` is an admin override in the same spirit as fillSlot/fillRelay — it
+// ignores the 5-cook cap and the event mode, so a roster can be fixed on the
+// day. Every path here is a no-op if migration 014 hasn't been run yet EXCEPT
+// `add`, which works regardless (numbering just stays derived).
+async function handleDipEntries(pool, body) {
+  const action = body.action;
+
+  if (action === 'add') {
+    const userId = parseInt(body.userId, 10);
+    if (!Number.isInteger(userId)) return json({ error: 'userId is required' }, 400);
+    const uR = await pool.request().input('id', sql.Int, userId)
+      .query('SELECT team FROM bo_users WHERE id = @id');
+    if (!uR.recordset.length) return json({ error: 'User not found' }, 404);
+    const team = uR.recordset[0].team;
+    // Entries are grouped by tribe on the ballot, so a cook without one would
+    // land in the table and belong to neither side.
+    if (team !== 'buffalo' && team !== 'roadhouse') {
+      return json({ error: 'That person has no tribe yet — the Dip Off is per tribe' }, 409);
+    }
+    const dupR = await pool.request().input('id', sql.Int, userId)
+      .query('SELECT 1 AS x FROM bo_dip_entries WHERE user_id = @id');
+    if (dupR.recordset.length) return json({ error: "They're already in the Dip Off" }, 409);
+
+    await pool.request().input('uid', sql.Int, userId).input('team', sql.NVarChar, team)
+      .query('INSERT INTO bo_dip_entries (user_id, team) VALUES (@uid, @team)');
+    // Give the new cook the next free number so they don't silently collide
+    // with an existing dip. Pre-014 this is a no-op and numbering stays derived.
+    try {
+      await pool.request().input('uid', sql.Int, userId).query(`
+        UPDATE bo_dip_entries
+           SET dip_no = (SELECT ISNULL(MAX(dip_no), 0) + 1 FROM bo_dip_entries)
+         WHERE user_id = @uid`);
+    } catch (e) { /* pre-014 — no dip_no column */ }
+    return json({ ok: true });
+  }
+
+  if (action === 'setNumber') {
+    const entryId = parseInt(body.entryId, 10);
+    const no = parseInt(body.no, 10);
+    if (!Number.isInteger(entryId)) return json({ error: 'entryId is required' }, 400);
+    if (!Number.isInteger(no) || no < 1 || no > 999) return json({ error: 'Number must be between 1 and 999' }, 400);
+    try {
+      const rowsR = await pool.request().query(
+        'SELECT id, dip_no, created_at FROM bo_dip_entries ORDER BY created_at, id');
+      const rows = rowsR.recordset;
+      const me = rows.find(r => r.id === entryId);
+      if (!me) return json({ error: 'Dip entry not found' }, 404);
+      // Effective number of each row today (assigned, else its position) — the
+      // same rule the payload uses, so a swap trades the numbers people can
+      // actually see rather than raw NULLs.
+      const effective = {};
+      rows.forEach((r, i) => { effective[r.id] = r.dip_no != null ? r.dip_no : i + 1; });
+      const mine = effective[entryId];
+      const holder = rows.find(r => r.id !== entryId && effective[r.id] === no);
+      if (holder) {
+        // Two dips can't share a ballot number — the other one takes ours.
+        await pool.request().input('id', sql.Int, holder.id).input('n', sql.Int, mine)
+          .query('UPDATE bo_dip_entries SET dip_no = @n WHERE id = @id');
+      }
+      await pool.request().input('id', sql.Int, entryId).input('n', sql.Int, no)
+        .query('UPDATE bo_dip_entries SET dip_no = @n WHERE id = @id');
+      return json({ ok: true, swappedWith: holder ? holder.id : null });
+    } catch (e) {
+      return json({ error: 'Dip numbers need migration 014' }, 409);
+    }
+  }
+
+  if (action === 'renumber') {
+    // Tidy up: 1..N in the order shown today, closing any gaps left by removals.
+    try {
+      const rowsR = await pool.request().query(
+        'SELECT id, dip_no, created_at FROM bo_dip_entries ORDER BY created_at, id');
+      const rows = rowsR.recordset.map((r, i) => ({ id: r.id, no: r.dip_no != null ? r.dip_no : i + 1 }));
+      rows.sort((a, b) => a.no - b.no || a.id - b.id);
+      for (let i = 0; i < rows.length; i++) {
+        await pool.request().input('id', sql.Int, rows[i].id).input('n', sql.Int, i + 1)
+          .query('UPDATE bo_dip_entries SET dip_no = @n WHERE id = @id');
+      }
+      return json({ ok: true, count: rows.length });
+    } catch (e) {
+      return json({ error: 'Dip numbers need migration 014' }, 409);
+    }
+  }
+
+  return json({ error: 'action must be add, setNumber, or renumber' }, 400);
+}
+
 // ── POST /api/ac/reset-scores ──────────────────────────────────────────────
 // Wipes ALL logged scores (every ref result + edit history) and re-seals the
 // board — for clearing out pre-event test scores. Gated behind a shared
@@ -710,6 +807,7 @@ app.http('ac-actions', {
       else if (action === 'schedule') resp = await handleSchedule(pool, body);
       else if (action === 'ref-assign') resp = await handleRefAssign(pool, body);
       else if (action === 'games') resp = await handleGames(pool, body);
+      else if (action === 'dip-entries') resp = await handleDipEntries(pool, body);
       else if (action === 'reset-scores') resp = await handleResetScores(pool, body);
       else return json({ error: 'Unknown admin action' }, 404);
 

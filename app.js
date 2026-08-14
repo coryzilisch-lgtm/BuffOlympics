@@ -44,6 +44,7 @@ const S = {
   admCapReport: false,   // "Run slot report" panel open in the Games tab
   admShirtReport: false, // shirt-size tally panel open in the People tab
   admEmailReport: false, // per-tribe email list panel open in the People tab
+  admDipAdd: false,      // "+ Add cook" search open in the Dip Off tab
   admFillSlot: null,     // { slotId, gameId } — "Fill slot" search open in Games tab
   admRefAdd: null,       // gameId — "+ Add ref" search open in the Referees tab
   admRelayAdd: null,     // { legId, team } — "+ Add" search open in the Relay tab
@@ -3127,27 +3128,65 @@ function admScheduleSection(ov) {
 
 function admDipSection(ov) {
   const dip = ov.dip || { entries: [], counts: { buffalo: 0, roadhouse: 0 }, totalVotes: 0, revealed: false };
+  const people = ov.people || [];
   const maxVotes = dip.entries.length ? Math.max.apply(null, dip.entries.map(d => d.votes)) : 0;
+  const cooking = new Set(dip.entries.map(d => d.userId).filter(x => x != null));
+  // Two dips sharing a ballot number would make a vote ambiguous — flag it.
+  const numCount = {};
+  for (const d of dip.entries) numCount[d.no] = (numCount[d.no] || 0) + 1;
+
   const rows = dip.entries.map(d => {
     const win = dip.revealed && maxVotes > 0 && d.votes === maxVotes;
+    const dupe = numCount[d.no] > 1;
     return `
     <div style="display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid #EEF2F1;background:${win ? '#FFF4EC' : '#fff'};">
-      <span style="width:54px;flex-shrink:0;font-family:'BN Kragen';font-size:18px;color:#00253D;">${d.no}</span>
-      <span style="flex:1;font-size:14px;font-weight:700;color:#00253D;display:flex;align-items:center;gap:8px;">${esc(d.name)}${win ? '<span style="font-size:9px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:#011220;background:#FF5F00;border-radius:4px;padding:2px 7px;">Winner</span>' : ''}</span>
+      <span style="width:54px;flex-shrink:0;">
+        <input id="dip-no-${d.id}" data-change="admDipNo" data-id="${d.id}" value="${d.no}" inputmode="numeric" pattern="[0-9]*" title="The number on this dip — voters see it on the ballot" style="width:46px;text-align:center;font-family:'BN Kragen';font-size:18px;color:${dupe ? '#B3241F' : '#00253D'};background:#fff;border:1px solid ${dupe ? '#E0322E' : '#DCE3E2'};border-radius:7px;padding:5px 4px;outline:none;"/>
+      </span>
+      <span style="flex:1;font-size:14px;font-weight:700;color:#00253D;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">${esc(d.name)}${win ? '<span style="font-size:9px;font-weight:800;letter-spacing:0.06em;text-transform:uppercase;color:#011220;background:#FF5F00;border-radius:4px;padding:2px 7px;">Winner</span>' : ''}${dupe ? '<span style="font-size:9px;font-weight:800;letter-spacing:0.04em;text-transform:uppercase;color:#B3241F;background:#FDEEEE;border:1px solid #F2CFCE;border-radius:4px;padding:2px 7px;">Duplicate #</span>' : ''}</span>
       <span style="width:150px;flex-shrink:0;">${teamPill(d.team)}</span>
       <span style="width:70px;flex-shrink:0;text-align:right;font-family:'BN Kragen';font-size:18px;color:#00253D;">${d.votes}</span>
       <button data-act="admDipRemove" data-id="${d.id}" style="width:34px;flex-shrink:0;color:#C77B23;font-size:18px;text-align:center;">×</button>
     </div>`;
   }).join('');
+
+  // "+ Add cook" — admin override, same posture as Fill slot / relay + Add:
+  // ignores the five-per-tribe cap and works once sign-ups are locked.
+  const addPanel = () => {
+    if (!S.admDipAdd) return '';
+    const q = (S.f.admDipSearch || '').trim().toLowerCase();
+    const matches = q
+      ? people.filter(p => (p.team === 'buffalo' || p.team === 'roadhouse') && (p.name || '').toLowerCase().includes(q)).slice(0, 6)
+      : [];
+    return `
+    <div style="background:#fff;border:1px solid #E0E6E5;border-radius:10px;padding:13px 15px;margin-bottom:14px;">
+      <div style="display:flex;align-items:center;gap:8px;">
+        <input id="dip-add-search" data-live="admDipSearch" value="${esc(S.f.admDipSearch || '')}" placeholder="Type a name to add as a cook…" style="flex:1;min-width:0;font-size:13px;color:#00253D;border:1px solid #DCE3E2;border-radius:7px;padding:8px 10px;outline:none;font-family:'Montserrat';"/>
+        <button data-act="admDipAddCancel" style="flex-shrink:0;font-size:12px;font-weight:700;color:#6D7C83;border:1px solid #DCE3E2;border-radius:7px;padding:8px 11px;">Cancel</button>
+      </div>
+      ${matches.length ? `<div style="display:flex;flex-direction:column;gap:5px;margin-top:8px;">${matches.map(p => {
+        const already = cooking.has(p.id);
+        return `<button data-act="admDipAddPick" data-uid="${p.id}" data-name="${esc(p.name)}" ${already ? 'disabled' : ''} style="display:flex;align-items:center;justify-content:space-between;gap:8px;background:${already ? '#F7FAF9' : '#fff'};border:1px solid #E0E6E5;border-radius:7px;padding:8px 11px;text-align:left;${already ? 'cursor:not-allowed;' : ''}">
+          <span style="font-size:13px;font-weight:700;color:${already ? '#9AA7A5' : '#00253D'};">${esc(p.name)}</span>
+          <span style="display:flex;align-items:center;gap:8px;flex-shrink:0;">${already ? '<span style="font-size:10px;font-weight:700;color:#9AA7A5;">already cooking</span>' : ''}${admTeamChip(p.team)}</span>
+        </button>`;
+      }).join('')}</div>` : (q ? '<div style="font-size:12px;color:#9AA7A5;margin-top:8px;font-style:italic;">No matches with a tribe — the Dip Off is per tribe.</div>' : '<div style="font-size:11.5px;color:#9AA7A5;margin-top:7px;">Start typing a name…</div>')}
+    </div>`;
+  };
   const statCard = (val, sub, color) => `<div style="flex:1;min-width:120px;background:#fff;border:1px solid #E0E6E5;border-radius:10px;padding:13px 15px;"><div style="font-family:'BN Kragen';font-size:26px;color:${color};line-height:1;">${val}</div><div style="font-size:11px;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:#6D7C83;margin-top:5px;">${sub}</div></div>`;
   return `
   <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:14px;margin-bottom:16px;">
     <div>
       <h3 style="font-family:'BN Kragen';font-size:26px;color:#00253D;text-transform:uppercase;line-height:1;margin:0;">Dip Off</h3>
-      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Five cooks per tribe. Everyone votes on judging day — one vote each, dips stay anonymous to voters.</p>
+      <p style="font-size:13px;color:#6D7C83;margin:5px 0 0;">Five cooks per tribe. Everyone votes on judging day — one vote each, dips stay anonymous to voters. <strong style="color:#46545B;">Type over a dip # to match the cards on the table</strong> — swapping with whoever holds that number.</p>
     </div>
-    <button data-act="admDipReveal" style="flex-shrink:0;background:${dip.revealed ? '#FF5F00' : '#fff'};color:${dip.revealed ? '#011220' : '#FF5F00'};border:1px solid #FF5F00;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;">${dip.revealed ? 'Hide winner' : 'Reveal winner'}</button>
+    <div style="display:flex;gap:8px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end;">
+      <button data-act="admDipAddOpen" style="background:#fff;color:#1F8A5B;border:1px solid #BFE3D0;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;">+ Add cook</button>
+      <button data-act="admDipRenumber" ${dip.entries.length ? '' : 'disabled'} style="background:#fff;color:${dip.entries.length ? '#00253D' : '#9AA7A5'};border:1px solid #DCE3E2;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;${dip.entries.length ? '' : 'cursor:not-allowed;'}">↕ Renumber 1–${dip.entries.length}</button>
+      <button data-act="admDipReveal" style="background:${dip.revealed ? '#FF5F00' : '#fff'};color:${dip.revealed ? '#011220' : '#FF5F00'};border:1px solid #FF5F00;font-weight:800;font-size:13px;padding:11px 16px;border-radius:8px;">${dip.revealed ? 'Hide winner' : 'Reveal winner'}</button>
+    </div>
   </div>
+  ${addPanel()}
   <div style="display:flex;gap:14px;flex-wrap:wrap;margin-bottom:18px;">
     ${statCard((dip.counts.buffalo || 0) + '<span style="font-size:15px;color:#9AA7A5;"> / 5</span>', 'Buffalo cooks', '#FF5F00')}
     ${statCard((dip.counts.roadhouse || 0) + '<span style="font-size:15px;color:#9AA7A5;"> / 5</span>', 'Roadhouse cooks', '#E0322E')}
@@ -4680,6 +4719,22 @@ const ACTIONS = {
     await api('/ac/dip/' + el.dataset.id, { method: 'DELETE' });
     await afterAdminMutation();
   }),
+  admDipAddOpen: () => { S.admDipAdd = true; S.f.admDipSearch = ''; render(); },
+  admDipAddCancel: () => { S.admDipAdd = false; S.f.admDipSearch = ''; render(); },
+  admDipAddPick: (el) => guarded(async () => {
+    await api('/ac/dip-entries', { method: 'POST', body: { action: 'add', userId: parseInt(el.dataset.uid, 10) } });
+    S.admDipAdd = false; S.f.admDipSearch = '';
+    await afterAdminMutation();
+    toast(`${el.dataset.name} added to the Dip Off`);
+  }),
+  admDipRenumber: () => {
+    if (!window.confirm('Renumber every dip 1–N in their current order? Voters see these numbers.')) return;
+    guarded(async () => {
+      await api('/ac/dip-entries', { method: 'POST', body: { action: 'renumber' } });
+      await afterAdminMutation();
+      toast('Dips renumbered');
+    });
+  },
   admLegCap: (el) => guarded(async () => {
     await api('/ac/relay-legs', { method: 'POST', body: { legId: el.dataset.id, capDelta: parseInt(el.dataset.d, 10) } });
     await loadOverview(true);
@@ -4742,6 +4797,20 @@ const ACTIONS = {
 };
 
 const CHANGES = {
+  // Dip number — fires on blur/Enter (not per keystroke, so "12" isn't saved as
+  // "1" on the way). The server swaps with whoever holds the number.
+  admDipNo: (el) => {
+    const id = parseInt(el.dataset.id, 10);
+    const no = parseInt(el.value, 10);
+    const entry = ((S.overview && S.overview.dip && S.overview.dip.entries) || []).find(d => d.id === id);
+    if (!Number.isInteger(no) || no < 1) { toast('Enter a number of 1 or more'); render(); return; }
+    if (entry && entry.no === no) return;      // unchanged — don't write
+    guarded(async () => {
+      const res = await api('/ac/dip-entries', { method: 'POST', body: { action: 'setNumber', entryId: id, no } });
+      await afterAdminMutation();
+      toast(res && res.swappedWith ? `Now dip #${no} — swapped with the dip that had it` : `Now dip #${no}`);
+    });
+  },
   admAddGame: (el) => {
     const gid = el.value;
     if (!gid) return;
@@ -4815,6 +4884,7 @@ document.addEventListener('input', (e) => {
   if (el.dataset && el.dataset.live === 'admRefSearch') { S.f.admRefSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admRefAddSearch') { S.f.admRefAddSearch = el.value; render(); }
   if (el.dataset && el.dataset.live === 'admRelaySearch') { S.f.admRelaySearch = el.value; render(); }
+  if (el.dataset && el.dataset.live === 'admDipSearch') { S.f.admDipSearch = el.value; render(); }
   if (el.dataset && el.dataset.debounce === 'refCode') {
     S.f.refCodeDraft = el.value;
     const code = el.value.trim();

@@ -189,6 +189,14 @@ async function queryRosterBlock(pool) {
     for (const r of sbR.recordset) slotBracketById[r.id] = { roundNo: r.round_no, lane: r.lane || null };
   } catch (e) { /* columns not present yet — no structured brackets */ }
 
+  // Assignable Dip Off numbers (migration 014). Defensive so the app boots
+  // pre-014 — numbers then fall back to entry order, the old behavior.
+  let dipNoById = {};
+  try {
+    const dnR = await pool.request().query('SELECT id, dip_no FROM bo_dip_entries');
+    for (const r of dnR.recordset) if (r.dip_no != null) dipNoById[r.id] = r.dip_no;
+  } catch (e) { /* column not present yet */ }
+
   // Schedule end times (migration 006). Defensive so the app boots pre-006.
   let schedEndById = {};
   try {
@@ -224,7 +232,7 @@ async function queryRosterBlock(pool) {
   return {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
     legsR, relayR, annR, refAssignR, winPointsById, roundPointsById,
-    schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup, slotBracketById,
+    dipNoById, schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup, slotBracketById,
   };
 }
 
@@ -318,6 +326,16 @@ async function loadVotesBlock(pool, fresh, eventMode) {
     : cache.getOrFill(SHARED_VOTES_KEY, fill, SHARED_TTL_MS);
 }
 
+// Ballot numbering, shared by the player payload and the admin dashboard so the
+// two can never disagree about which dip is #3. Rows keep their ASSIGNED number
+// (migration 014); anything unnumbered falls back to its position in entry
+// order, and the list comes back sorted by the number shown.
+function dipNumbering(rows, dipNoById) {
+  const out = (rows || []).map((row, i) => ({ row, no: (dipNoById || {})[row.id] || (i + 1) }));
+  out.sort((a, b) => a.no - b.no || a.row.id - b.row.id);
+  return out;
+}
+
 // Does a result row belong to `name`? Results store a display name, and a team
 // result stores the pair as "A & B" — both members get credit. This mirrors the
 // SQL the per-user query used to run (=, 'n & %', '% & n', '% & n & %'), but by
@@ -357,7 +375,7 @@ async function buildBootstrap(pool, user, opts = {}) {
   const {
     settingsR, gamesR, slotsR, signupsR, scheduleR, usersR, dipR,
     legsR, relayR, annR, scoresR, refAssignR, winPointsById, roundPointsById,
-    schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup, slotBracketById,
+    dipNoById, schedEndById, gameTypeById, bracketRoundsByGame, teamSizeById, teamNoBySignup, slotBracketById,
     leaderboardR, refResultsR, allResultsR, votesByUser,
   } = shared;
   // Bracket payload for a game, or null. Undefined isBracket (pre-009) is left
@@ -538,21 +556,24 @@ async function buildBootstrap(pool, user, opts = {}) {
 
   // ── dip off ──
   const dipCounts = { buffalo: 0, roadhouse: 0 };
-  const dipEntries = [];
   let myEntry = false;
-  for (const d of dipR.recordset) {
+  // `no` is the number on the physical dip. It's ADMIN-ASSIGNED (migration 014,
+  // dip_no) so it can be made to match the cards on the table; entries with no
+  // number yet fall back to their position, which is what it always was.
+  // Sorted by number so the anonymous ballot reads 1, 2, 3…
+  const dipEntries = dipNumbering(dipR.recordset, dipNoById).map(({ row: d, no }) => {
     const team = d.team === 'roadhouse' ? 'roadhouse' : 'buffalo';
     dipCounts[team] += 1;
     const isMine = d.user_id === uid;
     if (isMine) myEntry = true;
-    dipEntries.push({
+    return {
       id: d.id,
-      no: dipEntries.length + 1,
+      no,
       team,
       name: team === user.team ? formatName(d.first_name, d.last_name, d.username) : null,
       isMine,
-    });
-  }
+    };
+  });
 
   // ── relay ──
   const legs = legsR.recordset.map(l => ({ id: l.id, name: l.name, cap: l.cap, desc: l.descr }));
@@ -722,7 +743,7 @@ async function buildBootstrap(pool, user, opts = {}) {
 
 module.exports = {
   buildBootstrap, bustSharedBootstrap, bustResultsBootstrap, bustVotesBootstrap, bustOverview,
-  getSettings, upsertSetting, settingsFromRows, resultBelongsTo,
+  getSettings, upsertSetting, settingsFromRows, resultBelongsTo, dipNumbering,
   stationType, slotsOverlap, signupMaxFor, SIGNUP_MAX_BUFFALO, SIGNUP_MAX_ROADHOUSE, SLOT_MINUTES,
   OVERVIEW_KEY, OVERVIEW_TTL_MS,
 };

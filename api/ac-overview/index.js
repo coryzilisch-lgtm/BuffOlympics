@@ -3,6 +3,7 @@ const { getPool } = require('../lib/db');
 const { json, requireUser, requireAdmin, formatName } = require('../lib/auth');
 const {
   settingsFromRows, SIGNUP_MAX_BUFFALO, SIGNUP_MAX_ROADHOUSE, OVERVIEW_KEY, OVERVIEW_TTL_MS,
+  dipNumbering,
 } = require('../lib/bootstrap');
 const cache = require('../lib/cache');
 
@@ -121,6 +122,13 @@ async function buildOverview() {
     }
   }
 
+  // Assigned Dip Off numbers (migration 014) — defensive so admin loads pre-014.
+  let dipNoById = {};
+  try {
+    const dnR = await pool.request().query('SELECT id, dip_no FROM bo_dip_entries');
+    for (const r of dnR.recordset) if (r.dip_no != null) dipNoById[r.id] = r.dip_no;
+  } catch (e) { /* column not present yet */ }
+
   // Schedule end times (migration 006) — defensive so admin loads pre-006.
   let schedEndById = {};
   try {
@@ -234,15 +242,17 @@ async function buildOverview() {
     votesByEntry[v.dip_entry_id] = v.n;
     totalVotes += v.n;
   }
-  // `no` is the GLOBAL dip number (order of entry across both tribes) —
-  // must match the numbering voters see on the anonymous ballot.
+  // `no` is the number printed on the dip — admin-assigned (migration 014) and
+  // shared with the player ballot through dipNumbering, so the two can't drift.
   const dipCounts = { buffalo: 0, roadhouse: 0 };
-  const dipEntries = dipR.recordset.map((d, i) => {
+  const dipEntries = dipNumbering(dipR.recordset, dipNoById).map(({ row: d, no }) => {
     const team = d.team === 'roadhouse' ? 'roadhouse' : 'buffalo';
     dipCounts[team] += 1;
     return {
       id: d.id,
-      no: i + 1,
+      no,
+      userId: d.user_id,          // lets the admin UI skip people already cooking
+      numbered: dipNoById[d.id] != null,   // false = still falling back to entry order
       name: formatName(d.first_name, d.last_name, d.username),
       team,
       votes: votesByEntry[d.id] || 0,

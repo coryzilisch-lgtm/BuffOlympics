@@ -87,6 +87,11 @@ infra/migrations/          — T-SQL run by hand in the Fabric portal SQL editor
                              TWO STEPS like 009; Part 2 backfills round 1 lanes from caps.
   013_token_version.sql    — bo_users.token_version: admin password reset bumps it, killing every
                              session token issued before the reset (tokens carry `tv`). One step.
+  014_dip_numbers.sql      — bo_dip_entries.dip_no: the number on a dip is ADMIN-ASSIGNED instead of
+                             derived from entry order, so the ballot can match the cards on the
+                             table (adding/removing a cook used to renumber everyone else). RUN IN
+                             TWO STEPS like 009; Part 2 backfills 1..N by created_at so nobody's
+                             number changes when it ships.
 scripts/
   concurrency-loadtest.js  — proves the atomic slot guard against a live deploy (Node 18+, no deps)
   loadtest-crowd.js        — realistic crowd load test: read stampede + sign-up burst + sustained
@@ -288,7 +293,8 @@ UPDATE in try/catch; round actions 409 pre-009) so the editor still works before
 `settings` (eventMode/refJoinCode/scoresRevealed[re-sealable — the Scores tab has a "Re-seal scores"
 undo]/dipRevealed) · `people`
 (toggleAdmin/toggleRef/addGame/removeGame/**fillSlot**/**unfillSlot**/**fillRelay**/**unfillRelay**/**resetPassword**/**removeUser**) · `relay-legs` · `announcements` ·
-`schedule` (add/remove/move/update) · `ref-assign` · `games`
+`schedule` (add/remove/move/update) · **`dip-entries`** (add/setNumber/renumber — see below) ·
+`ref-assign` · `games`
 (addGame/updateGame/removeGame/addSlot/updateSlot/removeSlot + **addRound/updateRound/removeRound** —
 see above) · **`reset-scores`** (clears ALL logged scores). Every `ac` action busts the
 shared bootstrap cache. `removeUser` deletes a user + their sign-ups/dip/relay/ref-assignment (keeps
@@ -306,6 +312,19 @@ danger-zone button asks for it via a browser prompt). The Admin Center → Peopl
 tab surfaces each account's shirt size + which Buff Olympics it is for them, has a 🔑 reset-password
 and 🗑 delete button per person, and a **Songs** tab lists every song request with a CSV export for
 the DJ.
+
+**Dip Off numbers + roster** (Dip Off tab, `admDipSection`; `POST /api/ac/dip-entries`): the dip
+number is what voters see on the anonymous ballot, so it's **admin-assigned** (`bo_dip_entries.dip_no`,
+migration 014) rather than derived from entry order — adding or removing a cook used to silently
+renumber every other dip and desync the ballot from the physical cards. Type over a row's **#** (a
+`data-change` input, so it commits on blur/Enter, not per keystroke): if another dip holds that
+number the two **swap**, which is what keeps the ballot free of duplicates. **+ Add cook** searches
+everyone with a tribe (admin override — ignores the five-per-tribe cap and the event mode; refs have
+no tribe so they're rejected) and the new cook gets `MAX(dip_no)+1`. **↕ Renumber 1–N** (warns first)
+closes gaps after removals. `dipNumbering()` in `api/lib/bootstrap.js` is shared by the player
+payload and `ac-overview` so the two can never disagree about which dip is #3; unnumbered rows fall
+back to position, so **pre-014 everything behaves exactly as before** and `setNumber`/`renumber`
+409 with "needs migration 014". The admin UI flags a duplicate number in red.
 
 **Email list** (People tab → "✉ Email list" panel + "⬇ Export emails", `emailGroups`/`admExportEmails`
 /`admCopyEmails` in `app.js`): every account's address split **by tribe** — Buffalo / Texas Roadhouse /
@@ -529,6 +548,10 @@ Shipped since (all merged to `main`):
 - **Idol clues removed (Aug 2026):** the player Immunity screen, the admin Idols tab and
   `POST /api/ac/idols` are gone, and nothing queries `bo_idols` any more (one less query per roster
   refill). The table is left in the database, unused — drop it by hand if you want it gone.
+
+**Migration 014 (dip numbers) also needs running** before the Dip Off tab can assign numbers —
+until then the tab still works, numbers just stay derived from entry order and `setNumber`/`renumber`
+409.
 
 DB migrations **003–008 have been run** in Fabric (003 idols — feature since removed / win_points /
 default-ref / schedule-end / game details / widen game text). **009 (game types + brackets), 010 (ref mode), 011 (team games),
