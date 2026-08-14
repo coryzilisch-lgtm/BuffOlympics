@@ -753,6 +753,18 @@ function homeScreen() {
         <span style="font-size:12px;font-weight:700;color:${th.text};">Game Day is live — sign-ups are locked. Time to compete &amp; vote.</span>
       </div>
     </div>
+    ${myLegObj ? `
+    <div style="padding:16px 18px 0;">
+      <button data-act="go" data-to="relay" style="width:100%;background:${th.panel};border:1px solid #3FBF87;border-radius:11px;padding:15px;display:flex;align-items:center;gap:13px;text-align:left;">
+        ${relaySvg('#3FBF87')}
+        <div style="flex:1;min-width:0;">
+          <div style="font-size:11px;font-weight:800;letter-spacing:0.08em;text-transform:uppercase;color:#3FBF87;">Your relay leg</div>
+          <div style="font-size:15px;font-weight:800;color:${th.text};margin-top:3px;">${esc(myLegObj.name)}</div>
+          ${myLegObj.desc ? `<div style="font-size:11.5px;color:${th.sub};margin-top:2px;">${esc(myLegObj.desc)}</div>` : ''}
+        </div>
+        ${chevR('#3FBF87', 9, 15, 2.4)}
+      </button>
+    </div>` : ''}
     <div style="padding:18px 18px 0;">
       <button data-act="go" data-to="dip-vote" style="width:100%;background:${T.A};color:${T.on};border-radius:11px;padding:16px;display:flex;align-items:center;gap:13px;box-shadow:0 8px 22px ${T.glow};">
         ${dipSvg(T.on)}
@@ -1702,6 +1714,23 @@ function scheduleScreen() {
   if (S.boot.dip && S.boot.dip.myEntry) {
     games.push({ isGame: true, isDip: true, kind: 'game', timeLabel: '11:30', ampm: 'AM', title: 'Drop off your dip', place: 'The Cafe', min: 690 });
   }
+  // Relay runners: which leg you're running is part of your day too. A leg has
+  // no clock time of its own, so it rides on whichever shared block IS the
+  // relay; if the admin renamed or removed that block it still shows, just
+  // untimed at the end rather than silently vanishing.
+  const relayNow = S.boot.relay || { legs: [], myLeg: null };
+  const myLegSched = (relayNow.legs || []).find(l => l.id === relayNow.myLeg);
+  if (myLegSched) {
+    const relayBlock = fixed.find(f => /relay/i.test(f.title || ''));
+    games.push({
+      isGame: true, isRelay: true, kind: 'game',
+      timeLabel: relayBlock ? relayBlock.timeLabel : '',
+      ampm: relayBlock ? relayBlock.ampm : '',
+      title: `Your leg: ${myLegSched.name}`,
+      place: myLegSched.desc || (relayBlock ? relayBlock.place : ''),
+      min: relayBlock ? relayBlock.min : null,
+    });
+  }
   const all = [...fixed, ...games];
   all.forEach((it, i) => { it._i = i; });
   all.sort((a, b) => ((a.min == null ? Infinity : a.min) - (b.min == null ? Infinity : b.min)) || (a._i - b._i));
@@ -1727,7 +1756,7 @@ function scheduleScreen() {
         <div style="background:${cardBg};border:1px solid ${cardBorder};border-radius:9px;padding:13px 14px;">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
             <span style="font-family:'BN Kragen';font-size:17px;color:${th.text};text-transform:uppercase;line-height:1;">${esc(e.title)}</span>
-            ${game ? `<span style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:${T.on};background:${T.A};border-radius:4px;padding:2px 6px;">${e.isDip ? 'DIP OFF' : 'YOUR GAME'}</span>` : ''}
+            ${game ? `<span style="font-size:9px;font-weight:800;letter-spacing:0.06em;color:${T.on};background:${T.A};border-radius:4px;padding:2px 6px;">${e.isDip ? 'DIP OFF' : (e.isRelay ? 'RELAY' : 'YOUR GAME')}</span>` : ''}
             ${live ? `<span style="font-size:9px;font-weight:800;letter-spacing:0.08em;color:${T.on};background:${T.A};border-radius:4px;padding:2px 6px;">LIVE</span>` : ''}
           </div>
           ${!game && e.endLabel ? `<div style="font-size:11px;font-weight:700;color:${T.A2};margin-top:4px;">${esc(e.timeLabel)} ${esc(e.ampm)} – ${esc(e.endLabel)} ${esc(e.endAmpm)}</div>` : ''}
