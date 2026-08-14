@@ -87,7 +87,9 @@ staticwebapp.config.json — SPA fallback, node:20 apiRuntime, anonymous routes
    every address by tribe with a Copy button per group (paste straight into BCC), and
    **"⬇ Export emails"** downloads the same thing as a CSV.
 2. Flip **Event mode → Game Day** in the Admin Center sidebar: sign-ups lock, **dip voting** opens
-   on every phone (one vote each; dips stay numbered/anonymous).
+   on every phone (one vote each; dips stay numbered/anonymous). Set the numbers to match the cards
+   on the table first — **Admin → Dip Off** lets you type over any dip's **#** (it swaps with
+   whoever had it), **+ Add cook** anyone who turns up with a dip, and **↕ Renumber** to close gaps.
 3. Refs log results all day from their stations (assign refs to games in Admin → Referees).
    Need to fix a roster? **Admin → Games → + Fill** drops someone into a time slot, and
    **Admin → Relay Race → + Add** puts someone on a relay leg (× removes them) — both are admin
