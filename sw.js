@@ -1,5 +1,5 @@
 /* Buff Olympics service worker — precache the app shell, network-first for API. */
-const CACHE = 'buffolympics-v24';   // v24: ballot shows assigned dip numbers
+const CACHE = 'buffolympics-v25';   // v25: award points to a tribe
 const SHELL = [
   '/',
   '/index.html',

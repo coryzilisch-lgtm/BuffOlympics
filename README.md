@@ -95,6 +95,9 @@ staticwebapp.config.json — SPA fallback, node:20 apiRuntime, anonymous routes
    **Admin → Relay Race → + Add** puts someone on a relay leg (× removes them) — both are admin
    overrides that ignore caps and still work once sign-ups are locked.
    Team totals stay sealed — players only see their own results. Admin can **peek** privately.
+   Need to give a tribe points for something that isn't a game — sportsmanship, a tiebreak, a
+   penalty? **Admin → Scores → Award points**: pick the tribe, the amount (negative takes points
+   away), and a reason, which is required and shows in the entry log.
 4. Closing Ceremony: Admin → Scores → **Reveal scores to everyone** (confirmed, one-way), and
    Admin → Dip Off → **Reveal winner**.
 
