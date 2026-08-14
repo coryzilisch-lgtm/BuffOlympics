@@ -3604,7 +3604,7 @@ function tabBar() {
   const activeTab = S.route === 'game' ? 'games' : (['dip', 'dip-vote', 'relay'].includes(S.route) ? 'home' : S.route);
   const tc = k => k === activeTab ? T.A : th.tabIdle;
   return `
-  <div style="min-height:74px;flex-shrink:0;background:${th.bar};border-top:1px solid rgba(255,255,255,0.09);display:flex;align-items:flex-start;padding:9px 6px env(safe-area-inset-bottom, 0px);position:relative;z-index:20;">
+  <div class="bo-tabbar" style="min-height:var(--bo-tab-h);flex-shrink:0;background:${th.bar};border-top:1px solid rgba(255,255,255,0.09);display:flex;align-items:flex-start;padding:9px 6px env(safe-area-inset-bottom, 0px);">
     <button data-act="go" data-to="home" style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px;color:${tc('home')};">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none"><path d="M3 11l9-7 9 7M5 9.5V20h5v-6h4v6h5V9.5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span style="font-size:10px;font-weight:700;">Home</span>
@@ -3755,9 +3755,9 @@ function render() {
   } else {
     const T = theme();
     html = `
-    <div class="bo-col" style="height:100vh;height:100dvh;background:${T.th.surface};overflow:hidden;position:relative;display:flex;flex-direction:column;">
+    <div class="bo-col" style="height:100vh;height:100dvh;flex:0 0 auto;background:${T.th.surface};overflow:hidden;position:relative;display:flex;flex-direction:column;">
       ${topBar()}
-      <div class="scrl" id="bo-content" style="flex:1;overflow-y:auto;overflow-x:hidden;position:relative;">${screenHtml()}</div>
+      <div class="scrl bo-tabpad" id="bo-content" style="flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;position:relative;">${screenHtml()}</div>
       ${tabBar()}
     </div>
     ${videoModalHtml()}`;
