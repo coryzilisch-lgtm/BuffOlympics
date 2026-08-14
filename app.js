@@ -1995,8 +1995,11 @@ function dipVoteScreen() {
   const entries = dip.entries || [];
   const myVote = dip.myVote;
   const isGameDay = S.boot.settings.eventMode === 'gameday';
-  const myIdx = entries.findIndex(d => d.id === myVote);
-  const myDipVoteNo = myIdx >= 0 ? myIdx + 1 : 0;
+  // The number on the ballot is the one the ADMIN assigned (payload `no`,
+  // migration 014) so it matches the card sitting next to the dip — NOT the
+  // tile's position in this grid, which is what it used to render.
+  const myEntry = entries.find(d => d.id === myVote);
+  const myDipVoteNo = myEntry ? myEntry.no : 0;
 
   return `
   <div style="padding:0 0 28px;">
@@ -2013,12 +2016,12 @@ function dipVoteScreen() {
       <span style="font-size:12.5px;font-weight:700;color:${th.text};">Your vote's in for Dip No. ${myDipVoteNo}. Tap another to change it.</span>
     </div>` : ''}
     <div style="padding:16px 18px 0;display:grid;grid-template-columns:1fr 1fr;gap:11px;">
-      ${entries.map((d, i) => {
+      ${entries.map((d) => {
         const mine = d.id === myVote;
         return `
         <button data-act="dipVote" data-id="${d.id}" style="background:${mine ? T.dim : 'rgba(255,255,255,0.04)'};border:1.5px solid ${mine ? T.A : 'rgba(255,255,255,0.10)'};border-radius:12px;padding:16px 13px;text-align:center;transition:all .15s;">
           <div style="font-size:10px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${mine ? T.A2 : th.sub};">Dip</div>
-          <div style="font-family:'BN Kragen';font-size:40px;line-height:0.9;color:${mine ? T.A : th.text};margin-top:3px;">${i + 1}</div>
+          <div style="font-family:'BN Kragen';font-size:40px;line-height:0.9;color:${mine ? T.A : th.text};margin-top:3px;">${d.no}</div>
           <div style="margin-top:11px;font-size:12px;font-weight:800;color:${mine ? T.A : th.sub};display:flex;align-items:center;justify-content:center;gap:6px;">
             ${mine ? checkSvg(T.A, 14, 2.6) + 'Your vote' : 'Tap to vote'}
           </div>
